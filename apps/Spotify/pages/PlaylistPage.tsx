@@ -42,7 +42,6 @@ export const PlaylistPage: React.FC = () => {
     const isLiked = (trackId: string, track?: { title: string; artist: string }) => likedSongIds.has(trackId, track);
     const addToQueue = useSpotifyStore(s => s.addToQueue);
     const showQueueToast = useSpotifyStore(s => s.showQueueToast);
-    const setAlbumInfo = useSpotifyStore(s => s.setAlbumInfo);
     const removeTrackFromPlaylist = useSpotifyStore(s => s.removeTrackFromPlaylist);
     const toggleShuffle = useSpotifyStore(s => s.toggleShuffle);
 
@@ -81,7 +80,6 @@ export const PlaylistPage: React.FC = () => {
                         console.log(`[Spotify] PlaylistPage: offline hit for album ${id} "${cached.albumInfo.title}" (${cached.tracks.length} tracks)`);
                         setPlaylist(cached.playlist as any);
                         setTracks(cached.tracks);
-                        setAlbumInfo(cached.albumInfo.title, cached.albumInfo.trackCount, cached.albumInfo.year);
                         const colors = ['from-purple-800', 'from-blue-800', 'from-red-800', 'from-orange-800', 'from-emerald-800', 'from-yellow-800'];
                         setBgColor(colors[Math.floor(Math.random() * colors.length)]);
                         return;
@@ -144,10 +142,6 @@ export const PlaylistPage: React.FC = () => {
                             coverLarge: inferLargeArtworkUrl(t.artworkUrl100),
                             duration: fmt(t.trackTimeMillis / 1000)
                         })));
-                        if (collection) {
-                            const year = String(collection.releaseDate ?? '').slice(0, 4) || '';
-                            setAlbumInfo(collection.collectionName, songResults.length, year);
-                        }
 
                         // 随机背景
                         const colors = ['from-purple-800', 'from-blue-800', 'from-red-800', 'from-orange-800', 'from-emerald-800', 'from-yellow-800'];

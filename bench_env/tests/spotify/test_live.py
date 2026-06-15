@@ -210,7 +210,6 @@ async def _drive_queue_top_artist_songs(env: MobileGymEnv, task: BaseTask) -> No
     artist = Spotify(state).artist_of_recent_play(task.p.song)
     tracks = _artist_tracks(artist, int(task.p.count))
     await _dispatch(env, "setSearchResults", [artist, tracks])
-    await _dispatch(env, "setArtistPopularTracks", [artist, tracks, int(task.p.count)])
     for track in tracks:
         await _dispatch(env, "addToQueue", [track])
 
@@ -218,7 +217,6 @@ async def _drive_queue_top_artist_songs(env: MobileGymEnv, task: BaseTask) -> No
 async def _drive_add_artist_songs_to_playlist(env: MobileGymEnv, task: BaseTask) -> None:
     tracks = _artist_tracks(task.p.artist, int(task.p.min_count))
     await _dispatch(env, "setSearchResults", [task.p.artist, tracks])
-    await _dispatch(env, "setArtistPopularTracks", [task.p.artist, tracks, int(task.p.min_count)])
     for track in tracks:
         await _dispatch(env, "addTrackToPlaylist", [task.p.playlist, track])
 
@@ -228,7 +226,6 @@ async def _drive_search_album_info(env: MobileGymEnv, task: BaseTask) -> None:
     assert info, f"no album fixture for {task.p.album!r}"
     tracks = _search_tracks(task.p.album, limit=5)
     await _dispatch(env, "setSearchResults", [task.p.album, tracks])
-    await _dispatch(env, "setAlbumInfo", [task.p.album, int(info["trackCount"]), str(info["year"])])
 
 
 async def _drive_search_play_and_report(env: MobileGymEnv, task: BaseTask) -> None:
@@ -238,7 +235,6 @@ async def _drive_search_play_and_report(env: MobileGymEnv, task: BaseTask) -> No
 async def _drive_follow_and_play_artist(env: MobileGymEnv, task: BaseTask) -> None:
     tracks = _artist_tracks(task.p.artist, 1)
     await _dispatch(env, "setSearchResults", [task.p.artist, tracks])
-    await _dispatch(env, "setArtistPopularTracks", [task.p.artist, tracks, len(tracks)])
     await _dispatch(env, "toggleFollowArtist", [task.p.artist])
     await _dispatch(env, "playTrack", [tracks[0]])
 
