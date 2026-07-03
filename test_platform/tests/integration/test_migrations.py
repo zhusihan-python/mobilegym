@@ -43,7 +43,9 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         "workflow_node_runs",
         "lanes",
         "lane_attempts",
+        "prepared_tasks",
         "episodes",
+        "episode_attempts",
         "events",
         "idempotency_keys",
     } <= _table_names(settings.database_path)
@@ -53,6 +55,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (3, "0003_targets.sql"),
         (4, "0004_workflows.sql"),
         (5, "0005_run_planning.sql"),
+        (6, "0006_serial_execution.sql"),
     ]
 
 
@@ -75,4 +78,5 @@ def test_database_initialization_is_idempotent(tmp_path):
         (3, "0003_targets.sql"),
         (4, "0004_workflows.sql"),
         (5, "0005_run_planning.sql"),
+        (6, "0006_serial_execution.sql"),
     ]

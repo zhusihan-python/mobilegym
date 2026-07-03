@@ -7,21 +7,51 @@ Description :
 '''
 """SerialRunner - 串行评测 (async)"""
 
+from dataclasses import dataclass
+from typing import Any, Sequence
+
 from bench_env.runner.base import BaseRunner, EpisodeResult, Evaluator, RunnerConfig
+from bench_env.runner.cancellation import CancellationToken
+from bench_env.runner.events import EventSink, NullEventSink
 from bench_env.logger import add_log_file, get_logger
 
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class PreparedWorkItem:
+    episode_key: str
+    task: Any
+    trial_id: int
+    max_steps: int
+
+
 class SerialRunner(BaseRunner):
     """串行评测"""
 
-    def __init__(self, env, agent, tasks, config: RunnerConfig, recorder=None, evaluator=None):
+    def __init__(
+        self,
+        env,
+        agent,
+        tasks,
+        config: RunnerConfig,
+        recorder=None,
+        evaluator=None,
+        *,
+        prepared_work_items: Sequence[PreparedWorkItem] | None = None,
+        event_sink: EventSink | None = None,
+        cancellation_token: CancellationToken | None = None,
+    ):
         self.env, self.agent, self.tasks = env, agent, tasks
         self.config = config
         self.recorder = recorder
         self.evaluator = evaluator or Evaluator()
         self.verbose = not config.quiet
+        self.prepared_work_items = (
+            list(prepared_work_items) if prepared_work_items is not None else None
+        )
+        self.event_sink = event_sink or NullEventSink()
+        self.cancellation_token = cancellation_token or CancellationToken()
 
     @classmethod
     async def from_args(cls, args):
@@ -56,6 +86,9 @@ class SerialRunner(BaseRunner):
     async def run(self) -> list[EpisodeResult]:
         from tqdm import tqdm
         from bench_env.logger import tqdm_logging_redirect
+
+        if self.prepared_work_items is not None:
+            return await self._run_prepared_work_items()
 
         results = []
         # Cache run_dir early because recorder.finish_run() clears internal state.
@@ -119,7 +152,7 @@ class SerialRunner(BaseRunner):
                                 success_count += 1
                             else:
                                 fail_count += 1
-                            pbar.set_postfix_str(f"✓{success_count} ✗{fail_count}")
+                            pbar.set_postfix_str(f"pass={success_count} fail={fail_count}")
                             pbar.update(1)
                 finally:
                     pbar.close()
@@ -131,6 +164,68 @@ class SerialRunner(BaseRunner):
             run_dir = self.recorder.finish_run(
                 repeat_n=repeat_n, 
                 pass_k=self.config.pass_k
+            )
+            await self.env.close()
+
+        self.print_summary(results, run_dir)
+        return results
+
+    async def _run_prepared_work_items(self) -> list[EpisodeResult]:
+        from tqdm import tqdm
+        from bench_env.logger import tqdm_logging_redirect
+
+        prepared_work_items = self.prepared_work_items or []
+        results = []
+        run_dir = self.recorder.run_dir
+        repeat_n = self.config.repeat_n
+        total_episodes = len(prepared_work_items)
+        logger.info(f"Prepared Episodes: {total_episodes}, Output: {run_dir}")
+
+        monitor_task = self._start_monitor(run_dir, self.config) if self.config.monitor else None
+        success_count = 0
+        fail_count = 0
+
+        try:
+            with tqdm_logging_redirect():
+                pbar = tqdm(
+                    total=total_episodes,
+                    desc="Evaluating",
+                    unit="ep",
+                    dynamic_ncols=True,
+                    disable=not self.verbose,
+                )
+                try:
+                    for episode_idx, work_item in enumerate(prepared_work_items, start=1):
+                        self.cancellation_token.raise_if_cancelled()
+                        task = work_item.task
+                        if self.verbose:
+                            logger.info(f"[{episode_idx}/{total_episodes}] {task.id}")
+
+                        result = await self.run_episode(
+                            self.env, self.agent, task, work_item.max_steps,
+                            self.recorder, trial_id=work_item.trial_id, evaluator=self.evaluator,
+                            loop_threshold=self.config.loop_detect,
+                        )
+                        results.append(result)
+
+                        if self.verbose:
+                            self._log_episode_result(result)
+
+                        if result.success:
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                        pbar.set_postfix_str(f"pass={success_count} fail={fail_count}")
+                        pbar.update(1)
+                finally:
+                    pbar.close()
+        except Exception as e:
+            logger.exception(f"Run interrupted: {e}")
+        finally:
+            self._stop_monitor(monitor_task)
+            run_dir = self.recorder.finish_run(
+                repeat_n=repeat_n,
+                pass_k=self.config.pass_k,
             )
             await self.env.close()
 

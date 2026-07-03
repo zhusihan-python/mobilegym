@@ -468,11 +468,35 @@ class RunRepository:
         ).fetchall()
         episodes = self.database.connection.execute(
             """
-            SELECT episode_key, pair_key, task_base_id, task_id, instance_id,
-                   instance_seed, template_index, trial_id, max_steps
+            SELECT episode_key, materialization_key, pair_key, task_base_id, task_id,
+                   instance_id, instance_seed, template_index, trial_id, max_steps
             FROM episodes
             WHERE run_id = ?
             ORDER BY episode_key
+            """,
+            (run_id,),
+        ).fetchall()
+        lane_attempts = self.database.connection.execute(
+            """
+            SELECT la.id, la.lane_id, l.lane_key, la.state, la.artifact_root,
+                   la.started_at, la.ended_at
+            FROM lane_attempts AS la
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE l.run_id = ?
+            ORDER BY l.lane_key, la.created_at
+            """,
+            (run_id,),
+        ).fetchall()
+        episode_attempts = self.database.connection.execute(
+            """
+            SELECT e.episode_key, l.lane_key, ea.attempt_no, ea.state,
+                   ea.outcome, ea.error_code, ea.artifact_root
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE e.run_id = ?
+            ORDER BY e.episode_key, l.lane_key, ea.attempt_no
             """,
             (run_id,),
         ).fetchall()
@@ -500,6 +524,8 @@ class RunRepository:
                     for lane in lane_rows
                 ],
                 "episode_identities": [dict(episode) for episode in episodes],
+                "lane_attempts": [dict(attempt) for attempt in lane_attempts],
+                "episode_attempts": [dict(attempt) for attempt in episode_attempts],
             }
         )
 
@@ -508,9 +534,15 @@ class RunRepository:
             """
             SELECT
               (SELECT COUNT(*) FROM episodes WHERE run_id = ?) AS episodes,
-              (SELECT COUNT(*) FROM lanes WHERE run_id = ?) AS lanes
+              (SELECT COUNT(*) FROM lanes WHERE run_id = ?) AS lanes,
+              (
+                SELECT COUNT(DISTINCT e.id)
+                FROM episodes AS e
+                JOIN episode_attempts AS ea ON ea.episode_id = e.id
+                WHERE e.run_id = ? AND ea.state = 'completed'
+              ) AS completed_episodes
             """,
-            (row["id"], row["id"]),
+            (row["id"], row["id"], row["id"]),
         ).fetchone()
         lane_rows = self.database.connection.execute(
             """
@@ -533,7 +565,7 @@ class RunRepository:
             progress={
                 "planned_episodes": planned_episodes,
                 "planned_lane_episodes": planned_episodes * lane_count,
-                "completed_episodes": 0,
+                "completed_episodes": int(counts["completed_episodes"]),
             },
             lanes=[dict(lane) for lane in lane_rows],
             gate_verdict=None,

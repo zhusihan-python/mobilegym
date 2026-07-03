@@ -314,7 +314,7 @@ select {
 .tp-run-facts {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 0;
 }
 
@@ -340,6 +340,36 @@ select {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.tp-outcome {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.tp-outcome-pass {
+  background: #e8f7ef;
+  color: #166534;
+}
+
+.tp-outcome-fail {
+  background: #fff8e6;
+  color: #7a4b00;
+}
+
+.tp-outcome-error {
+  background: #fff0f0;
+  color: #a61b1b;
+}
+
+.tp-outcome-cancelled,
+.tp-outcome-skipped,
+.tp-outcome-pending {
+  background: #eef2f6;
+  color: #475569;
 }
 
 .tp-workflow-editor {

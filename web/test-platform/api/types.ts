@@ -64,6 +64,15 @@ export type RunSummary = {
 
 export type RunDetail = RunSummary & {
   run_plan: Record<string, unknown>;
+  lane_attempts?: Array<{
+    id: string;
+    lane_id: string;
+    lane_key: string;
+    state: string;
+    artifact_root: string;
+    started_at: string | null;
+    ended_at: string | null;
+  }>;
   target_revisions: Array<{
     target_id: string;
     target_revision_id: string;
@@ -79,6 +88,15 @@ export type RunDetail = RunSummary & {
     template_index: number | null;
     trial_id: number;
     max_steps: number;
+  }>;
+  episode_attempts?: Array<{
+    episode_key: string;
+    lane_key: string;
+    attempt_no: number;
+    state: string;
+    outcome: 'PASS' | 'FAIL' | 'ERROR' | 'CANCELLED' | 'SKIPPED' | string | null;
+    error_code: string | null;
+    artifact_root: string;
   }>;
 };
 

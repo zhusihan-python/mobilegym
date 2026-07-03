@@ -46,6 +46,8 @@ export function RunDetailPage() {
   }
 
   const { run } = state;
+  const laneAttempts = run.lane_attempts ?? [];
+  const episodeAttempts = run.episode_attempts ?? [];
   return (
     <>
       <section className="tp-panel tp-run-overview">
@@ -67,11 +69,45 @@ export function RunDetailPage() {
             <dd>{run.progress.planned_lane_episodes} planned lane episodes</dd>
           </div>
           <div>
+            <dt>Completed</dt>
+            <dd>{run.progress.completed_episodes} completed episodes</dd>
+          </div>
+          <div>
             <dt>Fingerprint</dt>
             <dd className="tp-mono">{run.fingerprint}</dd>
           </div>
         </dl>
       </section>
+
+      {laneAttempts.length > 0 ? (
+        <section className="tp-panel">
+          <h2>Lane attempts</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>State</th>
+                <th>Artifact root</th>
+                <th>Explorer</th>
+              </tr>
+            </thead>
+            <tbody>
+              {laneAttempts.map((attempt) => (
+                <tr key={attempt.id}>
+                  <td>{attempt.lane_key}</td>
+                  <td>{attempt.state}</td>
+                  <td className="tp-mono">{attempt.artifact_root}</td>
+                  <td>
+                    <a href={runExplorerHref(run.id, attempt.artifact_root)}>
+                      Open in Run Explorer
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
 
       <section className="tp-panel">
         <h2>Frozen target revisions</h2>
@@ -98,6 +134,38 @@ export function RunDetailPage() {
         </table>
       </section>
 
+      {episodeAttempts.length > 0 ? (
+        <section className="tp-panel">
+          <h2>Episode attempts</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Episode</th>
+                <th>Lane</th>
+                <th>Outcome</th>
+                <th>Error</th>
+                <th>Artifact root</th>
+              </tr>
+            </thead>
+            <tbody>
+              {episodeAttempts.map((attempt) => (
+                <tr key={`${attempt.episode_key}:${attempt.lane_key}:${attempt.attempt_no}`}>
+                  <td className="tp-mono">{attempt.episode_key}</td>
+                  <td>{attempt.lane_key}</td>
+                  <td>
+                    <span className={`tp-outcome tp-outcome-${(attempt.outcome ?? 'pending').toLowerCase()}`}>
+                      {attempt.outcome ?? attempt.state}
+                    </span>
+                  </td>
+                  <td>{attempt.error_code ?? ''}</td>
+                  <td className="tp-mono">{attempt.artifact_root}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
       <section className="tp-panel">
         <h2>Episode identities</h2>
         <table>
@@ -123,4 +191,9 @@ export function RunDetailPage() {
       </section>
     </>
   );
+}
+
+function runExplorerHref(runId: string, artifactRoot: string) {
+  const runPath = `${runId}/${artifactRoot}`.replace(/\\/g, '/');
+  return `/run_explorer.html?run=${encodeURIComponent(runPath)}`;
 }
