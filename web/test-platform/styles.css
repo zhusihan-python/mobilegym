@@ -233,6 +233,73 @@ select {
   opacity: 0.62;
 }
 
+.tp-inline-field,
+.tp-workflow-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tp-inline-field span,
+.tp-workflow-controls label {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tp-inline-field select,
+.tp-workflow-controls select,
+.tp-workflow-controls input {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #17202a;
+  min-width: 180px;
+  padding: 8px 10px;
+}
+
+.tp-text-button {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #17202a;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 7px 9px;
+}
+
+.tp-workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tp-workflow-editor {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 240px;
+}
+
+.tp-workflow-task-list {
+  border: 1px solid #e1e7ee;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.tp-checkbox-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.tp-checkbox-row + .tp-checkbox-row {
+  border-top: 1px solid #e1e7ee;
+}
+
 .tp-target-list {
   display: flex;
   flex-direction: column;
@@ -403,6 +470,10 @@ td {
   .tp-target-metadata {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .tp-workflow-editor {
+    grid-template-columns: 1fr;
   }
 
   .tp-target-details {

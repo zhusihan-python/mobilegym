@@ -172,7 +172,7 @@ function TargetCard({
       <div className="tp-target-card-header">
         <div>
           <h2>{target.name}</h2>
-          <p>{target.kind === 'simulator' ? 'Simulator' : 'Real device'} · {target.config.device_profile.name}</p>
+          <p>{target.kind === 'simulator' ? 'Simulator' : 'Real device'} - {target.config.device_profile.name}</p>
         </div>
         <button
           type="button"

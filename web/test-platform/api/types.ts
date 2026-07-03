@@ -114,3 +114,73 @@ export type TargetHealthResponse = {
   warnings: string[];
   error: { code: string; message: string } | null;
 };
+
+export type TaskCatalogItem = {
+  task_base_id: string;
+  suite: string;
+  class_name: string;
+  apps: string[];
+  templates: string[];
+  parameters: Record<string, unknown>;
+  difficulty: string;
+  scope: string;
+  objective: string;
+  composition: string;
+  capabilities: string[];
+  max_steps: number | null;
+  answer_fields: boolean;
+  optimal_path_lengths: number[];
+};
+
+export type TaskCatalogResponse = CollectionResponse<TaskCatalogItem> & {
+  digest: string;
+};
+
+export type WorkflowNode = {
+  id: string;
+  type: 'task_selection' | 'matrix' | 'execute' | 'compare' | 'gate' | 'report';
+  depends_on: string[];
+  config: Record<string, unknown>;
+};
+
+export type WorkflowDefinition = {
+  schema_version: 1;
+  name: string;
+  nodes: WorkflowNode[];
+};
+
+export type WorkflowVersion = {
+  id: string;
+  workflow_id: string;
+  version_no: number;
+  status: 'published';
+  definition: WorkflowDefinition;
+  definition_hash: string;
+  created_at: string;
+  published_at: string;
+};
+
+export type WorkflowSummary = {
+  id: string;
+  project_id: string;
+  name: string;
+  draft_definition: WorkflowDefinition | null;
+  latest_version: WorkflowVersion | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkflowCompilePreview = {
+  task_count: number;
+  task_instance_count: number;
+  trial_count: number;
+  lane_count: number;
+  total_episodes: number;
+  lane_keys: string[];
+};
+
+export type WorkflowPublishResponse = {
+  workflow_id: string;
+  workflow_version_id: string;
+  version: WorkflowVersion;
+};

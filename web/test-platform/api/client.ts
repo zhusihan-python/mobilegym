@@ -5,8 +5,14 @@ import type {
   Project,
   ReadinessResponse,
   RunSummary,
+  TaskCatalogItem,
+  TaskCatalogResponse,
   Target,
   TargetHealthResponse,
+  WorkflowCompilePreview,
+  WorkflowDefinition,
+  WorkflowPublishResponse,
+  WorkflowSummary,
 } from './types';
 
 const API_PREFIX = '/api/platform/v1';
@@ -122,6 +128,66 @@ export function createSimulatorTarget(input: {
 
 export function checkTargetHealth(targetId: string): Promise<TargetHealthResponse> {
   return apiFetch<TargetHealthResponse>(`/targets/${encodeURIComponent(targetId)}/health`, {
+    method: 'POST',
+  });
+}
+
+export function listTasks(filters: { suite?: string } = {}): Promise<TaskCatalogResponse> {
+  const params = new URLSearchParams();
+  if (filters.suite) {
+    params.set('suite', filters.suite);
+  }
+  const query = params.toString();
+  return apiFetch<TaskCatalogResponse>(`/tasks${query ? `?${query}` : ''}`);
+}
+
+export function getTask(taskId: string): Promise<TaskCatalogItem> {
+  return apiFetch<TaskCatalogItem>(`/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function listWorkflows(projectId: string): Promise<CollectionResponse<WorkflowSummary>> {
+  return apiFetch<CollectionResponse<WorkflowSummary>>(
+    `/projects/${encodeURIComponent(projectId)}/workflows`,
+  );
+}
+
+export function createWorkflow(input: {
+  projectId: string;
+  name: string;
+  definition: WorkflowDefinition;
+}): Promise<WorkflowSummary> {
+  return apiFetch<WorkflowSummary>(`/projects/${encodeURIComponent(input.projectId)}/workflows`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: input.name,
+      definition: input.definition,
+    }),
+  });
+}
+
+export function updateWorkflowDraft(input: {
+  workflowId: string;
+  name?: string;
+  definition: WorkflowDefinition;
+}): Promise<WorkflowSummary> {
+  return apiFetch<WorkflowSummary>(`/workflows/${encodeURIComponent(input.workflowId)}/draft`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      name: input.name,
+      definition: input.definition,
+    }),
+  });
+}
+
+export function compileWorkflowPreview(workflowId: string): Promise<WorkflowCompilePreview> {
+  return apiFetch<WorkflowCompilePreview>(
+    `/workflows/${encodeURIComponent(workflowId)}/compile-preview`,
+    { method: 'POST' },
+  );
+}
+
+export function publishWorkflow(workflowId: string): Promise<WorkflowPublishResponse> {
+  return apiFetch<WorkflowPublishResponse>(`/workflows/${encodeURIComponent(workflowId)}/publish`, {
     method: 'POST',
   });
 }

@@ -145,7 +145,9 @@ export function PlatformShell() {
         ) : null}
         <nav className="tp-nav" aria-label="Test Platform">
           <NavLink to="/runs">Runs</NavLink>
+          <NavLink to="/tasks">Tasks</NavLink>
           <NavLink to="/targets">Targets</NavLink>
+          <NavLink to="/workflows">Workflows</NavLink>
         </nav>
       </aside>
 
@@ -153,7 +155,7 @@ export function PlatformShell() {
         <header className="tp-topbar">
           <div>
             <div className="tp-kicker">Local console</div>
-            <h1>{location.pathname.startsWith('/targets') ? 'Targets' : 'Runs'}</h1>
+            <h1>{pageTitle(location.pathname)}</h1>
           </div>
           <ReadinessIndicator readiness={readiness} />
         </header>
@@ -377,6 +379,13 @@ function ReadinessPanel({
 
 function firstFailedCheck(readiness: ReadinessResponse) {
   return Object.values(readiness.checks).find((check) => !check.ready);
+}
+
+function pageTitle(pathname: string) {
+  if (pathname.startsWith('/tasks')) return 'Tasks';
+  if (pathname.startsWith('/targets')) return 'Targets';
+  if (pathname.startsWith('/workflows')) return 'Workflows';
+  return 'Runs';
 }
 
 function resolveSelectedProjectId(projects: Project[], storedProjectId: string | null) {
