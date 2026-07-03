@@ -13,7 +13,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function requestPath(input: RequestInfo | URL): string {
   if (typeof input === 'string') {
-    return input;
+    return new URL(input, window.location.origin).pathname;
   }
   if (input instanceof URL) {
     return input.pathname;
@@ -46,6 +46,22 @@ describe('Test Platform walking skeleton', () => {
         });
       }
 
+      if (path === '/api/platform/v1/projects') {
+        return jsonResponse({
+          items: [
+            {
+              id: '11111111111111111111111111111111',
+              name: 'Mobile App Regression',
+              slug: 'mobile-app-regression',
+              archived_at: null,
+              created_at: '2026-07-03T00:00:00.000Z',
+              updated_at: '2026-07-03T00:00:00.000Z',
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+
       if (path === '/api/platform/v1/runs') {
         return jsonResponse({ items: [], next_cursor: null });
       }
@@ -61,9 +77,9 @@ describe('Test Platform walking skeleton', () => {
     expect(screen.getByRole('link', { name: 'Runs' })).toBeTruthy();
     expect(await screen.findByText('Service ready')).toBeTruthy();
     expect(await screen.findByText('No runs yet')).toBeTruthy();
-    expect(screen.getByText('The API returned zero runs.')).toBeTruthy();
+    expect(screen.getByText('The API returned zero runs for Mobile App Regression.')).toBeTruthy();
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
   });
 

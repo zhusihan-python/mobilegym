@@ -7,7 +7,7 @@ router = APIRouter(prefix="/api/platform/v1")
 
 
 @router.get("/runs")
-def list_runs(request: Request) -> dict[str, object]:
+def list_runs(request: Request, project_id: str | None = None) -> dict[str, object]:
     database = get_database(request)
     readiness = database.readiness()
     if not readiness["ready"]:
@@ -23,6 +23,6 @@ def list_runs(request: Request) -> dict[str, object]:
         )
 
     return {
-        "items": database.list_runs(),
+        "items": database.list_runs(project_id=project_id),
         "next_cursor": None,
     }

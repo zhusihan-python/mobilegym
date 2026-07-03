@@ -33,6 +33,10 @@ class Database:
                 self._connection.close()
                 self._connection = None
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._require_connection()
+
     def readiness(self) -> dict[str, Any]:
         checks = {
             "database": self._database_check(),
@@ -44,14 +48,22 @@ class Database:
             "checks": checks,
         }
 
-    def list_runs(self) -> list[dict[str, Any]]:
+    def list_runs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         connection = self._require_connection()
+        where_clause = ""
+        params: tuple[str, ...] = ()
+        if project_id is not None:
+            where_clause = "WHERE project_id = ?"
+            params = (project_id,)
+
         rows = connection.execute(
-            """
+            f"""
             SELECT id, name, state, created_at, started_at, ended_at
             FROM runs
+            {where_clause}
             ORDER BY created_at DESC, id ASC
-            """
+            """,
+            params,
         ).fetchall()
         return [
             {

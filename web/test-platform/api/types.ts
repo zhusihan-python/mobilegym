@@ -28,6 +28,15 @@ export type CollectionResponse<T> = {
   next_cursor: string | null;
 };
 
+export type Project = {
+  id: string;
+  name: string;
+  slug: string;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RunSummary = {
   id: string;
   name: string | null;

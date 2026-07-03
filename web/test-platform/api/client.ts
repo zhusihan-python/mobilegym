@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   ApiErrorDetail,
   CollectionResponse,
+  Project,
   ReadinessResponse,
   RunSummary,
 } from './types';
@@ -23,9 +24,15 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set('Accept', 'application/json');
+  if (init?.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const response = await fetch(`${API_PREFIX}${path}`, {
-    headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
     ...init,
+    headers,
   });
   return readResponse<T>(response);
 }
@@ -47,8 +54,26 @@ export async function fetchReadiness(): Promise<ReadinessResponse> {
   throw new ApiError('INVALID_RESPONSE', 'The readiness response was not valid.');
 }
 
-export function listRuns(): Promise<CollectionResponse<RunSummary>> {
-  return apiFetch<CollectionResponse<RunSummary>>('/runs');
+export function listProjects(): Promise<CollectionResponse<Project>> {
+  return apiFetch<CollectionResponse<Project>>('/projects');
+}
+
+export function createProject(name: string): Promise<Project> {
+  return apiFetch<Project>('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function archiveProject(projectId: string): Promise<Project> {
+  return apiFetch<Project>(`/projects/${encodeURIComponent(projectId)}/archive`, {
+    method: 'POST',
+  });
+}
+
+export function listRuns(projectId?: string): Promise<CollectionResponse<RunSummary>> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return apiFetch<CollectionResponse<RunSummary>>(`/runs${query}`);
 }
 
 async function readResponse<T>(response: Response): Promise<T> {

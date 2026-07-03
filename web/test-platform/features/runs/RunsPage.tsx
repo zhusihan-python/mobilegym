@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
 
 import { listRuns } from '../../api/client';
-import type { CollectionResponse, RunSummary } from '../../api/types';
+import type { CollectionResponse, Project, RunSummary } from '../../api/types';
 import { EmptyState } from '../../components/EmptyState';
 
 type RunsState =
@@ -10,12 +11,13 @@ type RunsState =
   | { status: 'error'; message: string };
 
 export function RunsPage() {
+  const { selectedProject } = useOutletContext<{ selectedProject: Project }>();
   const [runs, setRuns] = useState<RunsState>({ status: 'loading' });
 
   useEffect(() => {
     let active = true;
 
-    listRuns()
+    listRuns(selectedProject.id)
       .then((data) => {
         if (active) {
           setRuns({ status: 'loaded', data });
@@ -33,7 +35,7 @@ export function RunsPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [selectedProject.id]);
 
   if (runs.status === 'loading') {
     return <section className="tp-panel">Loading runs...</section>;
@@ -52,7 +54,7 @@ export function RunsPage() {
     return (
       <EmptyState
         title="No runs yet"
-        body="The API returned zero runs."
+        body={`The API returned zero runs for ${selectedProject.name}.`}
       />
     );
   }
