@@ -12,6 +12,7 @@ from test_platform.domain.projects import (
     next_available_slug,
     normalize_project_name,
 )
+from test_platform.domain.runs import RunDetail, RunNotFound, RunSummary
 from test_platform.domain.targets import (
     DuplicateTargetName,
     Target,
@@ -416,6 +417,130 @@ class WorkflowRepository:
         if version is None:
             raise WorkflowNotFound(workflow_id)
         return version
+
+
+class RunRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list(self, *, project_id: str | None = None) -> list[RunSummary]:
+        where_clause = ""
+        params: tuple[str, ...] = ()
+        if project_id is not None:
+            where_clause = "WHERE project_id = ?"
+            params = (project_id,)
+        rows = self.database.connection.execute(
+            f"""
+            SELECT id, project_id, workflow_version_id, name, state,
+                   run_plan_hash, created_at, started_at, ended_at
+            FROM runs
+            {where_clause}
+            ORDER BY created_at DESC, id ASC
+            """,
+            params,
+        ).fetchall()
+        return [self._summary(row) for row in rows]
+
+    def get(self, run_id: str) -> RunDetail:
+        row = self.database.connection.execute(
+            """
+            SELECT id, project_id, workflow_version_id, name, state,
+                   run_plan_json, run_plan_hash, created_at, started_at, ended_at
+            FROM runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunNotFound(run_id)
+
+        summary = self._summary(row)
+        lane_rows = self.database.connection.execute(
+            """
+            SELECT l.id, l.lane_key, l.role, l.target_id, l.target_revision_id,
+                   tr.metadata_hash
+            FROM lanes AS l
+            JOIN target_revisions AS tr ON tr.id = l.target_revision_id
+            WHERE l.run_id = ?
+            ORDER BY l.lane_key
+            """,
+            (run_id,),
+        ).fetchall()
+        episodes = self.database.connection.execute(
+            """
+            SELECT episode_key, pair_key, task_base_id, task_id, instance_id,
+                   instance_seed, template_index, trial_id, max_steps
+            FROM episodes
+            WHERE run_id = ?
+            ORDER BY episode_key
+            """,
+            (run_id,),
+        ).fetchall()
+        lanes = [
+            {
+                "id": lane["id"],
+                "lane_key": lane["lane_key"],
+                "role": lane["role"],
+                "target_id": lane["target_id"],
+                "target_revision_id": lane["target_revision_id"],
+            }
+            for lane in lane_rows
+        ]
+        return RunDetail(
+            **{
+                **summary.__dict__,
+                "lanes": lanes,
+                "run_plan": json.loads(row["run_plan_json"]),
+                "target_revisions": [
+                    {
+                        "target_id": lane["target_id"],
+                        "target_revision_id": lane["target_revision_id"],
+                        "metadata_hash": lane["metadata_hash"],
+                    }
+                    for lane in lane_rows
+                ],
+                "episode_identities": [dict(episode) for episode in episodes],
+            }
+        )
+
+    def _summary(self, row: sqlite3.Row) -> RunSummary:
+        counts = self.database.connection.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM episodes WHERE run_id = ?) AS episodes,
+              (SELECT COUNT(*) FROM lanes WHERE run_id = ?) AS lanes
+            """,
+            (row["id"], row["id"]),
+        ).fetchone()
+        lane_rows = self.database.connection.execute(
+            """
+            SELECT id, lane_key, role, target_id, target_revision_id
+            FROM lanes
+            WHERE run_id = ?
+            ORDER BY lane_key
+            """,
+            (row["id"],),
+        ).fetchall()
+        planned_episodes = int(counts["episodes"])
+        lane_count = int(counts["lanes"])
+        return RunSummary(
+            id=row["id"],
+            project_id=row["project_id"],
+            workflow_version_id=row["workflow_version_id"],
+            name=row["name"],
+            state=row["state"],
+            fingerprint=row["run_plan_hash"],
+            progress={
+                "planned_episodes": planned_episodes,
+                "planned_lane_episodes": planned_episodes * lane_count,
+                "completed_episodes": 0,
+            },
+            lanes=[dict(lane) for lane in lane_rows],
+            gate_verdict=None,
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+        )
 
 
 def _map_project(row: sqlite3.Row) -> Project:

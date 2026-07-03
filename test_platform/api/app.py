@@ -13,6 +13,7 @@ from test_platform.api.routes.targets import router as targets_router
 from test_platform.api.routes.workflows import router as workflows_router
 from test_platform.config import PlatformSettings
 from test_platform.persistence.database import Database
+from test_platform.services.runs import FakeRunSupervisor
 
 
 def create_app(
@@ -24,13 +25,14 @@ def create_app(
 ) -> FastAPI:
     platform_database = database or Database(settings)
     platform_adapter_registry = adapter_registry or TargetAdapterRegistry()
+    platform_supervisor = supervisor or FakeRunSupervisor()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.database = platform_database
         app.state.adapter_registry = platform_adapter_registry
-        app.state.supervisor = supervisor
+        app.state.supervisor = platform_supervisor
         platform_database.initialize()
         try:
             yield
@@ -41,7 +43,7 @@ def create_app(
     app.state.settings = settings
     app.state.database = platform_database
     app.state.adapter_registry = platform_adapter_registry
-    app.state.supervisor = supervisor
+    app.state.supervisor = platform_supervisor
 
     install_request_id_middleware(app)
     install_error_handlers(app)

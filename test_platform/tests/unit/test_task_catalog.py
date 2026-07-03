@@ -1,3 +1,5 @@
+import subprocess
+
 from test_platform.domain.task_catalog import (
     TaskCatalogFilter,
     build_task_catalog_snapshot,
@@ -29,3 +31,16 @@ def test_registry_digest_is_stable_for_stable_metadata():
 
     assert first.digest == second.digest
     assert first.digest.startswith("sha256:")
+
+
+def test_default_catalog_snapshot_freezes_the_current_repository_revision():
+    expected = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+    snapshot = build_task_catalog_snapshot(
+        filters=TaskCatalogFilter(suites=["wechat"]),
+    )
+
+    assert snapshot.repository_revision == expected

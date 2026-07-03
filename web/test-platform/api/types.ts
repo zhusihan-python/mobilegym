@@ -39,14 +39,47 @@ export type Project = {
 
 export type RunSummary = {
   id: string;
+  project_id: string;
+  workflow_version_id: string;
   name: string | null;
   state: string;
-  progress: Record<string, unknown>;
-  lanes: unknown[];
-  gate_verdict: unknown | null;
+  fingerprint: string;
+  progress: {
+    planned_episodes: number;
+    planned_lane_episodes: number;
+    completed_episodes: number;
+  };
+  lanes: Array<{
+    id: string;
+    lane_key: string;
+    role: string;
+    target_id: string;
+    target_revision_id: string;
+  }>;
+  gate_verdict: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
+};
+
+export type RunDetail = RunSummary & {
+  run_plan: Record<string, unknown>;
+  target_revisions: Array<{
+    target_id: string;
+    target_revision_id: string;
+    metadata_hash: string;
+  }>;
+  episode_identities: Array<{
+    episode_key: string;
+    pair_key: string;
+    task_base_id: string;
+    task_id: string;
+    instance_id: number;
+    instance_seed: number;
+    template_index: number | null;
+    trial_id: number;
+    max_steps: number;
+  }>;
 };
 
 export type TargetRevision = {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { Link, useOutletContext } from 'react-router-dom';
 
 import { listRuns } from '../../api/client';
 import type { CollectionResponse, Project, RunSummary } from '../../api/types';
@@ -73,7 +73,9 @@ export function RunsPage() {
         <tbody>
           {runs.data.items.map((run) => (
             <tr key={run.id}>
-              <td>{run.name ?? run.id}</td>
+              <td>
+                <Link to={`/runs/${run.id}`}>{run.name ?? run.id}</Link>
+              </td>
               <td>{run.state}</td>
               <td>{run.created_at}</td>
             </tr>

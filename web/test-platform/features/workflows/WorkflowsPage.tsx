@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 
 import {
   compileWorkflowPreview,
+  createRun,
   createWorkflow,
   listTargets,
   listTasks,
@@ -31,6 +32,7 @@ type LoadState =
   | { status: 'error'; message: string };
 
 export function WorkflowsPage() {
+  const navigate = useNavigate();
   const { selectedProject } = useOutletContext<{ selectedProject: Project }>();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
@@ -39,6 +41,7 @@ export function WorkflowsPage() {
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowSummary | null>(null);
   const [preview, setPreview] = useState<WorkflowCompilePreview | null>(null);
   const [publishedVersion, setPublishedVersion] = useState<WorkflowVersion | null>(null);
+  const [runSeed, setRunSeed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -60,7 +63,9 @@ export function WorkflowsPage() {
           workflows: workflowsResponse.items,
         });
         setTargetId((current) => current || firstTargetId);
-        setActiveWorkflow(workflowsResponse.items[0] ?? null);
+        const firstWorkflow = workflowsResponse.items[0] ?? null;
+        setActiveWorkflow(firstWorkflow);
+        setPublishedVersion(firstWorkflow?.latest_version ?? null);
       })
       .catch((loadError) => {
         if (active) {
@@ -147,6 +152,23 @@ export function WorkflowsPage() {
       .finally(() => setBusy(false));
   };
 
+  const launch = () => {
+    if (!publishedVersion) return;
+    setBusy(true);
+    setError(null);
+    createRun({
+      workflowVersionId: publishedVersion.id,
+      name: activeWorkflow?.name ?? publishedVersion.definition.name,
+      seed: runSeed,
+      idempotencyKey: crypto.randomUUID(),
+    })
+      .then((run) => navigate(`/runs/${run.id}`))
+      .catch((runError) => {
+        setError(runError instanceof Error ? runError.message : 'Run creation failed.');
+      })
+      .finally(() => setBusy(false));
+  };
+
   if (state.status === 'loading') {
     return <section className="tp-panel">Loading workflows...</section>;
   }
@@ -174,6 +196,11 @@ export function WorkflowsPage() {
           <button type="button" onClick={publish} disabled={busy || !canSubmit(selectedTaskIds, targetId)}>
             Publish workflow
           </button>
+          {publishedVersion ? (
+            <button type="button" onClick={launch} disabled={busy}>
+              Launch version {publishedVersion.version_no}
+            </button>
+          ) : null}
         </div>
       </section>
 
@@ -222,6 +249,14 @@ export function WorkflowsPage() {
               setPreview(null);
               setPublishedVersion(null);
             }}
+          />
+
+          <label htmlFor="tp-workflow-seed">Run seed</label>
+          <input
+            id="tp-workflow-seed"
+            type="number"
+            value={runSeed}
+            onChange={(event) => setRunSeed(Number(event.target.value) || 0)}
           />
         </div>
       </section>

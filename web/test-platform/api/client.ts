@@ -4,6 +4,7 @@ import type {
   CollectionResponse,
   Project,
   ReadinessResponse,
+  RunDetail,
   RunSummary,
   TaskCatalogItem,
   TaskCatalogResponse,
@@ -82,6 +83,27 @@ export function archiveProject(projectId: string): Promise<Project> {
 export function listRuns(projectId?: string): Promise<CollectionResponse<RunSummary>> {
   const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
   return apiFetch<CollectionResponse<RunSummary>>(`/runs${query}`);
+}
+
+export function createRun(input: {
+  workflowVersionId: string;
+  name?: string;
+  seed: number;
+  idempotencyKey: string;
+}): Promise<RunDetail> {
+  return apiFetch<RunDetail>('/runs', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': input.idempotencyKey },
+    body: JSON.stringify({
+      workflow_version_id: input.workflowVersionId,
+      name: input.name,
+      overrides: { seed: input.seed },
+    }),
+  });
+}
+
+export function getRun(runId: string): Promise<RunDetail> {
+  return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
 }
 
 export function listTargets(projectId: string): Promise<CollectionResponse<Target>> {

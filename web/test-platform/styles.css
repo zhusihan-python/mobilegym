@@ -161,6 +161,7 @@ select {
   background: #ffffff;
   border: 1px solid #d8e0e8;
   border-radius: 8px;
+  min-width: 0;
   padding: 20px;
 }
 
@@ -272,6 +273,73 @@ select {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.tp-run-overview,
+.tp-run-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.tp-run-heading {
+  align-items: flex-start;
+  flex-direction: row;
+  justify-content: space-between;
+}
+
+.tp-run-heading h2 {
+  margin-top: 8px;
+}
+
+.tp-run-heading p {
+  color: #526273;
+  margin: 0;
+}
+
+.tp-run-heading a {
+  color: #285b85;
+}
+
+.tp-run-state {
+  background: #fff8e6;
+  border: 1px solid #f6d47a;
+  border-radius: 999px;
+  color: #7a4b00;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 7px 12px;
+}
+
+.tp-run-facts {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.tp-run-facts div {
+  background: #f7fafc;
+  border: 1px solid #e1e7ee;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.tp-run-facts dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+
+.tp-run-facts dd {
+  margin: 0;
+}
+
+.tp-mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tp-workflow-editor {
@@ -436,12 +504,14 @@ select {
 
 table {
   border-collapse: collapse;
+  table-layout: fixed;
   width: 100%;
 }
 
 th,
 td {
   border-bottom: 1px solid #e1e7ee;
+  overflow-wrap: anywhere;
   padding: 10px;
   text-align: left;
 }
@@ -477,6 +547,14 @@ td {
   }
 
   .tp-target-details {
+    grid-template-columns: 1fr;
+  }
+
+  .tp-run-heading {
+    flex-direction: column;
+  }
+
+  .tp-run-facts {
     grid-template-columns: 1fr;
   }
 }

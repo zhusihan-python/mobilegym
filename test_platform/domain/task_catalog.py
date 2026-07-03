@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import hashlib
 import json
+from pathlib import Path
+import subprocess
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -43,11 +46,12 @@ class TaskCatalogSnapshot(BaseModel):
 def build_task_catalog_snapshot(
     *,
     filters: TaskCatalogFilter | None = None,
-    repository_revision: str = "unversioned",
+    repository_revision: str | None = None,
     registry: TaskRegistry | None = None,
 ) -> TaskCatalogSnapshot:
     active_filters = filters or TaskCatalogFilter()
     task_registry = registry or TaskRegistry()
+    source_revision = repository_revision or _detect_repository_revision()
     suite_names = active_filters.suites or task_registry.list_suites(include_generated=False)
 
     items: list[TaskCatalogItem] = []
@@ -61,12 +65,12 @@ def build_task_catalog_snapshot(
     items.sort(key=lambda item: item.task_base_id)
     digest = _catalog_digest(
         schema_version=1,
-        repository_revision=repository_revision,
+        repository_revision=source_revision,
         items=items,
     )
     return TaskCatalogSnapshot(
         schema_version=1,
-        repository_revision=repository_revision,
+        repository_revision=source_revision,
         digest=digest,
         items=items,
     )
@@ -143,3 +147,21 @@ def _json_safe(value: Any) -> Any:
         name = getattr(value, "__qualname__", getattr(value, "__name__", repr(value)))
         return f"{module}.{name}" if module else name
     return repr(value)
+
+
+@lru_cache(maxsize=1)
+def _detect_repository_revision() -> str:
+    repository_root = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unversioned"
+    revision = result.stdout.strip()
+    return revision if result.returncode == 0 and revision else "unversioned"
