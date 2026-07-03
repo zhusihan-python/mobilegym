@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node",
+      "react",
+      "react-dom",
+      "vite/client",
+      "vitest"
+    ]
+  },
+  "include": [
+    "test-platform.html",
+    "web/test-platform/**/*.ts",
+    "web/test-platform/**/*.tsx",
+    "tests/testPlatform*.test.ts",
+    "tests/testPlatform*.test.tsx",
+    "vitest.platform.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

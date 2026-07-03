@@ -12,7 +12,11 @@
     "test:watch": "vitest",
     "lint": "eslint os/ apps/ && node scripts/lint_store_getters.mjs",
     "build:web-css": "tailwindcss -i web/tailwind.input.css -o web/tailwind.css --minify",
-    "watch:web-css": "tailwindcss -i web/tailwind.input.css -o web/tailwind.css --watch"
+    "watch:web-css": "tailwindcss -i web/tailwind.input.css -o web/tailwind.css --watch",
+    "platform:api": "python -m test_platform.main",
+    "platform:web": "vite --host 127.0.0.1",
+    "platform:test": "vitest run --config vitest.platform.config.ts",
+    "platform:typecheck": "tsc --noEmit -p tsconfig.test-platform.json"
   },
   "dependencies": {
     "@googlemaps/js-api-loader": "^2.0.2",
@@ -34,9 +38,12 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.13",
     "@types/react-dom": "^19.2.3",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^5.0.0",
     "eslint": "^10.0.2",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^26.1.0",
     "puppeteer": "^24.34.0",
     "tailwindcss": "^4.2.0",
     "typescript": "~5.8.2",

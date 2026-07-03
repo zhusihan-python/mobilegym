@@ -109,6 +109,39 @@ function listPublicFilesPlugin() {
   };
 }
 
+function testPlatformFallbackPlugin() {
+  const htmlPath = path.resolve(__dirname, 'test-platform.html');
+
+  const shouldServeTestPlatform = (req: any) => {
+    if (req.method !== 'GET') return false;
+    const url = req.url || '';
+    const acceptsHtml = String(req.headers?.accept || '').includes('text/html');
+    return acceptsHtml && (url === '/test-platform' || url.startsWith('/test-platform/'));
+  };
+
+  return {
+    name: 'test-platform-fallback',
+    configureServer(server: any) {
+      server.middlewares.use(async (req: any, res: any, next: any) => {
+        if (!shouldServeTestPlatform(req)) {
+          next();
+          return;
+        }
+
+        try {
+          const source = fs.readFileSync(htmlPath, 'utf-8');
+          const html = await server.transformIndexHtml(req.url, source);
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'text/html');
+          res.end(html);
+        } catch (error) {
+          next(error);
+        }
+      });
+    },
+  };
+}
+
 /**
  * Vite plugin for file system scanning with caching
  * Provides /api/sdcard endpoint - scans only when files change
@@ -1430,6 +1463,16 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       host: '0.0.0.0',
       allowedHosts: true as const,
+      proxy: {
+        '/api/platform/v1': {
+          target: 'http://127.0.0.1:8787',
+          changeOrigin: true,
+        },
+        '/health': {
+          target: 'http://127.0.0.1:8787',
+          changeOrigin: true,
+        },
+      },
       watch: {
         ignored: [
           '**/runs/**',
@@ -1442,6 +1485,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       tailwindCliPlugin(),
       react(),
+      testPlatformFallbackPlugin(),
       accessLogPlugin(),
       serveAppAssetsPlugin(),
       serveCdnPlugin(),
