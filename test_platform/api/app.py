@@ -2,11 +2,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from test_platform.adapters.targets import TargetAdapterRegistry
 from test_platform.api.errors import install_error_handlers
 from test_platform.api.middleware import install_request_id_middleware
 from test_platform.api.routes.health import router as health_router
 from test_platform.api.routes.projects import router as projects_router
 from test_platform.api.routes.runs import router as runs_router
+from test_platform.api.routes.targets import router as targets_router
 from test_platform.config import PlatformSettings
 from test_platform.persistence.database import Database
 
@@ -19,12 +21,13 @@ def create_app(
     supervisor: object | None = None,
 ) -> FastAPI:
     platform_database = database or Database(settings)
+    platform_adapter_registry = adapter_registry or TargetAdapterRegistry()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.database = platform_database
-        app.state.adapter_registry = adapter_registry
+        app.state.adapter_registry = platform_adapter_registry
         app.state.supervisor = supervisor
         platform_database.initialize()
         try:
@@ -35,7 +38,7 @@ def create_app(
     app = FastAPI(title="MobileGym Test Platform", lifespan=lifespan)
     app.state.settings = settings
     app.state.database = platform_database
-    app.state.adapter_registry = adapter_registry
+    app.state.adapter_registry = platform_adapter_registry
     app.state.supervisor = supervisor
 
     install_request_id_middleware(app)
@@ -43,4 +46,5 @@ def create_app(
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(runs_router)
+    app.include_router(targets_router)
     return app

@@ -30,7 +30,14 @@ type RuntimeSnapshot = {
   locale: string;
   time: Record<string, unknown>;
   location: Record<string, unknown>;
-  installedApps: Array<{ id: string; name: string; type: string }>;
+  installedApps: Array<{
+    id: string;
+    name: string;
+    packageName: string;
+    type: string;
+    version: string;
+    versionCode: number;
+  }>;
   clipboard: unknown;
   notifications: OSNotificationSnapshot;
   shade: SystemShadeSnapshot;

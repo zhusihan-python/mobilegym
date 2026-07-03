@@ -47,6 +47,7 @@ import {
   applyOsStatePatch,
   buildSimState,
 } from './simState';
+import { buildInstalledAppsState, buildSimMetadata } from './simMetadata';
 import { runAppDataLoaderModule } from './appDataLoaderReady';
 
 /** 预加载所有 App 的 state.ts（eager: 打进主 bundle，页面加载即执行 createAppStore 副作用） */
@@ -725,6 +726,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }
         }
       },
+      getMetadata: () => buildSimMetadata(PackageManagerService.getInstalledPackages()),
       getState: () => {
         const latestState = TaskManager.getState();
         const timeConfig = getTimeConfig();
@@ -747,11 +749,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           } : null,
         };
 
-        const installedApps = PackageManagerService.getInstalledPackages().map((app) => ({
-          id: app.id,
-          name: osT(app.displayName),
-          type: app.type,
-        }));
+        const installedApps = buildInstalledAppsState(
+          PackageManagerService.getInstalledPackages(),
+          osT,
+        );
 
         const clipboardState = ClipboardService.getState();
         const clipboard = clipboardState.current ? {

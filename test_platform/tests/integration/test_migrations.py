@@ -31,12 +31,13 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
     finally:
         database.close()
 
-    assert {"schema_migrations", "projects", "runs"} <= _table_names(
+    assert {"schema_migrations", "projects", "runs", "targets", "target_revisions"} <= _table_names(
         settings.database_path
     )
     assert _migration_rows(settings.database_path) == [
         (1, "0001_initial.sql"),
         (2, "0002_project_workspace.sql"),
+        (3, "0003_targets.sql"),
     ]
 
 
@@ -56,4 +57,5 @@ def test_database_initialization_is_idempotent(tmp_path):
     assert _migration_rows(settings.database_path) == [
         (1, "0001_initial.sql"),
         (2, "0002_project_workspace.sql"),
+        (3, "0003_targets.sql"),
     ]

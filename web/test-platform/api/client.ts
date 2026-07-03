@@ -5,6 +5,8 @@ import type {
   Project,
   ReadinessResponse,
   RunSummary,
+  Target,
+  TargetHealthResponse,
 } from './types';
 
 const API_PREFIX = '/api/platform/v1';
@@ -74,6 +76,54 @@ export function archiveProject(projectId: string): Promise<Project> {
 export function listRuns(projectId?: string): Promise<CollectionResponse<RunSummary>> {
   const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
   return apiFetch<CollectionResponse<RunSummary>>(`/runs${query}`);
+}
+
+export function listTargets(projectId: string): Promise<CollectionResponse<Target>> {
+  return apiFetch<CollectionResponse<Target>>(
+    `/targets?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+export function createSimulatorTarget(input: {
+  projectId: string;
+  name: string;
+  envUrl: string;
+  deviceProfile: {
+    name: string;
+    viewportWidth: number;
+    viewportHeight: number;
+    physicalWidth: number;
+    physicalHeight: number;
+    deviceScaleFactor: number;
+  };
+}): Promise<Target> {
+  return apiFetch<Target>('/targets', {
+    method: 'POST',
+    body: JSON.stringify({
+      project_id: input.projectId,
+      name: input.name,
+      config: {
+        kind: 'simulator',
+        connection: { env_url: input.envUrl },
+        device_profile: {
+          name: input.deviceProfile.name,
+          viewport_width: input.deviceProfile.viewportWidth,
+          viewport_height: input.deviceProfile.viewportHeight,
+          physical_width: input.deviceProfile.physicalWidth,
+          physical_height: input.deviceProfile.physicalHeight,
+          device_scale_factor: input.deviceProfile.deviceScaleFactor,
+        },
+        runtime: {},
+        labels: {},
+      },
+    }),
+  });
+}
+
+export function checkTargetHealth(targetId: string): Promise<TargetHealthResponse> {
+  return apiFetch<TargetHealthResponse>(`/targets/${encodeURIComponent(targetId)}/health`, {
+    method: 'POST',
+  });
 }
 
 async function readResponse<T>(response: Response): Promise<T> {

@@ -151,6 +151,7 @@ interface SimApi {
   /** 定向预加载指定 app 的 state 模块 */
   preloadAppStores(appIds: string[]): Promise<void>;
   waitForData(appIds?: string[]): Promise<void>;
+  getMetadata(): import('../simMetadata').SimMetadata;
   getState(): { os: Record<string, unknown>; apps: Record<string, unknown> };
   setState(
     patch: { apps?: Record<string, unknown>; os?: Record<string, unknown> },

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { archiveProject, createProject, fetchReadiness, listProjects } from '../api/client';
 import type { Project, ReadinessResponse } from '../api/types';
@@ -19,6 +19,7 @@ type ProjectsState =
   | { status: 'error'; message: string };
 
 export function PlatformShell() {
+  const location = useLocation();
   const [readiness, setReadiness] = useState<ReadinessState>({ status: 'loading' });
   const [projectsState, setProjectsState] = useState<ProjectsState>({ status: 'idle' });
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -144,6 +145,7 @@ export function PlatformShell() {
         ) : null}
         <nav className="tp-nav" aria-label="Test Platform">
           <NavLink to="/runs">Runs</NavLink>
+          <NavLink to="/targets">Targets</NavLink>
         </nav>
       </aside>
 
@@ -151,7 +153,7 @@ export function PlatformShell() {
         <header className="tp-topbar">
           <div>
             <div className="tp-kicker">Local console</div>
-            <h1>Runs</h1>
+            <h1>{location.pathname.startsWith('/targets') ? 'Targets' : 'Runs'}</h1>
           </div>
           <ReadinessIndicator readiness={readiness} />
         </header>
