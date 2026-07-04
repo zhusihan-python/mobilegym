@@ -17,6 +17,15 @@ All docs here are in English. Pick a track:
 | 🔌 Look up the browser-console debug API | [`api/runtime-api.md`](api/runtime-api.md) |
 | 🤝 Contribute code or report a bug | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
 
+## Test platform planning
+
+| Topic | Document |
+|---|---|
+| Simulator-first workflow, comparison, monitoring, and reporting product requirements | [`test-platform/PRD.md`](test-platform/PRD.md) |
+| Control service, runner integration, persistence, API, event, and frontend architecture | [`test-platform/TECHNICAL_ARCHITECTURE.md`](test-platform/TECHNICAL_ARCHITECTURE.md) |
+| Code-level contracts, schemas, algorithms, transaction boundaries, and test seams | [`test-platform/IMPLEMENTATION_DESIGN.md`](test-platform/IMPLEMENTATION_DESIGN.md) |
+| TDD-driven, independently verifiable vertical-slice development plan | [`test-platform/DEVELOPMENT_PLAN.md`](test-platform/DEVELOPMENT_PLAN.md) |
+
 ## Platform deep dive
 
 For implementation-level rules and contracts — when you're extending the simulator itself, debugging unusual behavior, or building a new app whose needs aren't covered by the tutorial. See [`platform/README.md`](platform/README.md) for the orientation.
