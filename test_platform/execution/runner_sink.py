@@ -56,6 +56,12 @@ class PlatformRunnerEventSink:
             # "episode.step_recorded", "episode.completed", "episode.cancelled".
             payload = dict(event.payload)
             payload.setdefault("task_id", event.task_id) if event.task_id else None
+            # Write episode_key back into the payload so live consumers (the
+            # frontend reducer) that only read payload.episode_key can attribute
+            # the event to a planned episode. The top-level ExecutionEvent field
+            # drives episode_id resolution below but is not in the API DTO.
+            if event.episode_key:
+                payload.setdefault("episode_key", event.episode_key)
             # Resolve the persisted episode_id from the runner's episode_key when
             # both a key and a resolver are available. The resolver is allowed to
             # return None (unknown key); the event is still persisted with a null
