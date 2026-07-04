@@ -261,3 +261,40 @@ def test_runner_sink_without_resolver_leaves_episode_id_null(tmp_path):
         assert row["episode_id"] is None
     finally:
         database.close()
+
+
+def test_sink_writes_episode_key_back_into_payload(tmp_path):
+    """P1: when the runner sets ExecutionEvent.episode_key (top-level field) but
+    does NOT put it in payload, the sink must write it back into the payload so
+    the frontend reducer (which reads only payload.episode_key) can attribute
+    the event. This is the real runner path."""
+    import json as _json
+
+    database = _database(tmp_path)
+    try:
+        run_id = _seed_run(database)
+        writer = EventWriter(database)
+        sink = PlatformRunnerEventSink(writer, run_id=run_id, worker_id="W0")
+
+        # Real runner path: episode_key on the ExecutionEvent top-level field,
+        # payload carries outcome but NOT episode_key.
+        sink.emit(ExecutionEvent(
+            type="episode.completed",
+            timestamp=_utc(),
+            phase="execute",
+            worker_id="W0",
+            task_id="fake.Task",
+            trial_id=0,
+            episode_key="fake.Task|i0|s1|r1|t0",
+            payload={"outcome": "PASS", "steps": 3},
+        ))
+
+        row = database.connection.execute(
+            "SELECT payload_json FROM events WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        payload = _json.loads(row["payload_json"])
+        # episode_key is present in the persisted payload (the reducer's source).
+        assert payload["episode_key"] == "fake.Task|i0|s1|r1|t0"
+        assert payload["outcome"] == "PASS"
+    finally:
+        database.close()

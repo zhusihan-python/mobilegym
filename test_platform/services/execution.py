@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from bench_env.runner.cancellation import CancellationToken, RunCancelled
-from bench_env.runner.events import EventSink, NullEventSink
+from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
 from bench_env.runner.base import Controller
 from bench_env.metrics import result_is_error, result_is_success
 from bench_env.config import RunnerConfig
@@ -985,6 +985,7 @@ class ParallelRunExecutor(_RunExecutorBase):
             work_items=work_items,
             results=results,
             cancelled=token.cancelled,
+            event_sink=events,
         )
 
         # (10) If cancelled, mark the run cancelled and re-raise so the
@@ -1002,6 +1003,7 @@ class ParallelRunExecutor(_RunExecutorBase):
         work_items: list[PreparedWorkItem],
         results: list[Any],
         cancelled: bool,
+        event_sink: Any = None,
     ) -> None:
         """Reconcile runner results against expected episode_keys and ingest.
 
@@ -1078,6 +1080,28 @@ class ParallelRunExecutor(_RunExecutorBase):
                     cancelled=cancelled,
                     error_code_override="WORKER_CRASH",
                 )
+                # P2: also emit a live episode.error so the UI's completed-count
+                # (deduped by episode_key from terminal episode events) reflects
+                # this missing episode. Without it the UI would show one fewer
+                # completed episode than the DB holds after a worker crash.
+                if event_sink is not None:
+                    try:
+                        event_sink.emit(ExecutionEvent(
+                            type="episode.error",
+                            timestamp="",
+                            phase="execute",
+                            task_id=getattr(work_item.task, "id", None),
+                            trial_id=work_item.trial_id,
+                            episode_key=key,
+                            payload={
+                                "outcome": "ERROR",
+                                "error_code": "WORKER_CRASH",
+                                "steps": 0,
+                                "reason": "missing_result",
+                            },
+                        ))
+                    except Exception:  # noqa: BLE001 — event failure must not break ingestion
+                        pass
 
         # Finalize the lane/run exactly once after ALL episodes are ingested.
         ingestor.finalize_lane_run(

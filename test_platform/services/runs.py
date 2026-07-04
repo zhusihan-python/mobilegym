@@ -479,6 +479,18 @@ class RunSupervisor:
                     """,
                     (now, run_id),
                 )
+                # P2: lane_attempts must also reach 'failed', mirroring the
+                # cancel path — otherwise a failed run leaves lanes stuck in
+                # 'running', an inconsistent terminal state.
+                connection.execute(
+                    """
+                    UPDATE lane_attempts
+                    SET state = 'failed', ended_at = COALESCE(ended_at, ?)
+                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
+                      AND state IN ('queued','preparing','running','evaluating','reporting')
+                    """,
+                    (now, run_id),
+                )
                 connection.commit()
             except sqlite3.Error:
                 try:
