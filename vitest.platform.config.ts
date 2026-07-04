@@ -10,6 +10,12 @@ export default defineConfig({
   test: {
     include: ['tests/testPlatform*.test.ts', 'tests/testPlatform*.test.tsx'],
     environment: 'jsdom',
+    environmentOptions: {
+      jsdom: {
+        url: 'http://localhost/',
+      },
+    },
+    setupFiles: ['./web/test-platform/test/storage-polyfill.ts'],
     globals: false,
   },
 });

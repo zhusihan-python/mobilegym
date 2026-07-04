@@ -100,6 +100,28 @@ export type RunDetail = RunSummary & {
   }>;
 };
 
+export type RunEvent = {
+  id: string;
+  run_id: string;
+  sequence: number;
+  type: string;
+  occurred_at: string;
+  payload: Record<string, unknown>;
+  payload_version: number;
+  run_attempt_id: string | null;
+  lane_id: string | null;
+  lane_attempt_id: string | null;
+  episode_id: string | null;
+  episode_attempt_id: string | null;
+  worker_id: string | null;
+};
+
+export type CancelRunResponse = {
+  run_id: string;
+  cancel_requested: boolean;
+  state: string;
+};
+
 export type TargetRevision = {
   id: string;
   metadata_hash: string;

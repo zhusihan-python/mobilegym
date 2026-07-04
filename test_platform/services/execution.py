@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from bench_env.runner.cancellation import CancellationToken
+from bench_env.runner.cancellation import CancellationToken, RunCancelled
 from bench_env.runner.events import EventSink, NullEventSink
 from bench_env.runner.base import Controller
 from bench_env.metrics import result_is_error, result_is_success
@@ -95,8 +95,9 @@ class SingleLaneMaterializer:
         events: EventSink | None = None,
     ) -> list[PreparedTaskInstance]:
         token = token or CancellationToken()
-        events = events or NullEventSink()
-        del events
+        # events is accepted for future lifecycle emission; VS-06 does not yet
+        # emit materialize.* events, but the sink is plumbed so VS-07 can.
+        _ = events or NullEventSink()
 
         plan = self._load_plan(run_id)
         lane = self._source_lane(plan)
@@ -249,36 +250,37 @@ class SingleLaneMaterializer:
         prepared_id = new_id()
         now = _utc_timestamp()
         payload_json = canonical_json(prepared.to_payload())
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            connection.execute(
-                """
-                INSERT INTO prepared_tasks (
-                  id, run_id, materialization_key, payload_json, payload_hash, created_at
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO prepared_tasks (
+                      id, run_id, materialization_key, payload_json, payload_hash, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        prepared_id,
+                        run_id,
+                        prepared.materialization_key,
+                        payload_json,
+                        prepared.fingerprint,
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    prepared_id,
-                    run_id,
-                    prepared.materialization_key,
-                    payload_json,
-                    prepared.fingerprint,
-                    now,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE episodes
-                SET prepared_task_id = ?
-                WHERE run_id = ? AND materialization_key = ?
-                """,
-                (prepared_id, run_id, prepared.materialization_key),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
+                connection.execute(
+                    """
+                    UPDATE episodes
+                    SET prepared_task_id = ?
+                    WHERE run_id = ? AND materialization_key = ?
+                    """,
+                    (prepared_id, run_id, prepared.materialization_key),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
 
 class ResultIngestor:
@@ -331,77 +333,80 @@ class ResultIngestor:
         normalized = _result_to_dict(result)
         outcome = _result_outcome(result, cancelled=cancelled)
         error_code = _error_code_for_outcome(outcome)
+        terminal_state = "cancelled" if cancelled else "completed"
         now = _utc_timestamp()
-        attempt_no = self._next_attempt_no(str(episode_row["id"]), lane_attempt_id)
         attempt_id = new_id()
 
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            connection.execute(
-                """
-                INSERT INTO episode_attempts (
-                  id, episode_id, lane_attempt_id, attempt_no, state,
-                  outcome, error_code, result_json, artifact_root,
-                  started_at, ended_at, created_at
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            attempt_no = self._next_attempt_no(str(episode_row["id"]), lane_attempt_id)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO episode_attempts (
+                      id, episode_id, lane_attempt_id, attempt_no, state,
+                      outcome, error_code, result_json, artifact_root,
+                      started_at, ended_at, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        attempt_id,
+                        episode_row["id"],
+                        lane_attempt_id,
+                        attempt_no,
+                        terminal_state,
+                        outcome,
+                        error_code,
+                        canonical_json(normalized),
+                        artifact_root,
+                        now,
+                        now,
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    attempt_id,
-                    episode_row["id"],
-                    lane_attempt_id,
-                    attempt_no,
-                    outcome,
-                    error_code,
-                    canonical_json(normalized),
-                    artifact_root,
-                    now,
-                    now,
-                    now,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE lane_attempts
-                SET state = 'completed',
-                    started_at = COALESCE(started_at, ?),
-                    ended_at = ?
-                WHERE id = ?
-                """,
-                (now, now, lane_attempt_id),
-            )
-            connection.execute(
-                """
-                UPDATE run_attempts
-                SET state = 'completed',
-                    started_at = COALESCE(started_at, ?),
-                    ended_at = ?
-                WHERE id = ?
-                """,
-                (now, now, lane_row["run_attempt_id"]),
-            )
-            connection.execute(
-                """
-                UPDATE runs
-                SET state = 'completed',
-                    started_at = COALESCE(started_at, ?),
-                    ended_at = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (now, now, now, run_id),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
+                connection.execute(
+                    """
+                    UPDATE lane_attempts
+                    SET state = ?,
+                        started_at = COALESCE(started_at, ?),
+                        ended_at = ?
+                    WHERE id = ?
+                    """,
+                    (terminal_state, now, now, lane_attempt_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE run_attempts
+                    SET state = ?,
+                        started_at = COALESCE(started_at, ?),
+                        ended_at = ?
+                    WHERE id = ?
+                    """,
+                    (terminal_state, now, now, lane_row["run_attempt_id"]),
+                )
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = ?,
+                        started_at = COALESCE(started_at, ?),
+                        ended_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (terminal_state, now, now, now, run_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
         return {
             "id": attempt_id,
             "episode_id": episode_row["id"],
             "lane_attempt_id": lane_attempt_id,
             "attempt_no": attempt_no,
-            "state": "completed",
+            "state": terminal_state,
             "outcome": outcome,
             "error_code": error_code,
             "artifact_root": artifact_root,
@@ -417,6 +422,49 @@ class ResultIngestor:
             (episode_id, lane_attempt_id),
         ).fetchone()
         return int(row[0])
+
+    def mark_run_cancelled(self, run_id: str) -> None:
+        """Transition run/attempt/lane states to 'cancelled'.
+
+        Called by the executor when the run was cancelled (token set) and the
+        normal ingest path did not complete. Idempotent: rows already in a
+        terminal state are left untouched.
+        """
+        now = _utc_timestamp()
+        connection = self.database.connection
+        cancellable = "('queued','preparing','running','evaluating','reporting')"
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    f"""
+                    UPDATE runs
+                    SET state = 'cancelled', ended_at = COALESCE(ended_at, ?), updated_at = ?
+                    WHERE id = ? AND state IN {cancellable}
+                    """,
+                    (now, now, run_id),
+                )
+                connection.execute(
+                    f"""
+                    UPDATE run_attempts
+                    SET state = 'cancelled', ended_at = COALESCE(ended_at, ?)
+                    WHERE run_id = ? AND state IN {cancellable}
+                    """,
+                    (now, run_id),
+                )
+                connection.execute(
+                    f"""
+                    UPDATE lane_attempts
+                    SET state = 'cancelled', ended_at = COALESCE(ended_at, ?)
+                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
+                      AND state IN {cancellable}
+                    """,
+                    (now, run_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
 
 class SerialRunExecutor:
@@ -441,18 +489,39 @@ class SerialRunExecutor:
         *,
         token: CancellationToken | None = None,
         events: EventSink | None = None,
+        run_event_writer: Any = None,
     ) -> RunDetail:
         token = token or CancellationToken()
         events = events or NullEventSink()
-        del events
+        writer = run_event_writer
 
+        # Honor a cancel that landed while the run was queued (before submit()
+        # registered its token). The supervisor sets cancel_requested_at
+        # atomically; if it is already set, the run is cancelled before any
+        # execution side effect — including before run.started is emitted, so a
+        # pre-execution cancel produces a clean cancelled stream without a
+        # misleading "started" event.
+        if self._cancel_requested(run_id):
+            token.cancel()
+            raise RunCancelled()
+
+        # Cancel check passed: mark running and emit run.started here (not in
+        # the supervisor) so the event never precedes a queued cancellation.
         self._mark_run_running(run_id)
+        if writer is not None:
+            try:
+                writer.emit(
+                    run_id, "run.started", {"state": "running"},
+                    entity_type="run", entity_id=run_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         prepared = await SingleLaneMaterializer(
             self.database,
             self.settings,
             task_factory=self.task_factory,
             env_factory=self.env_factory,
-        ).materialize_run(run_id, token=token)
+        ).materialize_run(run_id, token=token, events=events)
         if len(prepared) != 1:
             raise RunDomainError(
                 "UNSUPPORTED_RUN_PLAN",
@@ -507,17 +576,35 @@ class SerialRunExecutor:
             repeat_n=config.repeat_n,
         )
 
-        results = await SerialRunner(
-            env,
-            agent,
-            [item.task for item in work_items],
-            config,
-            recorder=recorder,
-            prepared_work_items=work_items,
-            cancellation_token=token,
-        ).run()
+        try:
+            results = await SerialRunner(
+                env,
+                agent,
+                [item.task for item in work_items],
+                config,
+                recorder=recorder,
+                prepared_work_items=work_items,
+                event_sink=events,
+                cancellation_token=token,
+            ).run()
+        except RunCancelled:
+            token.cancel()
+            results = []
 
         ingestor = ResultIngestor(self.database)
+        # P2.2: cancellation is driven solely by the token, NOT by an empty
+        # results list — an exception that left results empty before the first
+        # episode would otherwise be misclassified as a cancellation.
+        # If a result itself is CANCELLED (the runner caught RunCancelled and
+        # returned a CANCELLED ExecutionResult rather than re-raising), propagate
+        # that as a run-level cancellation.
+        any_result_cancelled = any(
+            getattr(getattr(r, "execution", None), "stop_reason", None) == "CANCELLED"
+            for r in results
+        )
+        if any_result_cancelled:
+            token.cancel()
+        cancelled = token.cancelled
         for work_item, result in zip(work_items, results, strict=True):
             artifact_root = _episode_artifact_root(
                 lane_attempt["artifact_root"],
@@ -530,8 +617,18 @@ class SerialRunExecutor:
                 episode_key=work_item.episode_key,
                 result=result,
                 artifact_root=artifact_root,
+                cancelled=token.cancelled,
             )
 
+        if cancelled:
+            ingestor.mark_run_cancelled(run_id)
+            # Re-raise so the supervisor emits run.cancelled (not run.completed).
+            # The run/lane state is already terminal here; the supervisor's
+            # _mark_run_cancelled is idempotent.
+            raise RunCancelled()
+        # NOTE: run.* terminal events (run.completed / run.cancelled) are owned
+        # by the supervisor's _execute wrapper to avoid duplicate emits. The
+        # executor only raises RunCancelled; the supervisor finalizes + emits.
         return RunRepository(self.database).get(run_id)
 
     def _load_plan(self, run_id: str) -> RunPlan:
@@ -559,43 +656,51 @@ class SerialRunExecutor:
             raise RunDomainError("LANE_ATTEMPT_NOT_FOUND", "Lane attempt was not found.", status_code=500)
         return {"id": str(row["id"]), "artifact_root": str(row["artifact_root"])}
 
+    def _cancel_requested(self, run_id: str) -> bool:
+        row = self.database.connection.execute(
+            "SELECT cancel_requested_at FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        return row is not None and row["cancel_requested_at"] is not None
+
     def _mark_run_running(self, run_id: str) -> None:
         now = _utc_timestamp()
         connection = self.database.connection
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            connection.execute(
-                """
-                UPDATE runs
-                SET state = 'running',
-                    started_at = COALESCE(started_at, ?),
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (now, now, run_id),
-            )
-            connection.execute(
-                """
-                UPDATE run_attempts
-                SET state = 'running',
-                    started_at = COALESCE(started_at, ?)
-                WHERE run_id = ?
-                """,
-                (now, run_id),
-            )
-            connection.execute(
-                """
-                UPDATE lane_attempts
-                SET state = 'running',
-                    started_at = COALESCE(started_at, ?)
-                WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
-                """,
-                (now, run_id),
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = 'running',
+                        started_at = COALESCE(started_at, ?),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE run_attempts
+                    SET state = 'running',
+                        started_at = COALESCE(started_at, ?)
+                    WHERE run_id = ?
+                    """,
+                    (now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE lane_attempts
+                    SET state = 'running',
+                        started_at = COALESCE(started_at, ?)
+                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
+                    """,
+                    (now, run_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
 
 async def _maybe_await(value: Any) -> Any:

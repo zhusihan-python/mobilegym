@@ -1,10 +1,12 @@
 import type {
   ApiErrorBody,
   ApiErrorDetail,
+  CancelRunResponse,
   CollectionResponse,
   Project,
   ReadinessResponse,
   RunDetail,
+  RunEvent,
   RunSummary,
   TaskCatalogItem,
   TaskCatalogResponse,
@@ -104,6 +106,87 @@ export function createRun(input: {
 
 export function getRun(runId: string): Promise<RunDetail> {
   return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+export function cancelRun(runId: string, idempotencyKey?: string): Promise<CancelRunResponse> {
+  const headers: Record<string, string> = {};
+  if (idempotencyKey) {
+    headers['Idempotency-Key'] = idempotencyKey;
+  }
+  return apiFetch<CancelRunResponse>(`/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+    headers,
+  });
+}
+
+/**
+ * Subscribe to a run's live event stream (SSE). `onEvent` is called for each
+ * committed event; `onReset` is called when the server signals
+ * `stream.reset_required` (slow subscriber), at which point the caller must
+ * refetch the run snapshot via REST and reconnect.
+ *
+ * Returns a disposer that closes the EventSource. Reconnect with exponential
+ * backoff is handled by the browser's native EventSource implementation; the
+ * `after` query seeds the Last-Event-ID-equivalent cursor on reconnect.
+ */
+export function streamRunEvents(
+  runId: string,
+  onEvent: (event: RunEvent) => void,
+  onReset: () => void,
+  initialAfter = 0,
+): () => void {
+  // EventSource is absent in some test environments (jsdom) and during static
+  // builds without an API proxy. Degrade to a no-op subscription rather than
+  // crashing the run detail page — the snapshot is still fetched via REST.
+  if (typeof EventSource === 'undefined') {
+    return () => undefined;
+  }
+  let after = initialAfter;
+  const path = `/api/platform/v1/runs/${encodeURIComponent(runId)}/events/stream?after=${after}`;
+  const source = new EventSource(path);
+
+  source.onmessage = () => {
+    /* generic messages (heartbeats) are ignored */
+  };
+  source.addEventListener('stream.reset_required', () => {
+    onReset();
+  });
+  source.addEventListener('open', () => {
+    /* connected */
+  });
+  source.onerror = () => {
+    // Native EventSource auto-reconnects. The `after` cursor is fixed at open
+    // time, so on reconnect the server replays events after that sequence.
+  };
+
+  // Dispatch typed events. EventSource exposes named events via addEventListener
+  // for every `event:` line; we route them all through a single handler that
+  // parses the `data` payload and bumps the cursor.
+  const generic = (messageEvent: MessageEvent) => {
+    try {
+      const data = JSON.parse(messageEvent.data) as RunEvent;
+      if (typeof data.sequence === 'number') {
+        after = Math.max(after, data.sequence);
+        onEvent(data);
+      }
+    } catch {
+      /* malformed payload — ignore, the snapshot remains authoritative */
+    }
+  };
+  // The server sends `event: <type>` lines; EventSource dispatches a listener
+  // registered for each type. We register a catch-all by listening to the
+  // default message channel for untyped frames and named types individually.
+  source.addEventListener('run.started', generic as EventListener);
+  source.addEventListener('run.cancel_requested', generic as EventListener);
+  source.addEventListener('run.cancelled', generic as EventListener);
+  source.addEventListener('run.completed', generic as EventListener);
+  source.addEventListener('run.failed', generic as EventListener);
+  source.addEventListener('episode.started', generic as EventListener);
+  source.addEventListener('episode.step_recorded', generic as EventListener);
+  source.addEventListener('episode.completed', generic as EventListener);
+  source.addEventListener('episode.cancelled', generic as EventListener);
+
+  return () => source.close();
 }
 
 export function listTargets(projectId: string): Promise<CollectionResponse<Target>> {

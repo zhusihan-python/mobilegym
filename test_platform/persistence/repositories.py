@@ -3,6 +3,7 @@ import json
 import sqlite3
 from typing import Any
 
+from test_platform.domain.events import PersistedEvent
 from test_platform.domain.ids import new_id
 from test_platform.domain.projects import (
     DuplicateProjectName,
@@ -528,6 +529,45 @@ class RunRepository:
                 "episode_attempts": [dict(attempt) for attempt in episode_attempts],
             }
         )
+
+    def list_events(self, run_id: str, *, after_sequence: int = 0) -> list[PersistedEvent]:
+        """Return committed events for a run with sequence > after_sequence.
+
+        Reads autocommit (no transaction) so SSE backlog queries never block the
+        writer. Returns an empty list for unknown runs.
+        """
+        rows = self.database.connection.execute(
+            """
+            SELECT id, run_id, sequence, type, entity_type, entity_id,
+                   occurred_at, payload_json, payload_version,
+                   run_attempt_id, lane_id, lane_attempt_id,
+                   episode_id, episode_attempt_id, worker_id
+            FROM events
+            WHERE run_id = ? AND sequence > ?
+            ORDER BY sequence
+            """,
+            (run_id, after_sequence),
+        ).fetchall()
+        return [
+            PersistedEvent(
+                id=row["id"],
+                run_id=row["run_id"],
+                sequence=int(row["sequence"]),
+                type=row["type"],
+                occurred_at=row["occurred_at"],
+                payload=json.loads(row["payload_json"]),
+                payload_version=int(row["payload_version"]),
+                run_attempt_id=row["run_attempt_id"],
+                lane_id=row["lane_id"],
+                lane_attempt_id=row["lane_attempt_id"],
+                episode_id=row["episode_id"],
+                episode_attempt_id=row["episode_attempt_id"],
+                worker_id=row["worker_id"],
+                entity_type=row["entity_type"],
+                entity_id=row["entity_id"],
+            )
+            for row in rows
+        ]
 
     def _summary(self, row: sqlite3.Row) -> RunSummary:
         counts = self.database.connection.execute(

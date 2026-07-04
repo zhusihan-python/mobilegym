@@ -17,6 +17,8 @@ from bench_env.logger import get_logger
 from bench_env.env.base import ActionType
 from bench_env.task.judge import JudgeResult, JudgeInput
 from bench_env.config import RunnerConfig
+from bench_env.runner.cancellation import CancellationToken, RunCancelled
+from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
 
 if TYPE_CHECKING:
     from bench_env.task.vlm_judge import VLMJudge
@@ -222,6 +224,8 @@ class Controller:
         env, agent, task, initial_obs, max_steps=20, recorder=None, trial_id: int = 0,
         eval_mode: str = "grounded",
         loop_threshold: int = 0,
+        cancellation_token: CancellationToken | None = None,
+        event_sink: EventSink | None = None,
     ) -> tuple[ExecutionResult, Any, Any, Any, Any]:
         """
         Run the interaction loop after setup is complete.
@@ -235,6 +239,11 @@ class Controller:
             recorder: Optional recorder for saving trajectory
             trial_id: Trial index for pass@k evaluation
             eval_mode: "text" | "grounded"
+            cancellation_token: Optional cooperative cancellation token. When
+                provided, the loop checks it before each agent.act and env.step;
+                if cancelled it returns an ExecutionResult with stop_reason
+                "CANCELLED" (never "ERROR"). Defaults to None for CLI parity.
+            event_sink: Optional event sink for lifecycle/step events.
 
         Returns:
             tuple: (ExecutionResult, init_obs, final_obs, episode, task)
@@ -245,6 +254,22 @@ class Controller:
         episode = None
         obs = initial_obs
         _recent_fps: deque[str] = deque(maxlen=loop_threshold if loop_threshold > 0 else None)
+        sink = event_sink or NullEventSink()
+        worker_id = "serial"
+
+        def _emit(event_type: str, **payload: Any) -> None:
+            try:
+                sink.emit(ExecutionEvent(
+                    type=event_type,
+                    timestamp="",
+                    phase="execute",
+                    worker_id=worker_id,
+                    task_id=task.id,
+                    trial_id=trial_id,
+                    payload=payload,
+                ))
+            except Exception:  # noqa: BLE001 — event failure must not affect the run
+                logger.debug("event sink emit failed", exc_info=True)
 
         try:
             # task.description includes grounded suffix (via task_name set in setup)
@@ -257,10 +282,15 @@ class Controller:
 
             logger.info(f"Instruction: {task.description}")
             agent.reset(task.description)
+            _emit("episode.started", max_steps=max_steps)
             done, truncated, stop_reason = False, False, None
 
             from bench_env.env.stopwatch import set_current_stopwatch
             for step in range(max_steps):
+                # Cooperative cancellation: check before inference. If cancelled
+                # here, agent.act never runs for this step.
+                if cancellation_token is not None:
+                    cancellation_token.raise_if_cancelled()
                 # Sync agent.act runs in a worker thread (asyncio default executor).
                 # We split the wallclock into two pre-measured sub-phases so the
                 # episode profile shows where infer time goes:
@@ -313,7 +343,22 @@ class Controller:
                             truncated, stop_reason = True, "REPETITIVE_LOOP"
                             break
 
+                    # Emit a per-step reference so live consumers (SSE/UI) can
+                    # observe progress without polling. The sink is non-throwing;
+                    # CLI behaviour is unchanged when no sink is supplied.
+                    _emit(
+                        "episode.step_recorded",
+                        step=step + 1,
+                        action_type=str(action.action_type),
+                    )
+
                 try:
+                    # Cooperative cancellation: check after inference, before the
+                    # action is executed against the environment. If the model
+                    # call ran long and the user cancelled mid-inference, the
+                    # returned action is dropped rather than executed.
+                    if cancellation_token is not None:
+                        cancellation_token.raise_if_cancelled()
                     result = await env.step(action)
                 except (ValueError, TypeError) as e:
                     # Model output format error (e.g. invalid point coordinates)
@@ -359,6 +404,22 @@ class Controller:
                 logger.warning(f"Final state re-fetch failed: {type(e).__name__}: {e}")
             return exec_result, initial_obs, obs, episode, task
 
+        except RunCancelled:
+            # Cooperative cancellation is NOT an error: produce a CANCELLED result
+            # preserving the partial trace and episode so recorder teardown
+            # (episode.finish / agent.reset_history) still runs in run_episode.
+            logger.info("Episode cancelled by token at step %d", len(trace))
+            stopwatch_total_s, stopwatch_flat, stopwatch_tree = _snapshot_stopwatch(env.stopwatch)
+            exec_result = ExecutionResult(
+                steps=len(trace), trace=trace, runtime_s=time.time() - start_time,
+                finished=False, truncated=False, stop_reason="CANCELLED",
+                agent_message=env.agent_message, agent_answer=env.agent_answer,
+                stopwatch_total_s=stopwatch_total_s,
+                stopwatch_flat=stopwatch_flat,
+                stopwatch_tree=stopwatch_tree,
+            )
+            _emit("episode.cancelled", steps=len(trace))
+            return exec_result, initial_obs, obs, episode, task
         except Exception as e:
             # Handle runtime errors gracefully
             error_msg = f"{type(e).__name__}: {e}"
@@ -383,7 +444,9 @@ class Controller:
     @staticmethod
     async def run_loop(env, agent, task, max_steps=20, recorder=None, trial_id: int = 0,
                        eval_mode: str = "grounded",
-                       loop_threshold: int = 0) -> tuple[ExecutionResult, Any, Any, Any, Any]:
+                       loop_threshold: int = 0,
+                       cancellation_token: CancellationToken | None = None,
+                       event_sink: EventSink | None = None) -> tuple[ExecutionResult, Any, Any, Any, Any]:
         """
         Run the full interaction loop (setup + run).
 
@@ -393,7 +456,27 @@ class Controller:
             tuple: (ExecutionResult, init_obs, final_obs, episode, task)
         """
         try:
+            if cancellation_token is not None:
+                cancellation_token.raise_if_cancelled()
             initial_obs, _ = await Controller.setup(env, task, eval_mode=eval_mode)
+        except RunCancelled:
+            # Cancelled before/during setup: produce a CANCELLED result with no
+            # episode (setup never completed). teardown still attempted.
+            logger.info("Episode cancelled by token before/during setup")
+            try:
+                task.teardown(env)
+            except Exception as te:
+                logger.debug(f"task.teardown() failed after cancel: {type(te).__name__}: {te}")
+            stopwatch_total_s, stopwatch_flat, stopwatch_tree = _snapshot_stopwatch(env.stopwatch)
+            exec_result = ExecutionResult(
+                steps=0, trace=[], runtime_s=0.0,
+                finished=False, truncated=False, stop_reason="CANCELLED",
+                agent_message=None, agent_answer=None, error=None,
+                stopwatch_total_s=stopwatch_total_s,
+                stopwatch_flat=stopwatch_flat,
+                stopwatch_tree=stopwatch_tree,
+            )
+            return exec_result, None, None, None, task
         except Exception as e:
             # Setup failed - ensure teardown is called
             try:
@@ -414,7 +497,8 @@ class Controller:
             )
             return exec_result, None, None, None, task
         return await Controller.run(env, agent, task, initial_obs, max_steps, recorder, trial_id,
-                                    eval_mode=eval_mode, loop_threshold=loop_threshold)
+                                    eval_mode=eval_mode, loop_threshold=loop_threshold,
+                                    cancellation_token=cancellation_token, event_sink=event_sink)
 
 
 @dataclass
@@ -595,9 +679,11 @@ class BaseRunner(ABC):
         env, agent, task, max_steps=20, recorder=None, trial_id: int = 0,
         evaluator: Optional[Evaluator] = None,
         loop_threshold: int = 0,
+        cancellation_token: CancellationToken | None = None,
+        event_sink: EventSink | None = None,
     ) -> EpisodeResult:
         """运行单个 episode (Facade 方法).
-        
+
         Args:
             env: Environment instance
             agent: Agent instance
@@ -606,23 +692,36 @@ class BaseRunner(ABC):
             recorder: Optional recorder for saving trajectory
             trial_id: Trial index for pass@k evaluation (0-indexed)
             evaluator: Evaluator instance for task evaluation
+            cancellation_token: Optional cooperative cancellation token. Threaded
+                into Controller.run_loop; when cancelled the execution result is
+                marked CANCELLED and the evaluator is skipped.
+            event_sink: Optional event sink for lifecycle/step events.
         """
         # Use default evaluator if not provided
         if evaluator is None:
             evaluator = Evaluator()
-        
+
         # 1. Control Phase (Interaction)
         eval_mode = getattr(evaluator, "eval_mode", "grounded")
         exec_result, init_obs, last_obs, episode, task = await Controller.run_loop(
             env, agent, task, max_steps, recorder, trial_id=trial_id, eval_mode=eval_mode,
             loop_threshold=loop_threshold,
+            cancellation_token=cancellation_token, event_sink=event_sink,
         )
-        
+
         # 2. Evaluation Phase (Judge)
+        # A cancelled episode never reaches a valid functional verdict, so the
+        # evaluator is skipped — judging a half-executed trajectory would
+        # produce a misleading PASS/FAIL rather than a clean cancellation.
         judge = None
         sw = env.stopwatch
         with sw.phase("eval"):
-            if not exec_result.error and init_obs and last_obs:
+            if (
+                exec_result.stop_reason != "CANCELLED"
+                and not exec_result.error
+                and init_obs
+                and last_obs
+            ):
                 try:
                     judge = await evaluator.evaluate(task, init_obs, last_obs, exec_result, episode)
                 except Exception as eval_err:

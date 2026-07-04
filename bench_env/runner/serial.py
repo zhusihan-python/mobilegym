@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from bench_env.runner.base import BaseRunner, EpisodeResult, Evaluator, RunnerConfig
-from bench_env.runner.cancellation import CancellationToken
+from bench_env.runner.cancellation import CancellationToken, RunCancelled
 from bench_env.runner.events import EventSink, NullEventSink
 from bench_env.logger import add_log_file, get_logger
 
@@ -205,6 +205,8 @@ class SerialRunner(BaseRunner):
                             self.env, self.agent, task, work_item.max_steps,
                             self.recorder, trial_id=work_item.trial_id, evaluator=self.evaluator,
                             loop_threshold=self.config.loop_detect,
+                            cancellation_token=self.cancellation_token,
+                            event_sink=self.event_sink,
                         )
                         results.append(result)
 
@@ -219,6 +221,11 @@ class SerialRunner(BaseRunner):
                         pbar.update(1)
                 finally:
                     pbar.close()
+        except RunCancelled:
+            # Cooperative cancellation reached between episodes. The env/teardown
+            # cleanup still runs in the finally block below. We do not log this as
+            # an interruption error.
+            logger.info("Serial run cancelled between episodes")
         except Exception as e:
             logger.exception(f"Run interrupted: {e}")
         finally:

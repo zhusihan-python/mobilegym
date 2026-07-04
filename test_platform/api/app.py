@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,7 +12,9 @@ from test_platform.api.routes.runs import router as runs_router
 from test_platform.api.routes.tasks import router as tasks_router
 from test_platform.api.routes.targets import router as targets_router
 from test_platform.api.routes.workflows import router as workflows_router
+from test_platform.api.routes.events import router as events_router
 from test_platform.config import PlatformSettings
+from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
 from test_platform.services.runs import FakeRunSupervisor
 
@@ -26,6 +29,11 @@ def create_app(
     platform_database = database or Database(settings)
     platform_adapter_registry = adapter_registry or TargetAdapterRegistry()
     platform_supervisor = supervisor or FakeRunSupervisor()
+    platform_broker = SSEBroker()
+    # If the supervisor owns its own broker (real RunSupervisor), share it so
+    # published events reach the SSE route's subscribers.
+    if hasattr(platform_supervisor, "bind_broker"):
+        platform_supervisor.bind_broker(platform_broker)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -33,10 +41,19 @@ def create_app(
         app.state.database = platform_database
         app.state.adapter_registry = platform_adapter_registry
         app.state.supervisor = platform_supervisor
+        app.state.sse_broker = platform_broker
         platform_database.initialize()
+        platform_broker.bind_loop(asyncio.get_running_loop())
+        # Bind the broker to the running loop and start the supervisor if it
+        # exposes the async lifecycle (the real RunSupervisor does; the fake one
+        # used in tests is a no-op).
+        if hasattr(platform_supervisor, "start"):
+            await platform_supervisor.start()
         try:
             yield
         finally:
+            if hasattr(platform_supervisor, "stop"):
+                await platform_supervisor.stop()
             platform_database.close()
 
     app = FastAPI(title="MobileGym Test Platform", lifespan=lifespan)
@@ -44,6 +61,7 @@ def create_app(
     app.state.database = platform_database
     app.state.adapter_registry = platform_adapter_registry
     app.state.supervisor = platform_supervisor
+    app.state.sse_broker = platform_broker
 
     install_request_id_middleware(app)
     install_error_handlers(app)
@@ -53,4 +71,5 @@ def create_app(
     app.include_router(tasks_router)
     app.include_router(targets_router)
     app.include_router(workflows_router)
+    app.include_router(events_router)
     return app
