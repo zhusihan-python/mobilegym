@@ -68,6 +68,8 @@ class _ProbeSerialRunner(SerialRunner):
         trial_id: int = 0,
         evaluator: Any = None,
         loop_threshold: int = 0,
+        cancellation_token: Any = None,
+        event_sink: Any = None,
     ) -> _Result:
         self.calls.append(
             {

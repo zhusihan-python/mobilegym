@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 import json
+import logging
 from pathlib import Path
 import shutil
 import sqlite3
-from typing import Any
+from typing import Any, Protocol
 
 from test_platform.config import PlatformSettings
 from test_platform.domain.canonical_json import canonical_json, canonical_sha256
@@ -15,11 +17,21 @@ from test_platform.domain.run_plans import RunPlan, RunPlanCompiler
 from test_platform.domain.runs import RunDomainError, RunIdempotencyConflict, RunDetail
 from test_platform.domain.task_catalog import TaskCatalogSnapshot, build_task_catalog_snapshot
 from test_platform.domain.workflows import WorkflowDefinition, WorkflowDomainError
+from test_platform.execution.event_writer import EventWriter
+from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
 from test_platform.persistence.repositories import (
     RunRepository,
     TargetRepository,
     WorkflowRepository,
+)
+
+logger = logging.getLogger(__name__)
+
+# Run lifecycle states in which a cancel request is meaningful. Terminal states
+# (completed/failed/cancelled) ignore cancel and are reported as a no-op.
+_CANCELLABLE_RUN_STATES = frozenset(
+    {"queued", "preparing", "running", "evaluating", "reporting"}
 )
 
 
@@ -31,8 +43,393 @@ class FakeRunSupervisor:
         if run_id not in self._queued_run_ids:
             self._queued_run_ids.append(run_id)
 
+    def request_cancel(self, run_id: str) -> bool:  # pragma: no cover - trivial
+        return False
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
     def snapshot(self) -> dict[str, list[str]]:
         return {"queued_run_ids": list(self._queued_run_ids)}
+
+
+class _Executor(Protocol):
+    async def execute_run(self, run_id: str, *, token: Any, events: Any) -> RunDetail: ...
+
+
+class RunSupervisor:
+    """Owns run execution tasks and per-run cancellation tokens.
+
+    Runs.py routes are synchronous (FastAPI runs them in a threadpool), so
+    `submit()` and `request_cancel()` are synchronous and thread-safe:
+      * submit() registers the token in the current thread BEFORE scheduling the
+        task, guaranteeing an immediate cancel right after create_run returns can
+        find the token.
+      * request_cancel() performs its DB writes synchronously before returning,
+        so the cancel flag is durable by the time the HTTP response is sent.
+    The actual asyncio task is scheduled onto the loop captured in start().
+    """
+
+    def __init__(
+        self,
+        database: Database,
+        settings: PlatformSettings,
+        *,
+        executor: _Executor,
+        broker: SSEBroker | None = None,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._database = database
+        self._settings = settings
+        self._executor = executor
+        self._broker = broker or SSEBroker()
+        self._event_writer = EventWriter(database, self._broker)
+        self._tokens: dict[str, Any] = {}
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._now = clock or _utc_timestamp
+
+    def bind_broker(self, broker: SSEBroker) -> None:
+        self._broker = broker
+        self._event_writer = EventWriter(self._database, broker)
+
+    async def start(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._broker.bind_loop(self._loop)
+
+    async def stop(self) -> None:
+        # Cancel any in-flight tasks and wait for them to wind down.
+        for run_id, task in list(self._tasks.items()):
+            if not task.done():
+                token = self._tokens.get(run_id)
+                if token is not None:
+                    token.cancel()
+        for task in list(self._tasks.values()):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    def submit(self, run_id: str) -> None:
+        from bench_env.runner.cancellation import CancellationToken
+
+        token = CancellationToken()
+        # Register synchronously in THIS thread so a cancel immediately after
+        # create_run returns can find the token before the loop task starts.
+        self._tokens[run_id] = token
+        if self._loop is None:
+            # No running loop (e.g. unit test without start()); defer until
+            # start() is called by enqueuing a sentinel via the executor later.
+            return
+        self._loop.call_soon_threadsafe(self._schedule, run_id, token)
+
+    def request_cancel(
+        self,
+        run_id: str,
+        *,
+        idempotency_key: str | None = None,
+        request_hash: str | None = None,
+    ) -> dict[str, object] | bool:
+        """Atomically mark the run cancel-requested and signal its token.
+
+        Thread-safe: serialized via the shared database RLock (same lock the
+        EventWriter uses) so concurrent cancel/event writes on the single
+        connection cannot interleave.
+
+        Without an idempotency key: returns True if this call set the cancel
+        flag, False if the run was already cancelled or terminal. Never raises.
+
+        With an idempotency key: returns a dict mirroring the HTTP response
+        `{run_id, cancel_requested, state}`. A repeated identical key replays
+        the first response verbatim; a conflicting key reusing a different
+        request body raises RunIdempotencyConflict.
+        """
+        now = self._now()
+        connection = self._database.connection
+        # The idempotency route is scoped per-run (matching the table PK (key,
+        # route)) so a key legitimately reused for a different run/route does
+        # not collide or read an ambiguous row.
+        idem_route = f"POST /api/platform/v1/runs/{run_id}/cancel" if idempotency_key else None
+
+        # Short-circuit: idempotency replay before any write.
+        if idempotency_key is not None:
+            replayed = self._read_cancel_idempotency(idempotency_key, idem_route, request_hash)
+            if replayed is not None:
+                return replayed
+
+        with self._database._lock:  # noqa: SLF100 — serialize against EventWriter
+            # Re-check idempotency inside the lock to close the double-submit race.
+            if idempotency_key is not None:
+                replayed = self._read_cancel_idempotency(idempotency_key, idem_route, request_hash)
+                if replayed is not None:
+                    return replayed
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    """
+                    UPDATE runs
+                    SET cancel_requested_at = ?, updated_at = ?
+                    WHERE id = ? AND cancel_requested_at IS NULL
+                      AND state IN ('queued','preparing','running','evaluating','reporting')
+                    """,
+                    (now, now, run_id),
+                )
+                rowcount = cursor.rowcount
+                state_row = connection.execute(
+                    "SELECT state FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                current_state = str(state_row["state"]) if state_row else "unknown"
+                if idempotency_key is not None:
+                    response = {
+                        "run_id": run_id,
+                        "cancel_requested": rowcount == 1,
+                        "state": current_state,
+                    }
+                    connection.execute(
+                        """
+                        INSERT INTO idempotency_keys (
+                          key, route, request_hash, response_status, response_json,
+                          run_id, created_at
+                        )
+                        VALUES (?, ?, ?, 200, ?, ?, ?)
+                        """,
+                        (
+                            idempotency_key,
+                            idem_route,
+                            request_hash or "",
+                            canonical_json(response),
+                            run_id,
+                            now,
+                        ),
+                    )
+                connection.commit()
+            except sqlite3.Error:
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+                logger.exception("Failed to set cancel_requested_at for run %s", run_id)
+                if idempotency_key is not None:
+                    return {"run_id": run_id, "cancel_requested": False, "state": current_state if "current_state" in dir() else "unknown"}
+                return False
+
+        cancel_set = rowcount == 1
+        if cancel_set:
+            self._event_writer.emit(
+                run_id,
+                "run.cancel_requested",
+                {"occurred_at": now},
+                entity_type="run",
+                entity_id=run_id,
+            )
+            token = self._tokens.get(run_id)
+            if token is not None:
+                token.cancel()
+
+        if idempotency_key is not None:
+            return {"run_id": run_id, "cancel_requested": cancel_set, "state": current_state}
+        return cancel_set
+
+    def _read_cancel_idempotency(
+        self,
+        idempotency_key: str,
+        route: str,
+        request_hash: str | None,
+    ) -> dict[str, object] | None:
+        """Return the replayed response for a cancel idempotency key, or None.
+
+        Query is scoped by (key, route) to match the table PK and create-run's
+        behaviour — a key reused for a different route/run is NOT a conflict
+        here; it simply has no replay row for this route. A key seen on the SAME
+        route with a different request body raises RunIdempotencyConflict.
+
+        Raises RunIdempotencyConflict if the (key, route) was seen with a
+        different body.
+        """
+        import json as _json
+
+        row = self._database.connection.execute(
+            "SELECT request_hash, response_json FROM idempotency_keys "
+            "WHERE key = ? AND route = ?",
+            (idempotency_key, route),
+        ).fetchone()
+        if row is None:
+            return None
+        if request_hash is not None and row["request_hash"] != request_hash:
+            raise RunIdempotencyConflict(idempotency_key)
+        try:
+            return _json.loads(row["response_json"]) if row["response_json"] else None
+        except (ValueError, TypeError):
+            return None
+
+    def snapshot(self) -> dict[str, list[str]]:
+        return {"active_run_ids": [rid for rid, t in self._tasks.items() if not t.done()]}
+
+    # -- internals ----------------------------------------------------------
+
+    def _schedule(self, run_id: str, token: Any) -> None:
+        assert self._loop is not None
+        task = self._loop.create_task(self._execute(run_id, token))
+        self._tasks[run_id] = task
+        task.add_done_callback(lambda _t, rid=run_id: self._tasks.pop(rid, None))
+
+    async def _execute(self, run_id: str, token: Any) -> None:
+        from bench_env.runner.cancellation import RunCancelled
+
+        from test_platform.execution.runner_sink import PlatformRunnerEventSink
+
+        # Resolve the run/lane attempt ids so episode/step events carry full
+        # identity into the events table.
+        run_attempt_id, lane_attempt_id, lane_id = self._resolve_attempt_ids(run_id)
+
+        # Build a non-throwing adapter that bridges bench_env ExecutionEvents
+        # (episode.started / step_recorded / episode.completed / ...) into the
+        # platform EventWriter, so the SSE stream carries live episode progress.
+        runner_sink = PlatformRunnerEventSink(
+            self._event_writer,
+            run_id=run_id,
+            run_attempt_id=run_attempt_id,
+            lane_id=lane_id,
+            lane_attempt_id=lane_attempt_id,
+            worker_id="serial",
+        )
+
+        # run.started is emitted by the executor AFTER its queued-cancel check,
+        # so a pre-execution cancel never produces a misleading "started" event.
+        # This supervisor owns only the terminal run.* events.
+        terminal_event: str | None = None
+        try:
+            await self._executor.execute_run(
+                run_id, token=token, events=runner_sink,
+                run_event_writer=self._event_writer,
+            )
+            terminal_event = "run.completed"
+        except RunCancelled:
+            await self._mark_run_cancelled(run_id)
+            terminal_event = "run.cancelled"
+        except Exception:  # noqa: BLE001 — supervisor must not crash the loop
+            logger.exception("Run %s failed during execution", run_id)
+            await self._mark_run_failed(run_id)
+            terminal_event = "run.failed"
+
+        # Emit the terminal run.* event exactly once (the executor does NOT emit
+        # run.* terminal events — only the supervisor does, to avoid duplicates).
+        if terminal_event == "run.completed":
+            self._emit_terminal(run_id, "run.completed")
+        # run.cancelled / run.failed are emitted inside _mark_run_cancelled /
+        # _mark_run_failed respectively.
+
+    def _resolve_attempt_ids(self, run_id: str) -> tuple[str | None, str | None, str | None]:
+        row = self._database.connection.execute(
+            """
+            SELECT ra.id AS run_attempt_id, la.id AS lane_attempt_id, l.id AS lane_id
+            FROM run_attempts ra
+            JOIN lane_attempts la ON la.run_attempt_id = ra.id
+            JOIN lanes l ON l.id = la.lane_id
+            WHERE ra.run_id = ?
+            ORDER BY l.lane_key
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None, None, None
+        return str(row["run_attempt_id"]), str(row["lane_attempt_id"]), str(row["lane_id"])
+
+    def _emit_terminal(self, run_id: str, event_type: str) -> None:
+        self._event_writer.emit(
+            run_id,
+            event_type,
+            {},
+            entity_type="run",
+            entity_id=run_id,
+        )
+
+    async def _mark_run_cancelled(self, run_id: str) -> None:
+        now = self._now()
+        connection = self._database.connection
+        with self._database._lock:  # noqa: SLF100 — serialize against EventWriter
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = 'cancelled', ended_at = COALESCE(ended_at, ?), updated_at = ?
+                    WHERE id = ? AND state IN ('queued','preparing','running','evaluating','reporting')
+                    """,
+                    (now, now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE run_attempts
+                    SET state = 'cancelled', ended_at = COALESCE(ended_at, ?)
+                    WHERE run_id = ? AND state IN ('queued','preparing','running','evaluating','reporting')
+                    """,
+                    (now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE lane_attempts
+                    SET state = 'cancelled', ended_at = COALESCE(ended_at, ?)
+                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
+                      AND state IN ('queued','preparing','running','evaluating','reporting')
+                    """,
+                    (now, run_id),
+                )
+                connection.commit()
+            except sqlite3.Error:
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+        self._event_writer.emit(
+            run_id,
+            "run.cancelled",
+            {"occurred_at": now},
+            entity_type="run",
+            entity_id=run_id,
+        )
+
+    async def _mark_run_failed(self, run_id: str) -> None:
+        now = self._now()
+        connection = self._database.connection
+        with self._database._lock:  # noqa: SLF100 — serialize against EventWriter
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = 'failed', ended_at = COALESCE(ended_at, ?), updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE run_attempts
+                    SET state = 'failed', ended_at = COALESCE(ended_at, ?), error_code = 'EXECUTION_ERROR'
+                    WHERE run_id = ? AND state IN ('queued','preparing','running','evaluating','reporting')
+                    """,
+                    (now, run_id),
+                )
+                connection.commit()
+            except sqlite3.Error:
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+        self._event_writer.emit(
+            run_id,
+            "run.failed",
+            {"occurred_at": now},
+            entity_type="run",
+            entity_id=run_id,
+        )
 
 
 class RunService:

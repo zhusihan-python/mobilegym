@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from test_platform.api.dependencies import get_database
 from test_platform.api.errors import ApiError
-from test_platform.domain.runs import RunDomainError
+from test_platform.domain.runs import RunDomainError, RunIdempotencyConflict
 from test_platform.persistence.repositories import RunRepository
 from test_platform.services.runs import RunService
 
@@ -72,6 +72,67 @@ def get_run(request: Request, run_id: str) -> dict[str, object]:
         return asdict(RunRepository(get_database(request)).get(run_id))
     except RunDomainError as exc:
         raise _run_error(exc) from exc
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_run(
+    request: Request,
+    run_id: str,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    """Request cooperative cancellation of a run.
+
+    The DB write (cancel_requested_at) is committed synchronously before this
+    returns, so the flag is durable by the time the HTTP response is sent. The
+    token signal and event publish happen inline. Repeated cancels are idempotent:
+    they return the current run state without error. Cancelling a terminal run
+    (completed/failed/cancelled) is a no-op that returns the current state.
+
+    When an `Idempotency-Key` is provided, the same key+run_id replays the first
+    response verbatim (stored in idempotency_keys.response_json). A key reused
+    with a different run returns 409.
+    """
+    database = get_database(request)
+    supervisor = request.app.state.supervisor
+
+    # Validate the run exists (404 if not).
+    try:
+        RunRepository(database).get(run_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+    # request_hash is scoped to the run so a key cannot be replayed across runs.
+    from test_platform.domain.canonical_json import canonical_sha256
+
+    request_hash = canonical_sha256({"route": "cancel", "run_id": run_id})
+
+    try:
+        if hasattr(supervisor, "request_cancel"):
+            result = supervisor.request_cancel(
+                run_id, idempotency_key=idempotency_key, request_hash=request_hash
+            )
+        else:  # pragma: no cover — FakeRunSupervisor fallback
+            result = False
+    except RunIdempotencyConflict as exc:
+        raise _run_error(
+            RunDomainError(
+                exc.code,
+                exc.message,
+                status_code=exc.status_code,
+                details=exc.details,
+            )
+        ) from exc
+
+    if isinstance(result, dict):
+        return result
+
+    # Non-idempotent path: build the response from the current state.
+    detail = RunRepository(database).get(run_id)
+    return {
+        "run_id": run_id,
+        "cancel_requested": bool(result),
+        "state": detail.state,
+    }
 
 
 def _run_error(error: RunDomainError) -> ApiError:

@@ -1,23 +1,64 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { getRun } from '../../api/client';
+import { cancelRun, getRun, streamRunEvents } from '../../api/client';
 import type { RunDetail } from '../../api/types';
+import { reduceRunEvent, type RunLiveState } from './runEvents';
 
 type DetailState =
   | { status: 'loading' }
   | { status: 'loaded'; run: RunDetail }
   | { status: 'error'; message: string };
 
+const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
+
 export function RunDetailPage() {
   const { runId = '' } = useParams();
   const [state, setState] = useState<DetailState>({ status: 'loading' });
+  // Hold the live event state in a ref so the SSE callback always sees the
+  // latest lastSequence without re-subscribing on every render.
+  const liveRef = useRef<RunLiveState | null>(null);
+  const [liveVersion, setLiveVersion] = useState(0);
 
   useEffect(() => {
     let active = true;
+    let dispose: (() => void) | null = null;
+    liveRef.current = null;
     getRun(runId)
       .then((run) => {
-        if (active) setState({ status: 'loaded', run });
+        if (!active) return;
+        setState({ status: 'loaded', run });
+        // Subscribe to live events once the snapshot is loaded.
+        liveRef.current = {
+          snapshot: run,
+          lastSequence: 0,
+          connected: true,
+          replaying: false,
+        };
+        dispose = streamRunEvents(
+          runId,
+          (event) => {
+            if (!liveRef.current) return;
+            liveRef.current = reduceRunEvent(liveRef.current, event);
+            setLiveVersion((v) => v + 1);
+          },
+          () => {
+            // reset_required: refetch a fresh snapshot via REST.
+            getRun(runId)
+              .then((fresh) => {
+                if (!active) return;
+                if (liveRef.current) {
+                  liveRef.current = { ...liveRef.current, snapshot: fresh };
+                  setLiveVersion((v) => v + 1);
+                } else {
+                  setState({ status: 'loaded', run: fresh });
+                }
+              })
+              .catch(() => {
+                /* keep the existing snapshot on refetch error */
+              });
+          },
+        );
       })
       .catch((error) => {
         if (active) {
@@ -29,6 +70,7 @@ export function RunDetailPage() {
       });
     return () => {
       active = false;
+      if (dispose) dispose();
     };
   }, [runId]);
 
@@ -45,9 +87,12 @@ export function RunDetailPage() {
     );
   }
 
-  const { run } = state;
+  // Prefer the live-event-patched snapshot when available.
+  const run = liveRef.current?.snapshot ?? state.run;
   const laneAttempts = run.lane_attempts ?? [];
   const episodeAttempts = run.episode_attempts ?? [];
+  // Reference liveVersion so React re-renders when the ref mutates.
+  void liveVersion;
   return (
     <>
       <section className="tp-panel tp-run-overview">
@@ -57,7 +102,22 @@ export function RunDetailPage() {
             <h2>Run overview</h2>
             <p>{run.name ?? run.id}</p>
           </div>
-          <span className="tp-run-state">{run.state}</span>
+          <div className="tp-run-actions">
+            <span className="tp-run-state">{run.state}</span>
+            {ACTIVE_RUN_STATES.has(run.state) ? (
+              <button
+                type="button"
+                className="tp-run-cancel"
+                onClick={() => {
+                  cancelRun(runId).catch(() => {
+                    /* the snapshot will reflect the outcome on the next event */
+                  });
+                }}
+              >
+                Cancel run
+              </button>
+            ) : null}
+          </div>
         </div>
         <dl className="tp-run-facts">
           <div>
