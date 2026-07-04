@@ -6,12 +6,20 @@ import type { RunDetail, RunEvent } from '../../api/types';
  * The snapshot is the authoritative REST-fetched RunDetail. `lastSequence`
  * tracks the highest committed event id seen so reconnects resume correctly.
  * `connected` and `replaying` reflect the SSE transport state, not run state.
+ *
+ * VS-07 parallel fields:
+ * - `completedEpisodeKeys`: episode_keys that reached a terminal outcome
+ *   (completed/error/cancelled), deduped so a reconnect never double-counts.
+ * - `activeWorkers`: worker_ids with a `worker.started` but no matching
+ *   `worker.stopped` yet, for the live "active workers" count.
  */
 export type RunLiveState = {
   snapshot: RunDetail;
   lastSequence: number;
   connected: boolean;
   replaying: boolean;
+  completedEpisodeKeys: Set<string>;
+  activeWorkers: Set<string>;
 };
 
 /**
@@ -37,6 +45,11 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
     return state;
   }
 
+  // Copy the mutable Sets only if this event will mutate them; otherwise share
+  // the reference (keeps referential equality for no-op reductions).
+  let completedEpisodeKeys = state.completedEpisodeKeys;
+  let activeWorkers = state.activeWorkers;
+
   const next: RunLiveState = {
     ...state,
     lastSequence: event.sequence,
@@ -60,12 +73,63 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
     case 'run.failed':
       next.snapshot = { ...state.snapshot, state: 'failed' };
       break;
+    case 'episode.completed':
+    case 'episode.error':
+    case 'episode.cancelled': {
+      // Mark this episode complete (deduped by key). The episode_key is sourced
+      // from the payload first (where the runner puts it) and falls back to the
+      // event-level field. Redeliveries are already filtered by lastSequence,
+      // but the Set guards against cross-transport duplicates too.
+      const key = episodeKeyOf(event);
+      if (key !== null) {
+        if (!completedEpisodeKeys.has(key)) {
+          completedEpisodeKeys = new Set(completedEpisodeKeys);
+          completedEpisodeKeys.add(key);
+        }
+      }
+      next.completedEpisodeKeys = completedEpisodeKeys;
+      break;
+    }
+    case 'worker.started': {
+      const workerId = event.worker_id;
+      if (workerId) {
+        if (!activeWorkers.has(workerId)) {
+          activeWorkers = new Set(activeWorkers);
+          activeWorkers.add(workerId);
+        }
+      }
+      next.activeWorkers = activeWorkers;
+      break;
+    }
+    case 'worker.stopped': {
+      const workerId = event.worker_id;
+      if (workerId && activeWorkers.has(workerId)) {
+        activeWorkers = new Set(activeWorkers);
+        activeWorkers.delete(workerId);
+      }
+      next.activeWorkers = activeWorkers;
+      break;
+    }
     default:
       // Unknown / step / metric events: only advance lastSequence (already set).
       break;
   }
 
   return next;
+}
+
+/**
+ * Extract the episode_key from an event. The runner places it in the payload;
+ * the persisted envelope may also carry it at the top level. Returns null when
+ * no key is available (the caller leaves the episode uncounted rather than
+ * crashing).
+ */
+function episodeKeyOf(event: RunEvent): string | null {
+  const fromPayload = event.payload?.episode_key;
+  if (typeof fromPayload === 'string' && fromPayload.length > 0) {
+    return fromPayload;
+  }
+  return null;
 }
 
 /**

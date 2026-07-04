@@ -34,6 +34,8 @@ export function RunDetailPage() {
           lastSequence: 0,
           connected: true,
           replaying: false,
+          completedEpisodeKeys: new Set<string>(),
+          activeWorkers: new Set<string>(),
         };
         dispose = streamRunEvents(
           runId,
@@ -91,6 +93,14 @@ export function RunDetailPage() {
   const run = liveRef.current?.snapshot ?? state.run;
   const laneAttempts = run.lane_attempts ?? [];
   const episodeAttempts = run.episode_attempts ?? [];
+  // VS-07 live parallel progress: active workers + completed/total episodes.
+  const activeWorkers = liveRef.current?.activeWorkers ?? new Set<string>();
+  const completedEpisodeKeys = liveRef.current?.completedEpisodeKeys ?? new Set<string>();
+  const plannedEpisodes = run.progress.planned_episodes;
+  const liveCompleted = Math.max(
+    completedEpisodeKeys.size,
+    run.progress.completed_episodes,
+  );
   // Reference liveVersion so React re-renders when the ref mutates.
   void liveVersion;
   return (
@@ -130,7 +140,18 @@ export function RunDetailPage() {
           </div>
           <div>
             <dt>Completed</dt>
-            <dd>{run.progress.completed_episodes} completed episodes</dd>
+            <dd>
+              <span data-testid="tp-completed-episodes">{liveCompleted}</span>
+              {' / '}
+              <span data-testid="tp-planned-episodes">{plannedEpisodes}</span>
+              {' completed episodes'}
+            </dd>
+          </div>
+          <div>
+            <dt>Active workers</dt>
+            <dd>
+              <span data-testid="tp-active-workers">{activeWorkers.size}</span>
+            </dd>
           </div>
           <div>
             <dt>Fingerprint</dt>

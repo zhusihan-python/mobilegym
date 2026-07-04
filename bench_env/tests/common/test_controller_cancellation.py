@@ -351,3 +351,118 @@ async def test_step_recorded_event_emitted_per_step() -> None:
     # Payload carries step number + action type.
     assert step_events[0].payload["step"] == 1
     assert step_events[0].payload["action_type"] == str(ActionType.CLICK)
+
+
+# ---------------------------------------------------------------------------
+# VS-07 Block B: worker_id param + episode.completed/error terminal events
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_episode_emits_terminal_completed_event_on_success() -> None:
+    """A passing episode must emit episode.completed with episode_key + worker_id."""
+    env = _FakeEnv()
+
+    class _DoneEnv(_FakeEnv):
+        async def step(self, action):
+            self.step_count += 1
+            return StepResult(
+                observation=await self.get_observation(), done=True,
+                info={"stop_reason": ActionType.COMPLETE},
+            )
+
+    env = _DoneEnv()
+
+    class _CompleteAgent(_FakeAgent):
+        def act(self, obs):
+            self.act_count += 1
+            return Action.complete("done")
+
+    task = _FakeTask()
+    agent = _CompleteAgent(env=env)
+    sink = _CollectingSink()
+
+    result = await BaseRunner.run_episode(
+        env, agent, task, max_steps=5, event_sink=sink,
+        worker_id="W1", episode_key="fake.T|i0|s1|r1|t0",
+    )
+
+    assert result.episode_key == "fake.T|i0|s1|r1|t0"
+    completed = [e for e in sink.events if e.type == "episode.completed"]
+    errors = [e for e in sink.events if e.type == "episode.error"]
+    assert len(completed) == 1
+    assert errors == []
+    assert completed[0].worker_id == "W1"
+    assert completed[0].episode_key == "fake.T|i0|s1|r1|t0"
+    assert completed[0].payload["outcome"] in {"PASS", "FAIL"}
+
+
+@pytest.mark.asyncio
+async def test_run_episode_emits_terminal_error_event_on_error() -> None:
+    """A genuine execution error (result.error truthy — e.g. setup crash) must
+    emit episode.error, using the SAME yardstick as ingestion (result.error).
+    FORMAT_ERROR (model fault, result.error is None) is NOT an error outcome —
+    it emits episode.completed with FAIL, matching result_is_error semantics."""
+
+    class _CrashingTask(_FakeTask):
+        async def setup(self, env):
+            raise RuntimeError("setup exploded")
+
+    env = _FakeEnv()
+
+    class _NoOpAgent(_FakeAgent):
+        def act(self, obs):
+            self.act_count += 1
+            return Action.complete("done")
+
+    task = _CrashingTask()
+    agent = _NoOpAgent(env=env)
+    sink = _CollectingSink()
+
+    result = await BaseRunner.run_episode(
+        env, agent, task, max_steps=5, event_sink=sink,
+        worker_id="W2", episode_key="fake.E|i0|s1|r1|t0",
+    )
+
+    assert result.error is not None  # genuine execution error
+    errors = [e for e in sink.events if e.type == "episode.error"]
+    completed = [e for e in sink.events if e.type == "episode.completed"]
+    assert len(errors) == 1
+    assert completed == []
+    assert errors[0].worker_id == "W2"
+    assert errors[0].episode_key == "fake.E|i0|s1|r1|t0"
+    assert errors[0].payload["outcome"] == "ERROR"
+
+
+@pytest.mark.asyncio
+async def test_worker_id_flows_into_episode_events() -> None:
+    """Controller.run episode.* events carry the supplied worker_id, not 'serial'."""
+    env = _FakeEnv()
+
+    class _DoneEnv(_FakeEnv):
+        async def step(self, action):
+            self.step_count += 1
+            return StepResult(
+                observation=await self.get_observation(), done=True,
+                info={"stop_reason": ActionType.COMPLETE},
+            )
+
+    env = _DoneEnv()
+
+    class _CompleteAgent(_FakeAgent):
+        def act(self, obs):
+            self.act_count += 1
+            return Action.complete("done")
+
+    task = _FakeTask()
+    agent = _CompleteAgent(env=env)
+    sink = _CollectingSink()
+
+    await Controller.run(
+        env, agent, task, await env.get_observation(), max_steps=5,
+        event_sink=sink, worker_id="W7", episode_key="k9",
+    )
+
+    started = [e for e in sink.events if e.type == "episode.started"]
+    assert started and started[0].worker_id == "W7"
+    assert started[0].episode_key == "k9"

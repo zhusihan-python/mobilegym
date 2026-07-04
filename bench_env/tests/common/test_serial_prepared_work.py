@@ -70,6 +70,8 @@ class _ProbeSerialRunner(SerialRunner):
         loop_threshold: int = 0,
         cancellation_token: Any = None,
         event_sink: Any = None,
+        worker_id: str = "serial",
+        episode_key: str | None = None,
     ) -> _Result:
         self.calls.append(
             {

@@ -140,7 +140,8 @@ describe('Test Platform serial run detail', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
-    expect(screen.getByText('3 completed episodes')).toBeTruthy();
+    // The completed counter shows "completed / planned" (VS-07 parallel progress).
+    expect(screen.getByTestId('tp-completed-episodes').textContent).toBe('3');
     expect(screen.getByText('PASS')).toBeTruthy();
     expect(screen.getByText('FAIL')).toBeTruthy();
     expect(screen.getByText('ERROR')).toBeTruthy();
