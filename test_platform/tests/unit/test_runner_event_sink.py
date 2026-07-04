@@ -149,3 +149,115 @@ def test_runner_sink_never_raises_on_writer_failure(tmp_path):
         sink.emit(ExecutionEvent(type="episode.started", timestamp=_utc(), payload={}))
     finally:
         database.close()
+
+
+def test_runner_sink_resolves_episode_id_from_episode_key(tmp_path):
+    """VS-07: when an episode_key_resolver is provided, the sink maps the
+    runner's episode_key to the persisted episodes.id and writes it to the
+    episode_id column of the event."""
+    database = _database(tmp_path)
+    try:
+        run_id = _seed_run(database)
+        # Insert one episode row so the resolver can map episode_key -> id.
+        database.connection.execute(
+            "INSERT INTO episodes "
+            "(id, run_id, episode_key, materialization_key, pair_key, task_base_id, "
+            " task_id, instance_id, instance_seed, template_index, trial_id, max_steps, created_at) "
+            "VALUES ('ep-1', ?, 'fake.Task|i0|s1|r1|t0', 'mk', 'pk', 'fake.Task', "
+            " 'fake.Task', 0, 1, NULL, 0, 15, '2026-07-04T00:00:00.000Z')",
+            (run_id,),
+        )
+        database.connection.commit()
+
+        writer = EventWriter(database)
+
+        def resolver(episode_key: str) -> str | None:
+            row = database.connection.execute(
+                "SELECT id FROM episodes WHERE run_id = ? AND episode_key = ?",
+                (run_id, episode_key),
+            ).fetchone()
+            return str(row["id"]) if row else None
+
+        sink = PlatformRunnerEventSink(
+            writer,
+            run_id=run_id,
+            run_attempt_id="ra1",
+            lane_id="lane1",
+            lane_attempt_id="la1",
+            worker_id="W0",
+            episode_key_resolver=resolver,
+        )
+
+        sink.emit(ExecutionEvent(
+            type="episode.started",
+            timestamp=_utc(),
+            phase="execute",
+            worker_id="W0",
+            task_id="fake.Task",
+            trial_id=0,
+            episode_key="fake.Task|i0|s1|r1|t0",
+            payload={"max_steps": 5},
+        ))
+
+        row = database.connection.execute(
+            "SELECT episode_id, worker_id FROM events WHERE run_id = ? AND type = 'episode.started'",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["episode_id"] == "ep-1"
+        assert row["worker_id"] == "W0"
+    finally:
+        database.close()
+
+
+def test_runner_sink_leaves_episode_id_null_when_resolver_returns_none(tmp_path):
+    """An unknown episode_key resolves to None → episode_id stays null (no drop)."""
+    database = _database(tmp_path)
+    try:
+        run_id = _seed_run(database)
+        writer = EventWriter(database)
+
+        def resolver(episode_key: str) -> str | None:
+            return None  # unknown key
+
+        sink = PlatformRunnerEventSink(
+            writer, run_id=run_id, episode_key_resolver=resolver,
+        )
+        sink.emit(ExecutionEvent(
+            type="episode.started",
+            timestamp=_utc(),
+            episode_key="does-not-exist",
+            payload={},
+        ))
+
+        row = database.connection.execute(
+            "SELECT episode_id FROM events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["episode_id"] is None
+    finally:
+        database.close()
+
+
+def test_runner_sink_without_resolver_leaves_episode_id_null(tmp_path):
+    """No resolver (e.g. CLI path) → episode_id is null even with an episode_key."""
+    database = _database(tmp_path)
+    try:
+        run_id = _seed_run(database)
+        writer = EventWriter(database)
+        sink = PlatformRunnerEventSink(writer, run_id=run_id, worker_id="serial")
+        sink.emit(ExecutionEvent(
+            type="episode.started",
+            timestamp=_utc(),
+            episode_key="fake.Task|i0|s1|r1|t0",
+            payload={},
+        ))
+        row = database.connection.execute(
+            "SELECT episode_id FROM events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["episode_id"] is None
+    finally:
+        database.close()

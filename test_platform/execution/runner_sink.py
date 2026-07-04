@@ -12,6 +12,7 @@ its own mapping logic too).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from bench_env.runner.events import ExecutionEvent
@@ -35,6 +36,7 @@ class PlatformRunnerEventSink:
         lane_id: str | None = None,
         lane_attempt_id: str | None = None,
         worker_id: str | None = None,
+        episode_key_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         self._writer = writer
         self._run_id = run_id
@@ -42,6 +44,10 @@ class PlatformRunnerEventSink:
         self._lane_id = lane_id
         self._lane_attempt_id = lane_attempt_id
         self._default_worker_id = worker_id
+        # VS-07: maps a runner episode_key to the persisted episodes.id so
+        # episode events carry a stable episode_id column. When None (e.g. CLI
+        # path or pre-materialization), episode_id is left null.
+        self._episode_key_resolver = episode_key_resolver
 
     def emit(self, event: ExecutionEvent) -> None:
         try:
@@ -50,6 +56,16 @@ class PlatformRunnerEventSink:
             # "episode.step_recorded", "episode.completed", "episode.cancelled".
             payload = dict(event.payload)
             payload.setdefault("task_id", event.task_id) if event.task_id else None
+            # Resolve the persisted episode_id from the runner's episode_key when
+            # both a key and a resolver are available. The resolver is allowed to
+            # return None (unknown key); the event is still persisted with a null
+            # episode_id rather than dropped.
+            episode_id: str | None = None
+            if event.episode_key and self._episode_key_resolver is not None:
+                try:
+                    episode_id = self._episode_key_resolver(event.episode_key)
+                except Exception:  # noqa: BLE001 — resolver must not break the sink
+                    episode_id = None
             self._writer.emit(
                 self._run_id,
                 event.type,
@@ -57,6 +73,7 @@ class PlatformRunnerEventSink:
                 run_attempt_id=self._run_attempt_id,
                 lane_id=self._lane_id,
                 lane_attempt_id=self._lane_attempt_id,
+                episode_id=episode_id,
                 worker_id=event.worker_id or self._default_worker_id,
                 entity_type="episode" if event.type.startswith("episode.") else "run",
             )

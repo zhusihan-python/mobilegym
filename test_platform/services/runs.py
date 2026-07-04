@@ -78,13 +78,27 @@ class RunSupervisor:
         database: Database,
         settings: PlatformSettings,
         *,
-        executor: _Executor,
+        executor: _Executor | None = None,
+        executor_resolver: Callable[[Any], _Executor] | None = None,
         broker: SSEBroker | None = None,
         clock: Callable[[], str] | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
-        self._executor = executor
+        # VS-07: the supervisor resolves an executor PER LANE so a parallel lane
+        # gets a ParallelRunExecutor and a serial lane gets a SerialRunExecutor.
+        # ``executor`` remains as a deprecated convenience: if passed, it is
+        # wrapped in a constant resolver (used by every lane). Production wiring
+        # passes ``executor_resolver``; tests inject either.
+        if executor_resolver is not None:
+            self._executor_resolver = executor_resolver
+        elif executor is not None:
+            self._executor_resolver = lambda lane: executor  # noqa: E731
+        else:
+            # No executor supplied: default to the production lane-aware resolver
+            # (serial unless the lane opts into parallelism).
+            self._executor_resolver = _default_executor_resolver(database, settings)
+        self._executor = executor  # retained for backward-compat introspection
         self._broker = broker or SSEBroker()
         self._event_writer = EventWriter(database, self._broker)
         self._tokens: dict[str, Any] = {}
@@ -287,9 +301,16 @@ class RunSupervisor:
         # identity into the events table.
         run_attempt_id, lane_attempt_id, lane_id = self._resolve_attempt_ids(run_id)
 
+        # VS-07: resolve the executor PER LANE so a parallel lane gets a
+        # ParallelRunExecutor. The resolver inspects the lane's runner_config.
+        lane = self._resolve_lane(run_id)
+        executor = self._executor_resolver(lane)
+
         # Build a non-throwing adapter that bridges bench_env ExecutionEvents
         # (episode.started / step_recorded / episode.completed / ...) into the
         # platform EventWriter, so the SSE stream carries live episode progress.
+        # VS-07: the episode_key_resolver maps a runner episode_key to the
+        # persisted episodes.id so events carry a stable episode_id column.
         runner_sink = PlatformRunnerEventSink(
             self._event_writer,
             run_id=run_id,
@@ -297,6 +318,7 @@ class RunSupervisor:
             lane_id=lane_id,
             lane_attempt_id=lane_attempt_id,
             worker_id="serial",
+            episode_key_resolver=self._make_episode_key_resolver(run_id),
         )
 
         # run.started is emitted by the executor AFTER its queued-cancel check,
@@ -304,7 +326,7 @@ class RunSupervisor:
         # This supervisor owns only the terminal run.* events.
         terminal_event: str | None = None
         try:
-            await self._executor.execute_run(
+            await executor.execute_run(
                 run_id, token=token, events=runner_sink,
                 run_event_writer=self._event_writer,
             )
@@ -340,6 +362,46 @@ class RunSupervisor:
         if row is None:
             return None, None, None
         return str(row["run_attempt_id"]), str(row["lane_attempt_id"]), str(row["lane_id"])
+
+    def _resolve_lane(self, run_id: str) -> Any:
+        """Return a lane-like object with ``runner_config`` for the executor resolver.
+
+        VS-07 supports a single source lane, so we read the first lane's
+        ``runner_config_json`` from the lanes table. The resolver only inspects
+        ``runner_config.get('parallel', 1)``, so a lightweight namespace suffices
+        (avoiding a full RunPlan parse on the hot path).
+        """
+        import types as _types
+
+        row = self._database.connection.execute(
+            "SELECT lane_key, runner_config_json FROM lanes WHERE run_id = ? "
+            "ORDER BY lane_key LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return _types.SimpleNamespace(runner_config={})
+        runner_config = json.loads(row["runner_config_json"]) if row["runner_config_json"] else {}
+        return _types.SimpleNamespace(
+            lane_key=str(row["lane_key"]),
+            runner_config=runner_config,
+        )
+
+    def _make_episode_key_resolver(self, run_id: str) -> Callable[[str], str | None]:
+        """Build a episode_key -> episodes.id resolver for the runner event sink.
+
+        Looks up the persisted episodes table for this run so runner-emitted
+        episode events carry a stable episode_id column. Returns None when the
+        key is unknown (the sink leaves episode_id null rather than raising).
+        """
+
+        def episode_key_resolver(episode_key: str) -> str | None:
+            row = self._database.connection.execute(
+                "SELECT id FROM episodes WHERE run_id = ? AND episode_key = ?",
+                (run_id, episode_key),
+            ).fetchone()
+            return str(row["id"]) if row else None
+
+        return episode_key_resolver
 
     def _emit_terminal(self, run_id: str, event_type: str) -> None:
         self._event_writer.emit(
@@ -747,3 +809,29 @@ class RunService:
 
 def _utc_timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _default_executor_resolver(
+    database: Database, settings: PlatformSettings
+) -> Callable[[Any], Any]:
+    """Production lane-aware executor resolver (deferred — VS-07 wires fakes).
+
+    A lane whose ``runner_config['parallel']`` is > 1 gets a ParallelRunExecutor;
+    otherwise a SerialRunExecutor. NOTE: real env/agent factories are not yet
+    wired here (production execution is deferred), so the returned executors
+    carry NO factories and would raise EXECUTOR_FACTORY_MISSING if actually run.
+    VS-07 tests inject their own resolver/fakes; ``create_app`` keeps the
+    FakeRunSupervisor as the default.
+    """
+    # Imported lazily to avoid importing execution.py at module import time
+    # (execution.py imports bench_env, which is heavy).
+    from test_platform.services.execution import ParallelRunExecutor, SerialRunExecutor
+
+    def resolve(lane: Any) -> Any:
+        runner_config = getattr(lane, "runner_config", {}) or {}
+        parallel = int(runner_config.get("parallel", 1) or 1)
+        if parallel > 1:
+            return ParallelRunExecutor(database, settings)
+        return SerialRunExecutor(database, settings)
+
+    return resolve

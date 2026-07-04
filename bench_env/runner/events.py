@@ -12,6 +12,7 @@ class ExecutionEvent:
     worker_id: str | None = None
     task_id: str | None = None
     trial_id: int | None = None
+    episode_key: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
 

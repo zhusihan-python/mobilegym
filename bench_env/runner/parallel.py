@@ -1,9 +1,12 @@
 """ParallelRunner - 并行评测 (async)"""
 
 import asyncio
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from bench_env.runner.base import BaseRunner, EpisodeResult, Evaluator, RunnerConfig
+from bench_env.runner.cancellation import CancellationToken, RunCancelled
+from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
+from bench_env.runner.serial import PreparedWorkItem
 from bench_env.logger import add_log_file, get_logger
 
 logger = get_logger(__name__)
@@ -21,6 +24,10 @@ class ParallelRunner(BaseRunner):
         recorder=None,
         evaluator=None,
         progress_callback: Callable[[EpisodeResult], None] | None = None,
+        *,
+        prepared_work_items: Sequence[PreparedWorkItem] | None = None,
+        event_sink: EventSink | None = None,
+        cancellation_token: CancellationToken | None = None,
     ):
         self.env_pool, self.agent_factory, self.tasks = env_pool, agent_factory, tasks
         self.config = config
@@ -28,6 +35,11 @@ class ParallelRunner(BaseRunner):
         self.evaluator = evaluator or Evaluator()
         self.verbose = not config.quiet
         self.progress_callback = progress_callback
+        self.prepared_work_items = (
+            list(prepared_work_items) if prepared_work_items is not None else None
+        )
+        self.event_sink = event_sink or NullEventSink()
+        self.cancellation_token = cancellation_token or CancellationToken()
 
     @classmethod
     async def from_args(cls, args):
@@ -41,6 +53,10 @@ class ParallelRunner(BaseRunner):
         cls,
         config: RunnerConfig,
         progress_callback: Callable[[EpisodeResult], None] | None = None,
+        *,
+        prepared_work_items: Sequence[PreparedWorkItem] | None = None,
+        event_sink: EventSink | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> "ParallelRunner":
         """从预构建的 RunnerConfig 创建 runner（用于 rerun 模式等）。"""
         from bench_env.env import EnvPool
@@ -67,6 +83,9 @@ class ParallelRunner(BaseRunner):
             num_browsers=config.num_browsers,
             headless=config.headless, proxy=config.proxy, coord_space=config.coord_space,
             delay_after_action=config.delay_after_action,
+            viewport_size=getattr(config, "viewport_size", (360, 800)),
+            physical_size=getattr(config, "physical_size", (1080, 2400)),
+            device_scale_factor=getattr(config, "device_scale_factor", 3),
             verbose=verbose,
         )
 
@@ -78,7 +97,12 @@ class ParallelRunner(BaseRunner):
         )
         if recorder.run_dir:
             add_log_file(recorder.run_dir / "console.log")
-        return cls(env_pool, agent_factory, tasks, config, recorder, evaluator, progress_callback)
+        return cls(
+            env_pool, agent_factory, tasks, config, recorder, evaluator, progress_callback,
+            prepared_work_items=prepared_work_items,
+            event_sink=event_sink,
+            cancellation_token=cancellation_token,
+        )
 
     async def run(self) -> list[EpisodeResult]:
         from tqdm import tqdm
@@ -86,7 +110,11 @@ class ParallelRunner(BaseRunner):
 
         n = self.env_pool.n
         repeat_n = self.config.repeat_n
-        total_episodes = len(self.tasks) * repeat_n
+        # Prepared work items bypass task/repeat expansion (the platform path).
+        if self.prepared_work_items is not None:
+            total_episodes = len(self.prepared_work_items)
+        else:
+            total_episodes = len(self.tasks) * repeat_n
 
         # Cache run_dir early because recorder.finish_run() clears internal state.
         run_dir = self.recorder.run_dir
@@ -113,12 +141,18 @@ class ParallelRunner(BaseRunner):
                             prefix = self.config.browser_log_prefix
                             for i in range(n):
                                 self.env_pool[i].set_browser_log_dir(browser_log_dir, prefix)
-                        if repeat_n > 1:
+                        if self.prepared_work_items is not None:
+                            all_results = await self._run_prepared_work_items(n, pbar)
+                        elif repeat_n > 1:
                             all_results = await self._run_with_repeat(n, repeat_n, pbar)
                         else:
                             all_results = await self._run_parallel(n, pbar)
                 finally:
                     pbar.close()
+        except RunCancelled:
+            # Cooperative cancellation reached (between episodes or at queue
+            # pop). EnvPool cleanup still runs via the async with above.
+            logger.info("Parallel run cancelled")
         except Exception as e:
             logger.exception(f"Run interrupted: {e}")
         finally:
@@ -130,6 +164,117 @@ class ParallelRunner(BaseRunner):
 
         self.print_summary(all_results, run_dir)
         return all_results
+
+    async def _run_prepared_work_items(self, n: int, pbar=None) -> list[EpisodeResult]:
+        """Run prepared work items in parallel, preserving PLAN order in results.
+
+        Workers complete out of order, but results are indexed by work-item
+        position so the returned list matches the input order exactly. Each
+        worker emits worker.started/stopped and episode events carry worker_id +
+        episode_key.
+        """
+        prepared = self.prepared_work_items or []
+        results: list[Optional[EpisodeResult]] = [None] * len(prepared)
+        success_count = 0
+        fail_count = 0
+
+        queue: asyncio.Queue[tuple[int, PreparedWorkItem] | None] = asyncio.Queue()
+        for idx, item in enumerate(prepared):
+            queue.put_nowait((idx, item))
+        for _ in range(n):
+            queue.put_nowait(None)  # sentinels stop workers
+
+        def _emit_worker(event_type: str, wid: int, **payload: Any) -> None:
+            try:
+                self.event_sink.emit(ExecutionEvent(
+                    type=event_type, timestamp="", phase="execute",
+                    worker_id=f"W{wid}", payload=payload,
+                ))
+            except Exception:  # noqa: BLE001
+                logger.debug("worker event emit failed", exc_info=True)
+
+        async def worker(wid: int) -> None:
+            nonlocal success_count, fail_count
+            env = self.env_pool[wid]
+            _emit_worker("worker.started", wid)
+            try:
+                agent = self.agent_factory()
+            except Exception as e:
+                logger.exception(f"[W{wid}] Failed to create agent: {type(e).__name__}: {e}")
+                _emit_worker("worker.stopped", wid)
+                return
+            try:
+                while True:
+                    if self.cancellation_token.cancelled:
+                        return
+                    item = await queue.get()
+                    try:
+                        if item is None:
+                            return
+                        idx, work_item = item
+                        self.cancellation_token.raise_if_cancelled()
+                        task = work_item.task
+                        env.set_current_task(task.id)
+                        if self.verbose:
+                            logger.info(f"[W{wid}] {task.id}")
+                        r = await self.run_episode(
+                            env, agent, task, work_item.max_steps, self.recorder,
+                            trial_id=work_item.trial_id, evaluator=self.evaluator,
+                            loop_threshold=self.config.loop_detect,
+                            cancellation_token=self.cancellation_token,
+                            event_sink=self.event_sink,
+                            worker_id=f"W{wid}",
+                            episode_key=work_item.episode_key,
+                        )
+                        # Preserve plan order: store at the work-item's index.
+                        results[idx] = r
+                        if self.verbose:
+                            self._log_worker_result(wid, r)
+                        if r.success:
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                        self._emit_progress(r)
+                        if pbar:
+                            pbar.set_postfix_str(f"✓{success_count} ✗{fail_count}")
+                            pbar.update(1)
+                    except RunCancelled:
+                        return
+                    except Exception as ep_err:
+                        logger.exception(f"[W{wid}] run_episode crashed for {getattr(work_item, 'episode_key', '?')}: {type(ep_err).__name__}: {ep_err}")
+                        from bench_env.runner.base import ExecutionResult
+                        error_result = EpisodeResult(
+                            task_id=getattr(work_item.task, 'id', 'unknown'),
+                            task_name=str(getattr(work_item.task, 'id', 'unknown')),
+                            suite=getattr(work_item.task, 'suite', 'unknown'),
+                            execution=ExecutionResult(
+                                steps=0, trace=[], runtime_s=0.0,
+                                finished=False, truncated=False, stop_reason="ERROR",
+                                agent_message=None, agent_answer=None,
+                                error=f"{type(ep_err).__name__}: {ep_err}",
+                            ),
+                            judge=None, trial_id=work_item.trial_id,
+                            apps=list(getattr(work_item.task, 'apps', [])),
+                            max_steps=work_item.max_steps,
+                            episode_key=work_item.episode_key,
+                        )
+                        results[idx] = error_result
+                        if self.recorder:
+                            self.recorder.record_result(error_result.to_dict())
+                        self._emit_progress(error_result)
+                        fail_count += 1
+                        if pbar:
+                            pbar.set_postfix_str(f"✓{success_count} ✗{fail_count}")
+                            pbar.update(1)
+                    finally:
+                        queue.task_done()
+            finally:
+                _emit_worker("worker.stopped", wid)
+
+        await asyncio.gather(*[worker(i) for i in range(n)], return_exceptions=True)
+        # Drop any None placeholders from cancelled/skipped items; the executor's
+        # reconciliation handles missing results.
+        return [r for r in results if r is not None]
 
 
     async def _run_parallel(self, n: int, pbar=None) -> list[EpisodeResult]:

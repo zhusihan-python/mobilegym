@@ -226,6 +226,8 @@ class Controller:
         loop_threshold: int = 0,
         cancellation_token: CancellationToken | None = None,
         event_sink: EventSink | None = None,
+        worker_id: str = "serial",
+        episode_key: str | None = None,
     ) -> tuple[ExecutionResult, Any, Any, Any, Any]:
         """
         Run the interaction loop after setup is complete.
@@ -244,6 +246,10 @@ class Controller:
                 if cancelled it returns an ExecutionResult with stop_reason
                 "CANCELLED" (never "ERROR"). Defaults to None for CLI parity.
             event_sink: Optional event sink for lifecycle/step events.
+            worker_id: Identifier of the worker running this episode. Defaults to
+                "serial" for CLI / SerialRunner; ParallelRunner passes "W0".."Wn".
+            episode_key: Stable episode identity for parallel/repeat attribution.
+                Emitted on every event so live consumers can join result→episode.
 
         Returns:
             tuple: (ExecutionResult, init_obs, final_obs, episode, task)
@@ -255,7 +261,6 @@ class Controller:
         obs = initial_obs
         _recent_fps: deque[str] = deque(maxlen=loop_threshold if loop_threshold > 0 else None)
         sink = event_sink or NullEventSink()
-        worker_id = "serial"
 
         def _emit(event_type: str, **payload: Any) -> None:
             try:
@@ -266,6 +271,7 @@ class Controller:
                     worker_id=worker_id,
                     task_id=task.id,
                     trial_id=trial_id,
+                    episode_key=episode_key,
                     payload=payload,
                 ))
             except Exception:  # noqa: BLE001 — event failure must not affect the run
@@ -446,7 +452,9 @@ class Controller:
                        eval_mode: str = "grounded",
                        loop_threshold: int = 0,
                        cancellation_token: CancellationToken | None = None,
-                       event_sink: EventSink | None = None) -> tuple[ExecutionResult, Any, Any, Any, Any]:
+                       event_sink: EventSink | None = None,
+                       worker_id: str = "serial",
+                       episode_key: str | None = None) -> tuple[ExecutionResult, Any, Any, Any, Any]:
         """
         Run the full interaction loop (setup + run).
 
@@ -498,7 +506,8 @@ class Controller:
             return exec_result, None, None, None, task
         return await Controller.run(env, agent, task, initial_obs, max_steps, recorder, trial_id,
                                     eval_mode=eval_mode, loop_threshold=loop_threshold,
-                                    cancellation_token=cancellation_token, event_sink=event_sink)
+                                    cancellation_token=cancellation_token, event_sink=event_sink,
+                                    worker_id=worker_id, episode_key=episode_key)
 
 
 @dataclass
@@ -539,6 +548,11 @@ class EpisodeResult:
     trial_id: int = 0
     apps: list[str] = field(default_factory=list)
     max_steps: int = 0  # actual max_steps used in this episode
+
+    # VS-07: stable episode identity for parallel/repeat attribution. None for
+    # CLI runs (which don't carry an episode_key); the platform sets it on the
+    # prepared work-item path so result→planned-episode joins are unambiguous.
+    episode_key: Optional[str] = None
 
     # ---- Task taxonomy (optional, from BaseTask class vars) ----
     difficulty: str = ""
@@ -681,6 +695,8 @@ class BaseRunner(ABC):
         loop_threshold: int = 0,
         cancellation_token: CancellationToken | None = None,
         event_sink: EventSink | None = None,
+        worker_id: str = "serial",
+        episode_key: str | None = None,
     ) -> EpisodeResult:
         """运行单个 episode (Facade 方法).
 
@@ -696,10 +712,13 @@ class BaseRunner(ABC):
                 into Controller.run_loop; when cancelled the execution result is
                 marked CANCELLED and the evaluator is skipped.
             event_sink: Optional event sink for lifecycle/step events.
+            worker_id: Identifier of the worker (default "serial" for CLI/SerialRunner).
+            episode_key: Stable episode identity propagated to events + result.
         """
         # Use default evaluator if not provided
         if evaluator is None:
             evaluator = Evaluator()
+        sink = event_sink or NullEventSink()
 
         # 1. Control Phase (Interaction)
         eval_mode = getattr(evaluator, "eval_mode", "grounded")
@@ -707,6 +726,7 @@ class BaseRunner(ABC):
             env, agent, task, max_steps, recorder, trial_id=trial_id, eval_mode=eval_mode,
             loop_threshold=loop_threshold,
             cancellation_token=cancellation_token, event_sink=event_sink,
+            worker_id=worker_id, episode_key=episode_key,
         )
 
         # 2. Evaluation Phase (Judge)
@@ -740,6 +760,7 @@ class BaseRunner(ABC):
                 trial_id=trial_id,
                 apps=list(task.apps),
                 max_steps=max_steps,
+                episode_key=episode_key,
                 **EpisodeResult._task_taxonomy(task),
             )
         except Exception as e:
@@ -751,6 +772,7 @@ class BaseRunner(ABC):
                 trial_id=trial_id,
                 apps=list(task.apps),
                 max_steps=max_steps,
+                episode_key=episode_key,
             )
         
         try:
@@ -768,6 +790,47 @@ class BaseRunner(ABC):
                 logger.warning(f"[{task.id}] stopwatch summary failed: {type(sw_err).__name__}: {sw_err}")
         finally:
             agent.reset_history()
+
+        # 4. Terminal episode event (VS-07 contract 6). The cancelled case already
+        # emitted episode.cancelled inside Controller.run; here we emit the
+        # non-cancelled terminal event so live consumers (UI progress) have a
+        # real, dedup-able source. Outcome/error_code use the SAME yardstick as
+        # ingestion: result.error (which result_is_error checks) => episode.error.
+        if exec_result.stop_reason != "CANCELLED":
+            try:
+                if result.error:
+                    sink.emit(ExecutionEvent(
+                        type="episode.error",
+                        timestamp="",
+                        phase="execute",
+                        worker_id=worker_id,
+                        task_id=task.id,
+                        trial_id=trial_id,
+                        episode_key=episode_key,
+                        payload={
+                            "outcome": "ERROR",
+                            "steps": exec_result.steps,
+                            "stop_reason": exec_result.stop_reason,
+                            "error": result.error,
+                        },
+                    ))
+                else:
+                    sink.emit(ExecutionEvent(
+                        type="episode.completed",
+                        timestamp="",
+                        phase="execute",
+                        worker_id=worker_id,
+                        task_id=task.id,
+                        trial_id=trial_id,
+                        episode_key=episode_key,
+                        payload={
+                            "outcome": "PASS" if result.success else "FAIL",
+                            "steps": exec_result.steps,
+                            "stop_reason": exec_result.stop_reason,
+                        },
+                    ))
+            except Exception:  # noqa: BLE001 — event failure must not affect the run
+                logger.debug("terminal episode event emit failed", exc_info=True)
 
         return result
 

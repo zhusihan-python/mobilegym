@@ -43,6 +43,8 @@ class RunnerConfig:
     coord_space: str = "norm_0_1000"
     delay_after_action: float = 1.0
     physical_size: tuple[int, int] = (1080, 2400)  # 设备物理分辨率（sim 下须等于 viewport×scale）
+    viewport_size: tuple[int, int] = (360, 800)  # CSS viewport (sim 下 = physical_size / device_scale_factor)
+    device_scale_factor: float = 3.0  # DPR (sim 下 = physical_size / viewport_size)
     
     # Execution
     max_steps: int = _DEFAULT_MAX_STEPS
@@ -346,6 +348,8 @@ class RunnerConfig:
         # Type fixups: meta.json stores these in JSON-compatible types
         if "physical_size" in kwargs and isinstance(kwargs["physical_size"], list):
             kwargs["physical_size"] = tuple(kwargs["physical_size"])
+        if "viewport_size" in kwargs and isinstance(kwargs["viewport_size"], list):
+            kwargs["viewport_size"] = tuple(kwargs["viewport_size"])
         if "runs_dir" in kwargs:
             kwargs["runs_dir"] = Path(kwargs["runs_dir"])
         # Per-shard internal flags; never serialized to meta.json.

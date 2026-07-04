@@ -38,6 +38,7 @@ export function WorkflowsPage() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [targetId, setTargetId] = useState('');
   const [repeatCount, setRepeatCount] = useState(1);
+  const [parallelCount, setParallelCount] = useState(1);
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowSummary | null>(null);
   const [preview, setPreview] = useState<WorkflowCompilePreview | null>(null);
   const [publishedVersion, setPublishedVersion] = useState<WorkflowVersion | null>(null);
@@ -86,8 +87,8 @@ export function WorkflowsPage() {
   }, [state]);
 
   const definition = useMemo(
-    () => buildDefinition(selectedTaskIds, targetId, repeatCount),
-    [repeatCount, selectedTaskIds, targetId],
+    () => buildDefinition(selectedTaskIds, targetId, repeatCount, parallelCount),
+    [repeatCount, selectedTaskIds, targetId, parallelCount],
   );
 
   const toggleTask = (taskId: string) => {
@@ -251,6 +252,19 @@ export function WorkflowsPage() {
             }}
           />
 
+          <label htmlFor="tp-workflow-parallel">Parallel workers</label>
+          <input
+            id="tp-workflow-parallel"
+            type="number"
+            min={1}
+            value={parallelCount}
+            onChange={(event) => {
+              setParallelCount(Math.max(1, Number(event.target.value) || 1));
+              setPreview(null);
+              setPublishedVersion(null);
+            }}
+          />
+
           <label htmlFor="tp-workflow-seed">Run seed</label>
           <input
             id="tp-workflow-seed"
@@ -299,6 +313,7 @@ function buildDefinition(
   selectedTaskIds: string[],
   targetId: string,
   repeatCount: number,
+  parallelCount: number = 1,
 ): WorkflowDefinition {
   return {
     schema_version: 1,
@@ -326,7 +341,7 @@ function buildDefinition(
         id: 'execute',
         type: 'execute',
         depends_on: ['matrix'],
-        config: { parallel: 1 },
+        config: { parallel: Math.max(1, parallelCount) },
       },
     ],
   };

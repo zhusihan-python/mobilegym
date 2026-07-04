@@ -14,6 +14,7 @@ from bench_env.runner.base import Controller
 from bench_env.metrics import result_is_error, result_is_success
 from bench_env.config import RunnerConfig
 from bench_env.env.recorder import RunRecorder
+from bench_env.runner.parallel import ParallelRunner
 from bench_env.runner.serial import PreparedWorkItem, SerialRunner
 from bench_env.task.registry import TaskRegistry
 
@@ -287,7 +288,7 @@ class ResultIngestor:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def ingest_episode_result(
+    def ingest_episode_attempt(
         self,
         *,
         run_id: str,
@@ -296,7 +297,19 @@ class ResultIngestor:
         result: Any,
         artifact_root: str,
         cancelled: bool = False,
+        error_code_override: str | None = None,
     ) -> dict[str, Any]:
+        """Insert ONE episode_attempts row. Does NOT touch lane/run/run_attempt state.
+
+        For parallel execution many episodes share a lane; finalizing the lane
+        per-episode would complete the whole run on the first episode. The
+        parallel executor calls this once per result, then ``finalize_lane_run``
+        exactly once at the end.
+
+        ``error_code_override`` (when provided) replaces the derived error_code
+        — used by reconciliation to label missing/crashed episodes (e.g.
+        WORKER_CRASH) without altering the outcome derivation.
+        """
         connection = self.database.connection
         episode_row = connection.execute(
             """
@@ -314,6 +327,7 @@ class ResultIngestor:
                 details=[{"run_id": run_id, "episode_key": episode_key}],
             )
 
+        # The lane_attempt must exist, but its state is left untouched here.
         lane_row = connection.execute(
             """
             SELECT run_attempt_id
@@ -332,7 +346,13 @@ class ResultIngestor:
 
         normalized = _result_to_dict(result)
         outcome = _result_outcome(result, cancelled=cancelled)
-        error_code = _error_code_for_outcome(outcome)
+        error_code = (
+            error_code_override
+            if error_code_override is not None
+            else _error_code_for_outcome(outcome)
+        )
+        # The episode_attempt's own state is terminal (it represents one finished
+        # attempt); the lane/run state is finalized separately.
         terminal_state = "cancelled" if cancelled else "completed"
         now = _utc_timestamp()
         attempt_id = new_id()
@@ -365,37 +385,6 @@ class ResultIngestor:
                         now,
                     ),
                 )
-                connection.execute(
-                    """
-                    UPDATE lane_attempts
-                    SET state = ?,
-                        started_at = COALESCE(started_at, ?),
-                        ended_at = ?
-                    WHERE id = ?
-                    """,
-                    (terminal_state, now, now, lane_attempt_id),
-                )
-                connection.execute(
-                    """
-                    UPDATE run_attempts
-                    SET state = ?,
-                        started_at = COALESCE(started_at, ?),
-                        ended_at = ?
-                    WHERE id = ?
-                    """,
-                    (terminal_state, now, now, lane_row["run_attempt_id"]),
-                )
-                connection.execute(
-                    """
-                    UPDATE runs
-                    SET state = ?,
-                        started_at = COALESCE(started_at, ?),
-                        ended_at = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (terminal_state, now, now, now, run_id),
-                )
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -410,7 +399,111 @@ class ResultIngestor:
             "outcome": outcome,
             "error_code": error_code,
             "artifact_root": artifact_root,
+            "run_attempt_id": str(lane_row["run_attempt_id"]),
         }
+
+    def finalize_lane_run(
+        self,
+        *,
+        run_id: str,
+        lane_attempt_id: str,
+        terminal_state: str,
+        cancelled: bool = False,
+    ) -> None:
+        """Transition lane_attempts/run_attempts/runs to ``terminal_state``.
+
+        Idempotent: only rows still in cancellable states are updated, so a
+        finalize after a cancel (or a repeated finalize) is a safe no-op on rows
+        already terminal. ``cancelled`` is kept for API symmetry with
+        ``ingest_episode_attempt``; the ``terminal_state`` argument is the
+        authoritative value.
+        """
+        _ = cancelled  # accepted for symmetry; terminal_state is authoritative
+        connection = self.database.connection
+        lane_row = connection.execute(
+            "SELECT run_attempt_id FROM lane_attempts WHERE id = ?",
+            (lane_attempt_id,),
+        ).fetchone()
+        if lane_row is None:
+            raise RunDomainError(
+                "LANE_ATTEMPT_NOT_FOUND",
+                "Lane attempt was not found.",
+                status_code=500,
+                details=[{"lane_attempt_id": lane_attempt_id}],
+            )
+        run_attempt_id = str(lane_row["run_attempt_id"])
+        now = _utc_timestamp()
+        cancellable = "('queued','preparing','running','evaluating','reporting')"
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    f"""
+                    UPDATE lane_attempts
+                    SET state = ?,
+                        started_at = COALESCE(started_at, ?),
+                        ended_at = COALESCE(ended_at, ?)
+                    WHERE id = ? AND state IN {cancellable}
+                    """,
+                    (terminal_state, now, now, lane_attempt_id),
+                )
+                connection.execute(
+                    f"""
+                    UPDATE run_attempts
+                    SET state = ?,
+                        started_at = COALESCE(started_at, ?),
+                        ended_at = COALESCE(ended_at, ?)
+                    WHERE id = ? AND state IN {cancellable}
+                    """,
+                    (terminal_state, now, now, run_attempt_id),
+                )
+                connection.execute(
+                    f"""
+                    UPDATE runs
+                    SET state = ?,
+                        started_at = COALESCE(started_at, ?),
+                        ended_at = COALESCE(ended_at, ?),
+                        updated_at = ?
+                    WHERE id = ? AND state IN {cancellable}
+                    """,
+                    (terminal_state, now, now, now, run_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+    def ingest_episode_result(
+        self,
+        *,
+        run_id: str,
+        lane_attempt_id: str,
+        episode_key: str,
+        result: Any,
+        artifact_root: str,
+        cancelled: bool = False,
+    ) -> dict[str, Any]:
+        """Backward-compatible wrapper: insert the episode attempt, then finalize.
+
+        Serial execution has exactly one episode per lane, so combining the two
+        is correct there. Parallel execution MUST call the two methods explicitly
+        (insert per episode, finalize once at the end).
+        """
+        summary = self.ingest_episode_attempt(
+            run_id=run_id,
+            lane_attempt_id=lane_attempt_id,
+            episode_key=episode_key,
+            result=result,
+            artifact_root=artifact_root,
+            cancelled=cancelled,
+        )
+        self.finalize_lane_run(
+            run_id=run_id,
+            lane_attempt_id=lane_attempt_id,
+            terminal_state="cancelled" if cancelled else "completed",
+            cancelled=cancelled,
+        )
+        return summary
 
     def _next_attempt_no(self, episode_id: str, lane_attempt_id: str) -> int:
         row = self.database.connection.execute(
@@ -467,7 +560,89 @@ class ResultIngestor:
                 raise
 
 
-class SerialRunExecutor:
+class _RunExecutorBase:
+    """Shared run-lifecycle helpers used by both Serial and Parallel executors.
+
+    These methods read/write only ``self.database`` (no execution-specific
+    state), so factoring them out avoids duplication while keeping each
+    executor's ``execute_run`` self-contained.
+    """
+
+    database: Database
+
+    def _load_plan(self, run_id: str) -> RunPlan:
+        row = self.database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunDomainError("RUN_NOT_FOUND", "Run was not found.", status_code=404)
+        return RunPlan.model_validate(json.loads(row["run_plan_json"]))
+
+    def _lane_attempt(self, run_id: str) -> dict[str, str]:
+        row = self.database.connection.execute(
+            """
+            SELECT la.id, la.artifact_root
+            FROM lane_attempts AS la
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE l.run_id = ?
+            ORDER BY l.lane_key
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunDomainError("LANE_ATTEMPT_NOT_FOUND", "Lane attempt was not found.", status_code=500)
+        return {"id": str(row["id"]), "artifact_root": str(row["artifact_root"])}
+
+    def _cancel_requested(self, run_id: str) -> bool:
+        row = self.database.connection.execute(
+            "SELECT cancel_requested_at FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        return row is not None and row["cancel_requested_at"] is not None
+
+    def _mark_run_running(self, run_id: str) -> None:
+        now = _utc_timestamp()
+        connection = self.database.connection
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = 'running',
+                        started_at = COALESCE(started_at, ?),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE run_attempts
+                    SET state = 'running',
+                        started_at = COALESCE(started_at, ?)
+                    WHERE run_id = ?
+                    """,
+                    (now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE lane_attempts
+                    SET state = 'running',
+                        started_at = COALESCE(started_at, ?)
+                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
+                    """,
+                    (now, run_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+
+class SerialRunExecutor(_RunExecutorBase):
     def __init__(
         self,
         database: Database,
@@ -610,8 +785,9 @@ class SerialRunExecutor:
                 lane_attempt["artifact_root"],
                 result,
                 repeat_n=config.repeat_n,
+                episode_key=work_item.episode_key,
             )
-            ingestor.ingest_episode_result(
+            ingestor.ingest_episode_attempt(
                 run_id=run_id,
                 lane_attempt_id=lane_attempt["id"],
                 episode_key=work_item.episode_key,
@@ -619,6 +795,15 @@ class SerialRunExecutor:
                 artifact_root=artifact_root,
                 cancelled=token.cancelled,
             )
+        # Serial execution has exactly one episode per lane, so finalizing once
+        # after the single ingest is correct. (Parallel execution finalizes once
+        # after ALL episodes are ingested.)
+        ingestor.finalize_lane_run(
+            run_id=run_id,
+            lane_attempt_id=lane_attempt["id"],
+            terminal_state="cancelled" if cancelled else "completed",
+            cancelled=cancelled,
+        )
 
         if cancelled:
             ingestor.mark_run_cancelled(run_id)
@@ -631,76 +816,294 @@ class SerialRunExecutor:
         # executor only raises RunCancelled; the supervisor finalizes + emits.
         return RunRepository(self.database).get(run_id)
 
-    def _load_plan(self, run_id: str) -> RunPlan:
-        row = self.database.connection.execute(
-            "SELECT run_plan_json FROM runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            raise RunDomainError("RUN_NOT_FOUND", "Run was not found.", status_code=404)
-        return RunPlan.model_validate(json.loads(row["run_plan_json"]))
 
-    def _lane_attempt(self, run_id: str) -> dict[str, str]:
-        row = self.database.connection.execute(
-            """
-            SELECT la.id, la.artifact_root
-            FROM lane_attempts AS la
-            JOIN lanes AS l ON l.id = la.lane_id
-            WHERE l.run_id = ?
-            ORDER BY l.lane_key
-            LIMIT 1
-            """,
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            raise RunDomainError("LANE_ATTEMPT_NOT_FOUND", "Lane attempt was not found.", status_code=500)
-        return {"id": str(row["id"]), "artifact_root": str(row["artifact_root"])}
+class ParallelRunExecutor(_RunExecutorBase):
+    """Execute all episodes of a single lane concurrently with N workers.
 
-    def _cancel_requested(self, run_id: str) -> bool:
-        row = self.database.connection.execute(
-            "SELECT cancel_requested_at FROM runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        return row is not None and row["cancel_requested_at"] is not None
+    Mirrors SerialRunExecutor's lifecycle (queued-cancel check → mark running →
+    emit run.started → materialize → run → ingest → finalize) but runs many
+    episodes in parallel and reconciles results by episode_key so plan order is
+    preserved regardless of completion order.
 
-    def _mark_run_running(self, run_id: str) -> None:
-        now = _utc_timestamp()
-        connection = self.database.connection
-        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
-            connection.execute("BEGIN IMMEDIATE")
+    The env_pool_factory(lane) -> EnvPool and agent_factory(lane) -> agent
+    patterns are the parallel analogues of SerialRunExecutor's env/agent
+    factories. For tests, inject fakes.
+    """
+
+    def __init__(
+        self,
+        database: Database,
+        settings: PlatformSettings,
+        *,
+        task_factory: TaskFactory | None = None,
+        env_pool_factory: Any | None = None,
+        agent_factory: Any | None = None,
+        env_factory: Any | None = None,
+    ) -> None:
+        self.database = database
+        self.settings = settings
+        self.task_factory = task_factory or RegistryTaskFactory()
+        self.env_pool_factory = env_pool_factory
+        # env_factory is used ONLY for the materialization phase (sampling one
+        # env's state). If not provided, fall back to pulling a single env out
+        # of the pool factory — but tests typically inject a dedicated
+        # materialization env (mirroring SerialRunExecutor's iterator pattern).
+        self.env_factory = env_factory
+        self.agent_factory = agent_factory
+
+    async def execute_run(
+        self,
+        run_id: str,
+        *,
+        token: CancellationToken | None = None,
+        events: EventSink | None = None,
+        run_event_writer: Any = None,
+    ) -> RunDetail:
+        token = token or CancellationToken()
+        events = events or NullEventSink()
+        writer = run_event_writer
+
+        # (1) Honor a cancel that landed while the run was queued: raise BEFORE
+        # emitting run.started so a pre-execution cancel produces a clean
+        # cancelled stream with no misleading "started" event.
+        if self._cancel_requested(run_id):
+            token.cancel()
+            raise RunCancelled()
+
+        # (2) Mark running + emit run.started here (not in the supervisor) so the
+        # event never precedes a queued cancellation. Terminal run.* events stay
+        # owned by the supervisor.
+        self._mark_run_running(run_id)
+        if writer is not None:
             try:
-                connection.execute(
-                    """
-                    UPDATE runs
-                    SET state = 'running',
-                        started_at = COALESCE(started_at, ?),
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (now, now, run_id),
+                writer.emit(
+                    run_id, "run.started", {"state": "running"},
+                    entity_type="run", entity_id=run_id,
                 )
-                connection.execute(
-                    """
-                    UPDATE run_attempts
-                    SET state = 'running',
-                        started_at = COALESCE(started_at, ?)
-                    WHERE run_id = ?
-                    """,
-                    (now, run_id),
+            except Exception:  # noqa: BLE001
+                pass
+
+        # (3) Materialize the (single) source lane's unique templates. The same
+        # SingleLaneMaterializer is reused; it produces one PreparedTaskInstance
+        # per unique materialization_key regardless of trial count. Materialize
+        # uses a single env (env_factory); execution uses the pool below.
+        prepared = await SingleLaneMaterializer(
+            self.database,
+            self.settings,
+            task_factory=self.task_factory,
+            env_factory=self.env_factory,
+        ).materialize_run(run_id, token=token, events=events)
+        if not prepared:
+            raise RunDomainError(
+                "UNSUPPORTED_RUN_PLAN",
+                "Parallel execution requires at least one prepared task.",
+                status_code=409,
+            )
+
+        plan = self._load_plan(run_id)
+        lane = _single_lane(plan)
+        lane_attempt = self._lane_attempt(run_id)
+        prepared_by_key = {item.materialization_key: item for item in prepared}
+
+        # (4) Build work_items for EVERY planned episode (not just one). Each
+        # trial of a repeated task becomes its own work item with a distinct
+        # episode_key, so workers can run them concurrently.
+        work_items: list[PreparedWorkItem] = []
+        for episode in plan.episodes:
+            payload = prepared_by_key[episode.materialization_key]
+            task = self.task_factory.instantiate(episode, params=payload.params)
+            work_items.append(
+                PreparedWorkItem(
+                    episode_key=episode.episode_key,
+                    task=task,
+                    trial_id=episode.trial_id,
+                    max_steps=episode.max_steps,
                 )
-                connection.execute(
-                    """
-                    UPDATE lane_attempts
-                    SET state = 'running',
-                        started_at = COALESCE(started_at, ?)
-                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
-                    """,
-                    (now, run_id),
+            )
+        if not work_items:
+            raise RunDomainError(
+                "UNSUPPORTED_RUN_PLAN",
+                "Parallel execution requires at least one episode.",
+                status_code=409,
+            )
+
+        if self.env_pool_factory is None or self.agent_factory is None:
+            raise RunDomainError(
+                "EXECUTOR_FACTORY_MISSING",
+                "Parallel execution requires environment pool and agent factories.",
+                status_code=500,
+            )
+        env_pool = self.env_pool_factory(lane)
+        config = _runner_config(lane)
+        lane_root = self.settings.runs_dir / run_id / lane_attempt["artifact_root"]
+        recorder = RunRecorder(
+            self.settings.runs_dir,
+            save_trajectory=not bool(config.no_save_trajectory),
+            coord_space=config.coord_space,
+            screenshot_scale=config.screenshot_scale,
+            fixed_run_dir=lane_root,
+        )
+        recorder.start_run(
+            agent=getattr(self.agent_factory(lane), "name", config.agent),
+            model_name=config.model_name,
+            extra_meta={"platform_run_id": run_id, "lane_key": lane.lane_key},
+            repeat_n=len(work_items),
+        )
+
+        # (5/6) Run all episodes concurrently. ParallelRunner preserves plan
+        # order in its returned list and emits worker.started/stopped + episode
+        # events through ``events``.
+        try:
+            results = await ParallelRunner(
+                env_pool,
+                lambda: self.agent_factory(lane),
+                [item.task for item in work_items],
+                config,
+                recorder=recorder,
+                prepared_work_items=work_items,
+                event_sink=events,
+                cancellation_token=token,
+            ).run()
+        except RunCancelled:
+            token.cancel()
+            results = []
+
+        # If any single result was CANCELLED, propagate as a run-level cancel.
+        any_result_cancelled = any(
+            getattr(getattr(r, "execution", None), "stop_reason", None) == "CANCELLED"
+            for r in results
+        )
+        if any_result_cancelled:
+            token.cancel()
+
+        # (7) Reconcile results against the expected episode_keys (from
+        # work_items). Missing → synthetic ERROR + WORKER_CRASH; unknown /
+        # duplicate → hard error (never silently drop or double-count).
+        self._reconcile_and_ingest(
+            run_id=run_id,
+            lane_attempt=lane_attempt,
+            work_items=work_items,
+            results=results,
+            cancelled=token.cancelled,
+        )
+
+        # (10) If cancelled, mark the run cancelled and re-raise so the
+        # supervisor emits run.cancelled.
+        if token.cancelled:
+            ResultIngestor(self.database).mark_run_cancelled(run_id)
+            raise RunCancelled()
+        return RunRepository(self.database).get(run_id)
+
+    def _reconcile_and_ingest(
+        self,
+        *,
+        run_id: str,
+        lane_attempt: dict[str, str],
+        work_items: list[PreparedWorkItem],
+        results: list[Any],
+        cancelled: bool,
+    ) -> None:
+        """Reconcile runner results against expected episode_keys and ingest.
+
+        - MISSING expected key → synthetic ERROR result ingested with
+          ``error_code_override='WORKER_CRASH'``.
+        - UNKNOWN key (in results, not expected) → RunDomainError.
+        - DUPLICATE key (two results, same key) → RunDomainError.
+        Then ingest every episode (in plan order) and finalize the lane once.
+        """
+        expected_keys = [item.episode_key for item in work_items]
+        expected_set = set(expected_keys)
+
+        # Index results by episode_key, detecting duplicates.
+        results_by_key: dict[str, Any] = {}
+        unknown_keys: list[str] = []
+        for result in results:
+            key = getattr(result, "episode_key", None)
+            if key is None:
+                # A result without episode_key is unrecoverable for parallel
+                # attribution — treat as unknown.
+                unknown_keys.append("<missing episode_key>")
+                continue
+            if key not in expected_set:
+                unknown_keys.append(key)
+                continue
+            if key in results_by_key:
+                raise RunDomainError(
+                    "EPISODE_RESULT_UNKNOWN",
+                    "The runner returned duplicate results for one episode.",
+                    status_code=500,
+                    details=[{"run_id": run_id, "episode_key": key, "duplicate": True}],
                 )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+            results_by_key[key] = result
+        if unknown_keys:
+            raise RunDomainError(
+                "EPISODE_RESULT_UNKNOWN",
+                "The runner returned results for unknown episodes.",
+                status_code=500,
+                details=[
+                    {"run_id": run_id, "unknown_episode_keys": unknown_keys}
+                ],
+            )
+
+        ingestor = ResultIngestor(self.database)
+        # Ingest in PLAN order so episode_attempts are deterministic.
+        for work_item in work_items:
+            key = work_item.episode_key
+            artifact_root = _episode_artifact_root(
+                lane_attempt["artifact_root"],
+                results_by_key.get(key),
+                repeat_n=1,
+                episode_key=key,
+            )
+            if key in results_by_key:
+                ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt["id"],
+                    episode_key=key,
+                    result=results_by_key[key],
+                    artifact_root=artifact_root,
+                    cancelled=cancelled,
+                )
+            else:
+                # Missing result → the worker crashed/exited before reporting.
+                # Ingest a synthetic ERROR with WORKER_CRASH so the run surfaces
+                # the failure rather than silently dropping the episode.
+                synthetic = self._synthetic_crash_result(work_item)
+                ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt["id"],
+                    episode_key=key,
+                    result=synthetic,
+                    artifact_root=artifact_root,
+                    cancelled=cancelled,
+                    error_code_override="WORKER_CRASH",
+                )
+
+        # Finalize the lane/run exactly once after ALL episodes are ingested.
+        ingestor.finalize_lane_run(
+            run_id=run_id,
+            lane_attempt_id=lane_attempt["id"],
+            terminal_state="cancelled" if cancelled else "completed",
+            cancelled=cancelled,
+        )
+
+    @staticmethod
+    def _synthetic_crash_result(work_item: PreparedWorkItem) -> dict[str, Any]:
+        """A minimal ERROR result dict for a missing/crashed episode.
+
+        Shaped so ``_result_to_dict``/``_result_outcome`` classify it as ERROR
+        (is_error=True) without needing a full EpisodeResult object.
+        """
+        return {
+            "id": getattr(work_item.task, "id", "unknown"),
+            "trial_id": work_item.trial_id,
+            "is_success": False,
+            "is_error": True,
+            "execution": {
+                "error": "Worker exited without reporting a result (WORKER_CRASH).",
+                "stop_reason": "ERROR",
+            },
+        }
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -732,6 +1135,8 @@ def _runner_config(lane: PlannedLane) -> RunnerConfig:
     runner_config = dict(lane.runner_config)
     if isinstance(runner_config.get("physical_size"), list):
         runner_config["physical_size"] = tuple(runner_config["physical_size"])
+    if isinstance(runner_config.get("viewport_size"), list):
+        runner_config["viewport_size"] = tuple(runner_config["viewport_size"])
     runner_config.setdefault("agent", "platform")
     runner_config.setdefault("model_name", "platform")
     runner_config.setdefault("quiet", True)
@@ -744,12 +1149,30 @@ def _runner_config(lane: PlannedLane) -> RunnerConfig:
     })
 
 
+def _episode_artifact_name(episode_key: str) -> str:
+    """Stable, filesystem-safe artifact segment for one episode_key.
+
+    Sanitizes the key into a readable prefix, then appends an 8-char hash suffix
+    derived from the ORIGINAL key. The hash guarantees uniqueness even when two
+    distinct keys sanitize to the same string (e.g. ``a|b`` and ``a/b`` both
+    collapse to ``a_b``)."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", episode_key).strip("._")
+    digest = canonical_sha256(episode_key).split(":", 1)[1][:8]
+    # readable prefix (max 64 chars) + hash suffix guarantees uniqueness even
+    # when two keys sanitize to the same string (e.g. "a|b" and "a/b").
+    prefix = cleaned[:64].rstrip("._") or "episode"
+    return f"{prefix}_{digest}"
+
+
 def _episode_artifact_root(
     lane_artifact_root: str,
     result: Any,
     *,
     repeat_n: int,
+    episode_key: str | None = None,
 ) -> str:
+    if episode_key is not None:
+        return f"{lane_artifact_root}/trajectory/{_episode_artifact_name(episode_key)}"
     result_dict = _result_to_dict(result)
     task_id = str(result_dict.get("id") or getattr(result, "task_id", "episode"))
     task_id_safe = task_id.replace(".", "_").replace("/", "_").replace(" ", "_")

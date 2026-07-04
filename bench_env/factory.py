@@ -122,6 +122,8 @@ async def create_env(config: ConfigType) -> Any:
         # Pixel 7 defaults (与 EnvPool 保持一致)
         # NOTE: physical_size = viewport_size × device_scale_factor，
         #       修改 viewport 或 scale 时须同步更新 physical_size
+        # VS-07: read the full target profile from config (defaults preserve the
+        # old hardcoded values for CLI runs that never set these fields).
         env = MobileGymEnv(
             url=env_url,
             headless=headless,
@@ -129,9 +131,9 @@ async def create_env(config: ConfigType) -> Any:
             coord_space=coord_space,
             delay_after_action=delay,
             verbose=verbose,
-            viewport_size=(360, 800),
+            viewport_size=getattr(config, "viewport_size", (360, 800)),
             physical_size=physical_size,
-            device_scale_factor=3,
+            device_scale_factor=getattr(config, "device_scale_factor", 3),
         )
         await env.start()
         return env

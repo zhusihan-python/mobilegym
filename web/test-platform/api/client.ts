@@ -185,6 +185,10 @@ export function streamRunEvents(
   source.addEventListener('episode.step_recorded', generic as EventListener);
   source.addEventListener('episode.completed', generic as EventListener);
   source.addEventListener('episode.cancelled', generic as EventListener);
+  // VS-07: parallel worker lifecycle + episode error events.
+  source.addEventListener('episode.error', generic as EventListener);
+  source.addEventListener('worker.started', generic as EventListener);
+  source.addEventListener('worker.stopped', generic as EventListener);
 
   return () => source.close();
 }

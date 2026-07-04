@@ -207,6 +207,8 @@ class SerialRunner(BaseRunner):
                             loop_threshold=self.config.loop_detect,
                             cancellation_token=self.cancellation_token,
                             event_sink=self.event_sink,
+                            worker_id="serial",
+                            episode_key=work_item.episode_key,
                         )
                         results.append(result)
 

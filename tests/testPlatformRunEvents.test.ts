@@ -25,7 +25,14 @@ function baseSnapshot(state = 'running'): RunDetail {
 }
 
 function baseState(): RunLiveState {
-  return { snapshot: baseSnapshot(), lastSequence: 0, connected: true, replaying: false };
+  return {
+    snapshot: baseSnapshot(),
+    lastSequence: 0,
+    connected: true,
+    replaying: false,
+    completedEpisodeKeys: new Set<string>(),
+    activeWorkers: new Set<string>(),
+  };
 }
 
 function event(type: string, sequence: number, payload: Record<string, unknown> = {}): RunEvent {
