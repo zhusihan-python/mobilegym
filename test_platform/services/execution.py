@@ -1630,10 +1630,11 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         return lanes[0], lanes[1]
 
     def _lane_attempts_by_key(self, run_id: str) -> dict[str, dict[str, str]]:
-        """Map lane_key → {id, artifact_root} for this run's lane_attempts."""
+        """Map lane_key → {id, artifact_root, lane_id, run_attempt_id} for this run."""
         rows = self.database.connection.execute(
             """
-            SELECT l.lane_key, la.id, la.artifact_root, l.id AS lane_id
+            SELECT l.lane_key, la.id, la.artifact_root, l.id AS lane_id,
+                   la.run_attempt_id
             FROM lane_attempts AS la
             JOIN lanes AS l ON l.id = la.lane_id
             WHERE l.run_id = ?
@@ -1652,6 +1653,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 "id": str(row["id"]),
                 "artifact_root": str(row["artifact_root"]),
                 "lane_id": str(row["lane_id"]),
+                "run_attempt_id": str(row["run_attempt_id"]),
             }
             for row in rows
         }
@@ -1703,6 +1705,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 integrity_status = IntegrityStatus.OK
                 integrity_reason: str | None = None
                 ran_controller = False
+                _tore_down = [False]  # mutable flag to prevent double-teardown (P2.2)
                 result: Any = None
                 try:
                     initial_obs, _params = await Controller.setup(
@@ -1770,13 +1773,18 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                     token.cancel()
                     # Cancel during setup/run: teardown already handled by
                     # Controller.run's finally if it started; otherwise here.
-                    if not ran_controller:
+                    # Guard with _tore_down so the finally below does NOT
+                    # double-teardown (P2.2: setup-time cancel hits both the
+                    # except and the finally because ran_controller is False).
+                    if not ran_controller and not _tore_down[0]:
                         await _maybe_await(task.teardown(env))
+                        _tore_down[0] = True
                     raise
                 finally:
-                    if not ran_controller:
+                    if not ran_controller and not _tore_down[0]:
                         # Mismatch path teardown (Contract 7).
                         await _maybe_await(task.teardown(env))
+                        _tore_down[0] = True
 
                 outcomes.append(
                     {
@@ -1978,45 +1986,51 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 "Paired serial execution requires environment and agent factories.",
                 status_code=500,
             )
-        prepared = await PairedMaterializer(
-            self.database,
-            self.settings,
-            task_factory=self.task_factory,
-            env_factory=self.env_factory,
-        ).materialize_run(run_id, token=token, events=events)
-        if not prepared:
-            raise RunDomainError(
-                "UNSUPPORTED_RUN_PLAN",
-                "Paired execution requires at least one prepared task.",
-                status_code=409,
-            )
-        prepared_by_key = {item.materialization_key: item for item in prepared}
-
-        plan = self._load_plan(run_id)
-        baseline_lane, candidate_lane = self._paired_lanes(run_id)
-        lane_attempts = self._lane_attempts_by_key(run_id)
-        baseline_attempt = lane_attempts[baseline_lane.lane_key]
-        candidate_attempt = lane_attempts[candidate_lane.lane_key]
-
-        # Build a per-lane event sink (Contract 3): the paired executor builds a
-        # SEPARATE PlatformRunnerEventSink per lane from the writer + lane info.
-        episode_key_resolver = self._make_episode_key_resolver(run_id)
-        baseline_sink = self._build_lane_sink(
-            writer, run_id, baseline_lane, baseline_attempt, episode_key_resolver
-        )
-        candidate_sink = self._build_lane_sink(
-            writer, run_id, candidate_lane, candidate_attempt, episode_key_resolver
-        )
-
-        ingestor = ResultIngestor(self.database)
-        run_attempt_id = self._run_attempt_id(run_id)
-
-        # Group episodes by pair_key (== episode_key here). Each lane runs the
-        # same set of episodes (paired), so baseline_episodes == candidate set.
-        episodes = plan.episodes
 
         cancelled = False
+        baseline_outcomes: list[dict[str, Any]] = []
+        candidate_outcomes: list[dict[str, Any]] = []
+        # Pre-set defaults so the finalize path works even if cancellation
+        # fires during materialization (before lanes/sinks/ingestor are built).
+        ingestor = ResultIngestor(self.database)
+        baseline_attempt: dict[str, str] | None = None
+        candidate_attempt: dict[str, str] | None = None
+        baseline_sink: Any = NullEventSink()
+        candidate_sink: Any = NullEventSink()
         try:
+            prepared = await PairedMaterializer(
+                self.database,
+                self.settings,
+                task_factory=self.task_factory,
+                env_factory=self.env_factory,
+            ).materialize_run(run_id, token=token, events=events)
+            if not prepared:
+                raise RunDomainError(
+                    "UNSUPPORTED_RUN_PLAN",
+                    "Paired execution requires at least one prepared task.",
+                    status_code=409,
+                )
+            prepared_by_key = {item.materialization_key: item for item in prepared}
+
+            plan = self._load_plan(run_id)
+            baseline_lane, candidate_lane = self._paired_lanes(run_id)
+            lane_attempts = self._lane_attempts_by_key(run_id)
+            baseline_attempt = lane_attempts[baseline_lane.lane_key]
+            candidate_attempt = lane_attempts[candidate_lane.lane_key]
+
+            # Build a per-lane event sink (Contract 3).
+            episode_key_resolver = self._make_episode_key_resolver(run_id)
+            baseline_sink = self._build_lane_sink(
+                writer, run_id, baseline_lane, baseline_attempt, episode_key_resolver
+            )
+            candidate_sink = self._build_lane_sink(
+                writer, run_id, candidate_lane, candidate_attempt, episode_key_resolver
+            )
+
+            ingestor = ResultIngestor(self.database)
+            run_attempt_id = self._run_attempt_id(run_id)
+            episodes = plan.episodes
+
             # (4) Run baseline lane, then candidate lane (serial).
             baseline_agent = self.agent_factory(baseline_lane)
             baseline_outcomes = await self._run_lane(
@@ -2043,8 +2057,42 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         except RunCancelled:
             token.cancel()
             cancelled = True
-            baseline_outcomes = []
-            candidate_outcomes = []
+            # P1 fix: PRESERVE already-collected outcomes — do NOT clear them.
+            # Earlier completed episodes are valid results; only the episodes
+            # that never ran (or were mid-cancel) are missing. Those are
+            # synthesized as CANCELLED below in _ingest_lane_outcomes via the
+            # cancelled=True path + missing-episode reconciliation.
+
+        # P1 fix: detect cancellation from result stop_reason (Controller.run
+        # returns a CANCELLED result instead of raising when the token fires
+        # mid-step). Mirror single-lane any_result_cancelled logic.
+        if not cancelled:
+            for outcomes in (baseline_outcomes, candidate_outcomes):
+                for oc in outcomes:
+                    result = oc.get("result")
+                    if isinstance(result, dict):
+                        exec_d = result.get("execution") or {}
+                        if exec_d.get("stop_reason") == "CANCELLED":
+                            cancelled = True
+                            token.cancel()
+                            break
+                    else:
+                        exec_r = getattr(result, "execution", None)
+                        if exec_r and getattr(exec_r, "stop_reason", None) == "CANCELLED":
+                            cancelled = True
+                            token.cancel()
+                            break
+                if cancelled:
+                    break
+
+        # If cancellation fired during materialization, the lane attempts were
+        # never resolved from the DB. Resolve them now so finalize can run.
+        if baseline_attempt is None or candidate_attempt is None:
+            lane_attempts = self._lane_attempts_by_key(run_id)
+            plan_fallback = self._load_plan(run_id)
+            bl, cl = self._paired_lanes(run_id)
+            baseline_attempt = lane_attempts[bl.lane_key]
+            candidate_attempt = lane_attempts[cl.lane_key]
 
         # (5) Ingest episode_attempts per lane. PAIRING_VIOLATION lanes get an
         # ERROR episode_attempt + episode.error event (Contract 8).
@@ -2140,7 +2188,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         return PlatformRunnerEventSink(
             writer,
             run_id=run_id,
-            run_attempt_id=None,  # resolved by writer from run_id if needed
+            run_attempt_id=lane_attempt.get("run_attempt_id"),
             lane_id=lane_attempt["lane_id"],
             lane_attempt_id=lane_attempt["id"],
             worker_id=lane.lane_key,

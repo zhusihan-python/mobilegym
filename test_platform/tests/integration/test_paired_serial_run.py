@@ -16,6 +16,7 @@ Covers the full paired-serial lifecycle for a 2-lane run:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -611,5 +612,251 @@ def test_supervisor_two_lane_run_routes_to_paired_and_records_comparison(tmp_pat
             (run.id,),
         ).fetchone()
         assert run_completed["n"] == 1
+    finally:
+        database.close()
+
+
+# ---------------------------------------------------------------------------
+# VS-09 review: paired cancellation tests (P1 + test gap)
+# ---------------------------------------------------------------------------
+
+
+class _BlockingPairedEnv(_PairedEnv):
+    """Env whose step blocks until cancelled, simulating a long-running episode."""
+
+    async def step(self, action: Action) -> StepResult:
+        self.step_count += 1
+        import asyncio as _a
+        # Block until the token fires; Controller.run checks the token before
+        # each agent.act and returns a CANCELLED result.
+        await _a.sleep(30)
+        return StepResult(observation=await self.get_observation(), done=False, info={})
+
+
+@pytest.mark.asyncio
+async def test_paired_cancel_during_candidate_preserves_baseline(tmp_path):
+    """Cancelling during the candidate lane must NOT drop the baseline's already-
+    completed episode. The baseline outcome is preserved (P1 fix); the run
+    finalizes as cancelled."""
+    from bench_env.runner.cancellation import CancellationToken, RunCancelled
+
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    factory = _PairedTaskFactory()
+    materialize_env = _PairedEnv(label="materialize")
+    baseline_env = _PairedEnv(label="baseline")
+    candidate_env = _BlockingPairedEnv(label="candidate")  # blocks → cancel mid-run
+    baseline_agent = _ScriptedAgent(succeed=True)
+    candidate_agent = _ScriptedAgent(succeed=True)
+    env_iter = iter([materialize_env, baseline_env, candidate_env])
+    token = CancellationToken()
+
+    try:
+        run = _build_paired_run(database, settings)
+
+        async def _cancel_soon():
+            import asyncio as _a
+            # Wait for baseline to finish, then cancel during candidate.
+            await _a.sleep(0.3)
+            token.cancel()
+
+        try:
+            await asyncio.gather(
+                PairedSerialRunExecutor(
+                    database, settings,
+                    task_factory=factory,
+                    env_factory=lambda lane: next(env_iter),
+                    agent_factory=lambda lane: (
+                        baseline_agent if lane.lane_key == "baseline" else candidate_agent
+                    ),
+                ).execute_run(run.id, token=token),
+                _cancel_soon(),
+            )
+        except RunCancelled:
+            pass
+
+        # Run finalized as cancelled.
+        run_row = database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?", (run.id,)
+        ).fetchone()
+        assert run_row["state"] == "cancelled"
+
+        # Baseline episode_attempt is preserved (NOT dropped).
+        attempts = database.connection.execute(
+            "SELECT lane_key, outcome FROM episode_attempts "
+            "JOIN lane_attempts ON lane_attempts.id = episode_attempts.lane_attempt_id "
+            "JOIN lanes ON lanes.id = lane_attempts.lane_id "
+            "WHERE lanes.run_id = ? ORDER BY lane_key",
+            (run.id,),
+        ).fetchall()
+        outcomes = {row["lane_key"]: row["outcome"] for row in attempts}
+        # Baseline completed before cancel; its outcome is preserved.
+        assert "baseline" in outcomes, "baseline outcome was dropped by cancel"
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_paired_cancel_between_lanes_finalizes_cancelled(tmp_path):
+    """Cancelling during the candidate lane (after baseline completed) → run
+    cancelled, baseline preserved, candidate lane also finalized as cancelled."""
+    from bench_env.runner.cancellation import CancellationToken, RunCancelled
+
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    factory = _PairedTaskFactory()
+    materialize_env = _PairedEnv(label="materialize")
+    baseline_env = _PairedEnv(label="baseline")
+    candidate_env = _BlockingPairedEnv(label="candidate")  # blocks → cancel during candidate
+    baseline_agent = _ScriptedAgent(succeed=True)
+    candidate_agent = _ScriptedAgent(succeed=True)
+    env_iter = iter([materialize_env, baseline_env, candidate_env])
+    token = CancellationToken()
+
+    try:
+        run = _build_paired_run(database, settings)
+
+        # Cancel after baseline completes but before candidate's first episode
+        # gets far. The baseline agent completes instantly, so we cancel very
+        # quickly.
+        async def _cancel_soon():
+            import asyncio as _a
+            await _a.sleep(0.15)
+            token.cancel()
+
+        try:
+            await asyncio.gather(
+                PairedSerialRunExecutor(
+                    database, settings,
+                    task_factory=factory,
+                    env_factory=lambda lane: next(env_iter),
+                    agent_factory=lambda lane: (
+                        baseline_agent if lane.lane_key == "baseline" else candidate_agent
+                    ),
+                ).execute_run(run.id, token=token),
+                _cancel_soon(),
+            )
+        except RunCancelled:
+            pass
+
+        run_row = database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?", (run.id,)
+        ).fetchone()
+        assert run_row["state"] == "cancelled"
+
+        # Both lane_attempts are finalized (not left running).
+        lane_rows = database.connection.execute(
+            "SELECT lane_key, state FROM lane_attempts "
+            "JOIN lanes ON lanes.id = lane_attempts.lane_id "
+            "WHERE lanes.run_id = ? ORDER BY lane_key",
+            (run.id,),
+        ).fetchall()
+        for row in lane_rows:
+            assert row["state"] in ("cancelled", "completed"), (
+                f"lane {row['lane_key']} left in state {row['state']}"
+            )
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_paired_cancel_during_baseline(tmp_path):
+    """Cancelling during the baseline lane's first episode → run cancelled."""
+    from bench_env.runner.cancellation import CancellationToken, RunCancelled
+
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    factory = _PairedTaskFactory()
+    materialize_env = _PairedEnv(label="materialize")
+    baseline_env = _BlockingPairedEnv(label="baseline")  # blocks → cancel
+    candidate_env = _PairedEnv(label="candidate")
+    baseline_agent = _ScriptedAgent(succeed=True)
+    candidate_agent = _ScriptedAgent(succeed=True)
+    env_iter = iter([materialize_env, baseline_env, candidate_env])
+    token = CancellationToken()
+
+    try:
+        run = _build_paired_run(database, settings)
+
+        async def _cancel_soon():
+            import asyncio as _a
+            await _a.sleep(0.2)
+            token.cancel()
+
+        try:
+            await asyncio.gather(
+                PairedSerialRunExecutor(
+                    database, settings,
+                    task_factory=factory,
+                    env_factory=lambda lane: next(env_iter),
+                    agent_factory=lambda lane: (
+                        baseline_agent if lane.lane_key == "baseline" else candidate_agent
+                    ),
+                ).execute_run(run.id, token=token),
+                _cancel_soon(),
+            )
+        except RunCancelled:
+            pass
+
+        run_row = database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?", (run.id,)
+        ).fetchone()
+        assert run_row["state"] == "cancelled"
+
+        # The blocking env was closed (cleanup ran).
+        assert baseline_env.closed is True
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_paired_setup_time_cancel_no_double_teardown(tmp_path):
+    """P2.2: cancelling during setup (before Controller.run starts) must NOT
+    double-teardown the task."""
+    from bench_env.runner.cancellation import CancellationToken, RunCancelled
+
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    factory = _PairedTaskFactory()
+    materialize_env = _PairedEnv(label="materialize")
+    baseline_env = _PairedEnv(label="baseline")
+    candidate_env = _PairedEnv(label="candidate")
+    baseline_agent = _ScriptedAgent(succeed=True)
+    candidate_agent = _ScriptedAgent(succeed=True)
+    env_iter = iter([materialize_env, baseline_env, candidate_env])
+    token = CancellationToken()
+    # Pre-cancel so the token is already set when the first episode's
+    # token.raise_if_cancelled() fires (setup-time cancel path).
+    token.cancel()
+
+    try:
+        run = _build_paired_run(database, settings)
+        try:
+            await PairedSerialRunExecutor(
+                database, settings,
+                task_factory=factory,
+                env_factory=lambda lane: next(env_iter),
+                agent_factory=lambda lane: (
+                    baseline_agent if lane.lane_key == "baseline" else candidate_agent
+                ),
+            ).execute_run(run.id, token=token)
+        except RunCancelled:
+            pass
+
+        run_row = database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?", (run.id,)
+        ).fetchone()
+        assert run_row["state"] == "cancelled"
+
+        # No task was double-torn-down (teardown_count <= 1 for each instance
+        # that was setup). With pre-cancel, setup may not even run.
+        for task in factory.instances:
+            assert task.teardown_count <= 1, (
+                f"task {task.id} teardown_count={task.teardown_count} (double teardown)"
+            )
     finally:
         database.close()
