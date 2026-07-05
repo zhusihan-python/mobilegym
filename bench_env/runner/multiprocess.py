@@ -53,6 +53,13 @@ from bench_env.runner.events import (
 logger = get_logger(__name__)
 
 
+# Bounded queue capacity for the child→parent event channel. Without a cap the
+# "bounded sink + critical backpressure" contract is a no-op: a flood of step
+# events would grow the queue unbounded. With a cap, critical events block
+# (backpressure) while step/metric events are coalesced (dropped + counted).
+_SHARD_QUEUE_MAXSIZE = 1024
+
+
 # Event types considered CRITICAL: their QueueEventSink must NEVER drop them —
 # on a full queue it falls back to a blocking put() (backpressure). Step/metric
 # events are coalesced (dropped + counted) instead.
@@ -424,6 +431,20 @@ class MultiProcessRunner(BaseRunner):
         from tqdm import tqdm
         from bench_env.logger import tqdm_logging_redirect
 
+        # The real-spawn path (_start_children_spawn → _shard_main) is the legacy
+        # CLI path: it rebuilds tasks from task_ids via ParallelRunner.from_config
+        # and uses the result-only ProgressEvent queue. It does NOT consume
+        # EpisodeWorkSpec / ShardResultEnvelope / QueueEventSink / mp.Event
+        # cancellation, so it cannot satisfy the platform's episode_key-carrying
+        # result contract. Reject the platform path without an in-process factory
+        # rather than silently producing unreconcilable results.
+        if self._is_platform_path and not self._in_process_mode:
+            raise ValueError(
+                "MultiProcessRunner platform path (prepared_work_specs) requires "
+                "child_runner_factory (in-process mode). The real-spawn path does "
+                "not yet consume EpisodeWorkSpec/envelopes; wiring it is deferred."
+            )
+
         self._prepare_run()
         assert self.run_dir is not None
 
@@ -481,11 +502,14 @@ class MultiProcessRunner(BaseRunner):
 
     def _effective_processes(self) -> int:
         # Platform path: shard count is derived from prepared_work_specs length.
+        # Clamp to parallel too (matching the CLI path) so processes>parallel
+        # doesn't over-shard: each shard needs at least one parallel slot.
         if self._is_platform_path:
             specs = self._prepared_work_specs or []
             if not specs:
                 return 0
-            return max(1, min(self.config.processes, len(specs)))
+            parallel = max(1, int(self.config.parallel))
+            return max(1, min(self.config.processes, parallel, len(specs)))
 
         if not self.tasks:
             return 0
@@ -717,7 +741,7 @@ class MultiProcessRunner(BaseRunner):
 
     def _start_children_spawn(self) -> None:
         ctx = mp.get_context("spawn")
-        self._progress_queue = ctx.Queue()
+        self._progress_queue = ctx.Queue(maxsize=_SHARD_QUEUE_MAXSIZE)
         stagger_s = float(os.environ.get("MOBILE_GYM_PROCESS_STAGGER_SEC", "0"))
 
         for i, spec in enumerate(self._shards):
@@ -744,6 +768,11 @@ class MultiProcessRunner(BaseRunner):
         that queue with its rank; the factory is invoked with
         (shard_spec, work_specs, event_sink, cancellation_token).
         """
+        # In-process: the queue is intra-process (single loop), so memory is
+        # bounded by the run itself; leave it unbounded to keep critical events
+        # synchronous (an asyncio.Queue with maxsize would force the critical
+        # path to coalesce, breaking backpressure). The bounded contract applies
+        # to the cross-process mp.Queue in _start_children_spawn.
         self._progress_queue = asyncio.Queue()
         for spec in self._shards:
             sink = QueueEventSink(self._progress_queue, rank=spec.rank)

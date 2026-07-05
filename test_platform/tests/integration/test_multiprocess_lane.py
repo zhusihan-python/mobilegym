@@ -482,6 +482,23 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
             "SELECT state FROM runs WHERE id = ?", (run.id,),
         ).fetchone()
         assert detail["state"] == "cancelled"
+
+        # P1.1 regression: missing episodes from the cancellation MUST be labeled
+        # CANCELLED (outcome + error_code), NOT WORKER_CRASH. A user cancel is not
+        # a crash — conflating them corrupts reports.
+        attempts = database.connection.execute(
+            "SELECT outcome, error_code FROM episode_attempts"
+        ).fetchall()
+        assert len(attempts) > 0
+        for att in attempts:
+            if att["outcome"] == "CANCELLED":
+                assert att["error_code"] == "CANCELLED", (
+                    f"cancelled episode mislabeled {att['error_code']!r} (expected CANCELLED)"
+                )
+            # No episode should carry WORKER_CRASH when the run was user-cancelled.
+            assert att["error_code"] != "WORKER_CRASH", (
+                "user-cancelled run must not produce WORKER_CRASH episodes"
+            )
     finally:
         database.close()
 
@@ -605,3 +622,65 @@ async def test_multiprocess_shard_fatal_carries_exitcode(tmp_path):
             assert ev.payload["exitcode"] is not None
     finally:
         database.close()
+
+
+@pytest.mark.asyncio
+async def test_platform_path_without_in_process_factory_is_rejected(tmp_path):
+    """P1.2: the real-spawn path cannot consume EpisodeWorkSpec/envelopes, so the
+    platform path (prepared_work_specs) without an in-process factory must be
+    rejected rather than silently producing unreconcilable results."""
+    from bench_env.config import RunnerConfig
+    from bench_env.runner.multiprocess import MultiProcessRunner
+    from bench_env.runner.work_spec import EpisodeWorkSpec
+
+    specs = [
+        EpisodeWorkSpec(
+            episode_key=f"k{i}", task_base_id="fake.T", instance_id=i,
+            instance_seed=i, template_index=None, params={}, trial_id=0, max_steps=5,
+        )
+        for i in range(2)
+    ]
+    config = RunnerConfig(
+        agent="probe", model_name="probe-model", quiet=True,
+        processes=2, parallel=2, runs_dir=tmp_path / "runs",
+    )
+    (tmp_path / "runs").mkdir(parents=True, exist_ok=True)
+
+    # Platform path (prepared_work_specs) + NO child_runner_factory → must raise.
+    runner = MultiProcessRunner(
+        [], config,
+        prepared_work_specs=specs,
+        # child_runner_factory intentionally omitted (None)
+    )
+    with pytest.raises(ValueError, match="requires child_runner_factory"):
+        await runner.run()
+
+
+def test_effective_processes_clamps_to_parallel_on_platform_path(tmp_path):
+    """P2.2: processes > parallel must not over-shard on the platform path."""
+    from bench_env.config import RunnerConfig
+    from bench_env.runner.multiprocess import MultiProcessRunner
+    from bench_env.runner.work_spec import EpisodeWorkSpec
+
+    specs = [
+        EpisodeWorkSpec(
+            episode_key=f"k{i}", task_base_id="fake.T", instance_id=i,
+            instance_seed=i, template_index=None, params={}, trial_id=0, max_steps=5,
+        )
+        for i in range(8)
+    ]
+    # processes=4, parallel=1 → must clamp to 1 shard (can't split 1 parallel slot).
+    config = RunnerConfig(
+        agent="probe", model_name="probe-model", quiet=True,
+        processes=4, parallel=1, runs_dir=tmp_path / "runs",
+    )
+    runner = MultiProcessRunner([], config, prepared_work_specs=specs)
+    assert runner._effective_processes() == 1
+
+    # processes=4, parallel=2 → 2 shards.
+    config2 = RunnerConfig(
+        agent="probe", model_name="probe-model", quiet=True,
+        processes=4, parallel=2, runs_dir=tmp_path / "runs",
+    )
+    runner2 = MultiProcessRunner([], config2, prepared_work_specs=specs)
+    assert runner2._effective_processes() == 2
