@@ -148,6 +148,7 @@ def test_run_creation_persists_the_complete_graph_and_artifact_atomically(tmp_pa
             "planned_episodes": 2,
             "planned_lane_episodes": 2,
             "completed_episodes": 0,
+            "completed_lane_episodes": 0,
         }
         assert supervisor.snapshot()["queued_run_ids"] == [run.id]
         assert database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1

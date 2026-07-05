@@ -3,6 +3,7 @@ import type {
   ApiErrorDetail,
   CancelRunResponse,
   CollectionResponse,
+  Comparison,
   Project,
   ReadinessResponse,
   RunDetail,
@@ -106,6 +107,14 @@ export function createRun(input: {
 
 export function getRun(runId: string): Promise<RunDetail> {
   return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+/**
+ * VS-09: fetch the comparison (pairs + classifications + prepared DTOs) for a
+ * paired run. Returns the comparison graph; the UI renders it side-by-side.
+ */
+export function getComparison(runId: string): Promise<Comparison> {
+  return apiFetch<Comparison>(`/runs/${encodeURIComponent(runId)}/comparison`);
 }
 
 export function cancelRun(runId: string, idempotencyKey?: string): Promise<CancelRunResponse> {

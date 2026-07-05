@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { cancelRun, getRun, streamRunEvents } from '../../api/client';
-import type { RunDetail } from '../../api/types';
+import { cancelRun, getComparison, getRun, streamRunEvents } from '../../api/client';
+import type { Comparison, RunDetail } from '../../api/types';
 import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
 type DetailState =
   | { status: 'loading' }
   | { status: 'loaded'; run: RunDetail }
   | { status: 'error'; message: string };
+
+type ComparisonState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'loaded'; comparison: Comparison }
+  | { status: 'none' }
+  | { status: 'error' };
 
 const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
 
@@ -19,6 +26,9 @@ export function RunDetailPage() {
   // latest lastSequence without re-subscribing on every render.
   const liveRef = useRef<RunLiveState | null>(null);
   const [liveVersion, setLiveVersion] = useState(0);
+  // VS-09: paired-run comparison (side-by-side view). Fetched when the run has
+  // 2 lanes (a paired run) and is in a terminal/running state.
+  const [comparison, setComparison] = useState<ComparisonState>({ status: 'idle' });
 
   useEffect(() => {
     let active = true;
@@ -77,6 +87,32 @@ export function RunDetailPage() {
     };
   }, [runId]);
 
+  // VS-09: fetch the comparison when this is a paired run (2 lanes). Derived
+  // from ``state`` (not the live snapshot) so the hook is unconditional w.r.t.
+  // the early returns below. ``runState`` changes (queued→running→completed)
+  // drive the refetch so the comparison appears once recorded.
+  const baseRun = state.status === 'loaded' ? state.run : null;
+  const isPaired = baseRun ? baseRun.lanes.length === 2 : false;
+  const runState = baseRun?.state ?? '';
+  useEffect(() => {
+    if (!isPaired) {
+      setComparison({ status: 'idle' });
+      return;
+    }
+    let active = true;
+    setComparison({ status: 'loading' });
+    getComparison(runId)
+      .then((comp) => {
+        if (active) setComparison({ status: 'loaded', comparison: comp });
+      })
+      .catch(() => {
+        if (active) setComparison({ status: 'none' });
+      });
+    return () => {
+      active = false;
+    };
+  }, [runId, isPaired, runState]);
+
   if (state.status === 'loading') {
     return <section className="tp-panel">Loading run plan...</section>;
   }
@@ -100,10 +136,15 @@ export function RunDetailPage() {
   // VS-08 live multiprocess shard health.
   const activeShards = liveRef.current?.activeShards ?? new Map<string, ShardHealth>();
   const plannedEpisodes = run.progress.planned_episodes;
-  const liveCompleted = Math.max(
-    completedEpisodeKeys.size,
-    run.progress.completed_episodes,
-  );
+  const plannedLaneEpisodes = run.progress.planned_lane_episodes;
+  const completedLaneEpisodes = run.progress.completed_lane_episodes ?? 0;
+  // VS-09 Contract 9: paired runs use lane-scoped progress
+  // (completed_lane_episodes / planned_lane_episodes). The live dedup set is
+  // lane-aware too, so it lines up with the lane-episode denominator.
+  const liveCompletedLane = Math.max(completedEpisodeKeys.size, completedLaneEpisodes);
+  const liveCompleted = isPaired
+    ? liveCompletedLane
+    : Math.max(completedEpisodeKeys.size, run.progress.completed_episodes);
   // Reference liveVersion so React re-renders when the ref mutates.
   void liveVersion;
   return (
@@ -146,8 +187,11 @@ export function RunDetailPage() {
             <dd>
               <span data-testid="tp-completed-episodes">{liveCompleted}</span>
               {' / '}
-              <span data-testid="tp-planned-episodes">{plannedEpisodes}</span>
-              {' completed episodes'}
+              <span data-testid="tp-planned-episodes">
+                {isPaired ? plannedLaneEpisodes : plannedEpisodes}
+              </span>
+              {' completed '}
+              {isPaired ? 'lane episodes' : 'episodes'}
             </dd>
           </div>
           <div>
@@ -260,6 +304,63 @@ export function RunDetailPage() {
                   </td>
                   <td>{attempt.error_code ?? ''}</td>
                   <td className="tp-mono">{attempt.artifact_root}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {isPaired && comparison.status === 'loaded' ? (
+        <section className="tp-panel" data-testid="tp-comparison">
+          <h2>Comparison</h2>
+          <p className="tp-comparison-summary">
+            {comparison.comparison.summary
+              ? Object.entries(comparison.comparison.summary)
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(', ')
+              : 'No pairs yet.'}
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th>Classification</th>
+                <th>Baseline</th>
+                <th>Candidate</th>
+                <th>Integrity</th>
+                <th>Prepared params</th>
+                <th>Instruction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparison.comparison.pairs.map((pair) => (
+                <tr key={pair.id} data-testid={`tp-comparison-pair-${pair.pair_key}`}>
+                  <td className="tp-mono">{pair.pair_key}</td>
+                  <td>
+                    <span
+                      className={`tp-classification tp-classification-${pair.classification}`}
+                      data-testid="tp-pair-classification"
+                    >
+                      {pair.classification}
+                    </span>
+                  </td>
+                  <td>{pair.delta.baseline_outcome ?? '—'}</td>
+                  <td>{pair.delta.candidate_outcome ?? '—'}</td>
+                  <td data-testid="tp-pair-integrity">
+                    {pair.integrity.status}
+                    {pair.integrity.status !== 'ok' && pair.integrity.reason
+                      ? ` (${pair.integrity.reason})`
+                      : ''}
+                  </td>
+                  <td className="tp-mono" data-testid="tp-pair-prepared-params">
+                    {pair.prepared
+                      ? JSON.stringify(pair.prepared.params)
+                      : '—'}
+                  </td>
+                  <td className="tp-mono">
+                    {pair.prepared?.instruction ?? '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>

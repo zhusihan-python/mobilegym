@@ -309,6 +309,32 @@ class RunSupervisor:
 
         from test_platform.execution.runner_sink import PlatformRunnerEventSink
 
+        # VS-09 Contract 8: load the RunPlan FIRST to decide routing. A 2-lane
+        # plan uses the paired path (the paired executor builds its OWN per-lane
+        # event sinks — Contract 3 — so the supervisor does NOT build the
+        # single-lane sink for it). A 1-lane plan keeps the VS-07 lane-scoped
+        # path unchanged.
+        plan_lane_count = self._plan_lane_count(run_id)
+
+        if plan_lane_count == 2:
+            # Paired path: the paired executor owns per-lane sinks + routing.
+            terminal_event = await self._execute_paired(run_id, token)
+        else:
+            terminal_event = await self._execute_single_lane(run_id, token)
+
+        # Emit the terminal run.* event exactly once (the executor does NOT emit
+        # run.* terminal events — only the supervisor does, to avoid duplicates).
+        if terminal_event == "run.completed":
+            self._emit_terminal(run_id, "run.completed")
+        # run.cancelled / run.failed are emitted inside _mark_run_cancelled /
+        # _mark_run_failed respectively.
+
+    async def _execute_single_lane(self, run_id: str, token: Any) -> str:
+        """VS-05/06/07/08 single-lane execution path (unchanged)."""
+        from bench_env.runner.cancellation import RunCancelled
+
+        from test_platform.execution.runner_sink import PlatformRunnerEventSink
+
         # Resolve the run/lane attempt ids so episode/step events carry full
         # identity into the events table.
         run_attempt_id, lane_attempt_id, lane_id = self._resolve_attempt_ids(run_id)
@@ -333,9 +359,6 @@ class RunSupervisor:
             episode_key_resolver=self._make_episode_key_resolver(run_id),
         )
 
-        # run.started is emitted by the executor AFTER its queued-cancel check,
-        # so a pre-execution cancel never produces a misleading "started" event.
-        # This supervisor owns only the terminal run.* events.
         terminal_event: str | None = None
         try:
             await executor.execute_run(
@@ -350,13 +373,67 @@ class RunSupervisor:
             logger.exception("Run %s failed during execution", run_id)
             await self._mark_run_failed(run_id)
             terminal_event = "run.failed"
+        return terminal_event or "run.failed"
 
-        # Emit the terminal run.* event exactly once (the executor does NOT emit
-        # run.* terminal events — only the supervisor does, to avoid duplicates).
-        if terminal_event == "run.completed":
-            self._emit_terminal(run_id, "run.completed")
-        # run.cancelled / run.failed are emitted inside _mark_run_cancelled /
-        # _mark_run_failed respectively.
+    async def _execute_paired(self, run_id: str, token: Any) -> str:
+        """VS-09 paired (2-lane) execution path.
+
+        Resolves a PairedSerialRunExecutor (the executor builds its own per-lane
+        event sinks from the writer — Contract 3 — so the supervisor passes the
+        writer through and lets the executor handle lane scoping). Falls back to
+        the single-lane resolver's executor if no paired executor is available
+        (e.g. the default resolver was overridden in tests).
+        """
+        from bench_env.runner.cancellation import RunCancelled
+        from bench_env.runner.events import NullEventSink
+
+        from test_platform.services.execution import PairedSerialRunExecutor
+
+        lane = self._resolve_lane(run_id)
+        executor = self._executor_resolver(lane)
+        # If the resolver returned a single-lane executor but the plan has 2
+        # lanes, construct a PairedSerialRunExecutor. Tests inject a paired
+        # executor directly (via a resolver that returns one); production uses
+        # the default resolver which returns SerialRunExecutor for serial lanes,
+        # so we promote it to a paired executor here.
+        if not isinstance(executor, PairedSerialRunExecutor):
+            # Carry over any factories the resolver-configured executor had.
+            executor = PairedSerialRunExecutor(
+                self._database,
+                self._settings,
+                task_factory=getattr(executor, "task_factory", None),
+                env_factory=getattr(executor, "env_factory", None),
+                agent_factory=getattr(executor, "agent_factory", None),
+            )
+
+        terminal_event: str | None = None
+        try:
+            await executor.execute_run(
+                run_id, token=token,
+                events=NullEventSink(),
+                run_event_writer=self._event_writer,
+            )
+            terminal_event = "run.completed"
+        except RunCancelled:
+            await self._mark_run_cancelled(run_id)
+            terminal_event = "run.cancelled"
+        except Exception:  # noqa: BLE001 — supervisor must not crash the loop
+            logger.exception("Run %s failed during execution", run_id)
+            await self._mark_run_failed(run_id)
+            terminal_event = "run.failed"
+        return terminal_event or "run.failed"
+
+    def _plan_lane_count(self, run_id: str) -> int:
+        """Count lanes for the run's persisted plan (cheap DB read).
+
+        Used to route 2-lane runs to the paired path WITHOUT parsing the full
+        RunPlan on the hot path (mirrors _resolve_lane's lightweight approach).
+        """
+        row = self._database.connection.execute(
+            "SELECT COUNT(*) AS n FROM lanes WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
     def _resolve_attempt_ids(self, run_id: str) -> tuple[str | None, str | None, str | None]:
         row = self._database.connection.execute(
