@@ -1367,7 +1367,20 @@ class MultiprocessRunExecutor(_RunExecutorBase):
                     cancelled=cancelled,
                 )
             else:
+                # Missing result → the worker crashed/exited before reporting,
+                # OR the run was cancelled before this episode ran. The label
+                # MUST match the cause: a user cancel is CANCELLED (not a
+                # crash), so the UI/reports distinguish "cancelled" from
+                # "crashed". error_code + terminal episode event follow suit.
                 synthetic = self._synthetic_crash_result(work_item)
+                if cancelled:
+                    missing_code = "CANCELLED"
+                    terminal_event_type = "episode.cancelled"
+                    terminal_outcome = "CANCELLED"
+                else:
+                    missing_code = "WORKER_CRASH"
+                    terminal_event_type = "episode.error"
+                    terminal_outcome = "ERROR"
                 ingestor.ingest_episode_attempt(
                     run_id=run_id,
                     lane_attempt_id=lane_attempt["id"],
@@ -1375,20 +1388,20 @@ class MultiprocessRunExecutor(_RunExecutorBase):
                     result=synthetic,
                     artifact_root=artifact_root,
                     cancelled=cancelled,
-                    error_code_override="WORKER_CRASH",
+                    error_code_override=missing_code,
                 )
                 if event_sink is not None:
                     try:
                         event_sink.emit(ExecutionEvent(
-                            type="episode.error",
+                            type=terminal_event_type,
                             timestamp="",
                             phase="execute",
                             task_id=getattr(work_item.task, "id", None),
                             trial_id=work_item.trial_id,
                             episode_key=key,
                             payload={
-                                "outcome": "ERROR",
-                                "error_code": "WORKER_CRASH",
+                                "outcome": terminal_outcome,
+                                "error_code": missing_code,
                                 "steps": 0,
                                 "reason": "missing_result",
                             },
