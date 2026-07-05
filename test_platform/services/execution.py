@@ -1696,6 +1696,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         )
         eval_mode = str(lane.runner_config.get("eval_mode", "grounded"))
         outcomes: list[dict[str, Any]] = []
+        lane_cancelled = False
         try:
             for episode in episodes:
                 token.raise_if_cancelled()
@@ -1799,6 +1800,12 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                         "trial_id": episode.trial_id,
                     }
                 )
+        except RunCancelled:
+            # P1 fix: do NOT let RunCancelled propagate past _run_lane — the
+            # partial outcomes accumulated so far MUST reach the caller. The
+            # caller detects cancellation via token.cancelled. The finally block
+            # below still runs recorder/env cleanup.
+            lane_cancelled = True
         finally:
             recorder.finish_run()
             close = getattr(env, "close", None)
@@ -2063,9 +2070,16 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             # synthesized as CANCELLED below in _ingest_lane_outcomes via the
             # cancelled=True path + missing-episode reconciliation.
 
-        # P1 fix: detect cancellation from result stop_reason (Controller.run
+        # P1 fix: _run_lane now catches RunCancelled internally and returns
+        # partial outcomes (does NOT propagate). Detect cancellation via
+        # token.cancelled — covers cancel during materialize, between episodes,
+        # or mid-step (Controller.run returns CANCELLED result, token is set).
+        if token.cancelled:
+            cancelled = True
+
+        # Also detect cancellation from result stop_reason (Controller.run
         # returns a CANCELLED result instead of raising when the token fires
-        # mid-step). Mirror single-lane any_result_cancelled logic.
+        # mid-step).
         if not cancelled:
             for outcomes in (baseline_outcomes, candidate_outcomes):
                 for oc in outcomes:

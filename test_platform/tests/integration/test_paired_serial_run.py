@@ -866,3 +866,101 @@ async def test_paired_setup_time_cancel_no_double_teardown(tmp_path):
             )
     finally:
         database.close()
+
+
+@pytest.mark.asyncio
+async def test_paired_cancel_preserves_partial_outcomes_within_lane(tmp_path):
+    """P1 (round 3): when cancel fires after baseline's first episode but before
+    its second (repeat_n=2), the first episode's outcome MUST be preserved — not
+    lost to a RunCancelled that propagates past _run_lane."""
+    from bench_env.runner.cancellation import CancellationToken, RunCancelled
+
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    factory = _PairedTaskFactory()
+    materialize_env = _PairedEnv(label="materialize")
+
+    class _SecondStepBlocksEnv(_PairedEnv):
+        """Completes the first episode instantly; blocks on the second."""
+        def __init__(self, label):
+            super().__init__(label=label)
+            self._first_done = False
+
+        async def step(self, action):
+            self.step_count += 1
+            if not self._first_done:
+                self._first_done = True
+                return StepResult(
+                    observation=await self.get_observation(), done=True,
+                    info={"stop_reason": ActionType.COMPLETE},
+                )
+            import asyncio as _a
+            await _a.sleep(5)
+            return StepResult(observation=await self.get_observation(), done=False, info={})
+
+    baseline_env = _SecondStepBlocksEnv(label="baseline")
+    candidate_env = _PairedEnv(label="candidate")
+    baseline_agent = _ScriptedAgent(succeed=True)
+    candidate_agent = _ScriptedAgent(succeed=True)
+    env_iter = iter([materialize_env, baseline_env, candidate_env])
+    token = CancellationToken()
+
+    # Build a 2-lane run with repeat_n=2 (two episodes per lane).
+    from test_platform.tests.integration.test_materializer import _create_paired_run
+    from test_platform.persistence.repositories import ProjectRepository, TargetRepository
+
+    ProjectRepository(database).create("PartialPaired")
+    bl_target = _make_target(database, name="bl", revision="seed-v1")
+    cd_target = _make_target(database, name="cd", revision="seed-v1")
+
+    try:
+        run = _create_paired_run(
+            database, settings,
+            baseline_target_id=bl_target,
+            candidate_target_id=cd_target,
+            repeat_n=2,
+        )
+
+        async def _cancel_soon():
+            import asyncio as _a
+            # Wait for baseline's first episode to complete, then cancel
+            # during baseline's second episode (which blocks).
+            await _a.sleep(0.3)
+            token.cancel()
+
+        try:
+            await asyncio.gather(
+                PairedSerialRunExecutor(
+                    database, settings,
+                    task_factory=factory,
+                    env_factory=lambda lane: next(env_iter),
+                    agent_factory=lambda lane: (
+                        baseline_agent if lane.lane_key == "baseline" else candidate_agent
+                    ),
+                ).execute_run(run.id, token=token),
+                _cancel_soon(),
+            )
+        except RunCancelled:
+            pass
+
+        # Run finalized as cancelled.
+        run_row = database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?", (run.id,)
+        ).fetchone()
+        assert run_row["state"] == "cancelled"
+
+        # Baseline's first episode outcome is preserved (PASS), not dropped.
+        baseline_attempts = database.connection.execute(
+            "SELECT outcome FROM episode_attempts "
+            "JOIN lane_attempts ON lane_attempts.id = episode_attempts.lane_attempt_id "
+            "JOIN lanes ON lanes.id = lane_attempts.lane_id "
+            "WHERE lanes.run_id = ? AND lanes.lane_key = 'baseline'",
+            (run.id,),
+        ).fetchall()
+        outcomes = [row["outcome"] for row in baseline_attempts]
+        assert "PASS" in outcomes, (
+            f"baseline first-episode PASS was lost (outcomes: {outcomes})"
+        )
+    finally:
+        database.close()
