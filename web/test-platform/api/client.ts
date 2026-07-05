@@ -189,6 +189,11 @@ export function streamRunEvents(
   source.addEventListener('episode.error', generic as EventListener);
   source.addEventListener('worker.started', generic as EventListener);
   source.addEventListener('worker.stopped', generic as EventListener);
+  // VS-08: multiprocess shard lifecycle/fatal + coalesced stream events.
+  source.addEventListener('shard.started', generic as EventListener);
+  source.addEventListener('shard.stopped', generic as EventListener);
+  source.addEventListener('shard.fatal', generic as EventListener);
+  source.addEventListener('stream.events_coalesced', generic as EventListener);
 
   return () => source.close();
 }

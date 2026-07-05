@@ -39,6 +39,7 @@ export function WorkflowsPage() {
   const [targetId, setTargetId] = useState('');
   const [repeatCount, setRepeatCount] = useState(1);
   const [parallelCount, setParallelCount] = useState(1);
+  const [processCount, setProcessCount] = useState(1);
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowSummary | null>(null);
   const [preview, setPreview] = useState<WorkflowCompilePreview | null>(null);
   const [publishedVersion, setPublishedVersion] = useState<WorkflowVersion | null>(null);
@@ -87,8 +88,8 @@ export function WorkflowsPage() {
   }, [state]);
 
   const definition = useMemo(
-    () => buildDefinition(selectedTaskIds, targetId, repeatCount, parallelCount),
-    [repeatCount, selectedTaskIds, targetId, parallelCount],
+    () => buildDefinition(selectedTaskIds, targetId, repeatCount, parallelCount, processCount),
+    [repeatCount, selectedTaskIds, targetId, parallelCount, processCount],
   );
 
   const toggleTask = (taskId: string) => {
@@ -265,6 +266,19 @@ export function WorkflowsPage() {
             }}
           />
 
+          <label htmlFor="tp-workflow-processes">Processes</label>
+          <input
+            id="tp-workflow-processes"
+            type="number"
+            min={1}
+            value={processCount}
+            onChange={(event) => {
+              setProcessCount(Math.max(1, Number(event.target.value) || 1));
+              setPreview(null);
+              setPublishedVersion(null);
+            }}
+          />
+
           <label htmlFor="tp-workflow-seed">Run seed</label>
           <input
             id="tp-workflow-seed"
@@ -314,6 +328,7 @@ function buildDefinition(
   targetId: string,
   repeatCount: number,
   parallelCount: number = 1,
+  processCount: number = 1,
 ): WorkflowDefinition {
   return {
     schema_version: 1,
@@ -341,7 +356,10 @@ function buildDefinition(
         id: 'execute',
         type: 'execute',
         depends_on: ['matrix'],
-        config: { parallel: Math.max(1, parallelCount) },
+        config: {
+          parallel: Math.max(1, parallelCount),
+          processes: Math.max(1, processCount),
+        },
       },
     ],
   };

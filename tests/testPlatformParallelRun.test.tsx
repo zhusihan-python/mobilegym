@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 
 import type { RunDetail, RunEvent } from '../web/test-platform/api/types';
-import { reduceRunEvent, countEpisodes, type RunLiveState } from '../web/test-platform/features/runs/runEvents';
+import {
+  reduceRunEvent,
+  countEpisodes,
+  type RunLiveState,
+  type ShardHealth,
+} from '../web/test-platform/features/runs/runEvents';
 
 function baseSnapshot(state = 'running'): RunDetail {
   return {
@@ -32,6 +37,7 @@ function baseState(): RunLiveState {
     replaying: false,
     completedEpisodeKeys: new Set<string>(),
     activeWorkers: new Set<string>(),
+    activeShards: new Map<string, ShardHealth>(),
   };
 }
 
