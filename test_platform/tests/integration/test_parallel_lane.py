@@ -556,6 +556,75 @@ async def test_parallel_cancellation_releases_all_envs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parallel_cancel_missing_episode_labeled_cancelled_not_crash(tmp_path):
+    """ParallelRunExecutor's missing-result branch on a user cancel must label
+    the synthetic episode CANCELLED (error_code + result_json), NOT WORKER_CRASH.
+
+    Guards the ParallelRunExecutor path specifically (the multiprocess path is
+    covered by test_multiprocess_user_cancel_labels_episodes_cancelled)."""
+    import json as _json
+
+    from bench_env.runner.cancellation import CancellationToken, RunCancelled
+
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    try:
+        run = _create_run(database, settings, repeat_n=4)
+        materialize_env = _MaterializeEnv()
+
+        class _BlockingPool:
+            def __init__(self, n):
+                self.n = n
+                self._envs = [_ParallelFakeEnv(i) for i in range(n)]
+            def __getitem__(self, idx):
+                return self._envs[idx]
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *exc):
+                for env in self._envs:
+                    await env.close()
+                return False
+
+        token = CancellationToken()
+        executor = ParallelRunExecutor(
+            database, settings,
+            task_factory=_FakeTaskFactory(),
+            env_pool_factory=lambda lane: _BlockingPool(2),
+            agent_factory=lambda lane: _CompletingAgent(),
+            env_factory=lambda lane: materialize_env,
+        )
+
+        async def _cancel_soon():
+            await asyncio.sleep(0.05)
+            token.cancel()
+
+        try:
+            await asyncio.gather(executor.execute_run(run.id, token=token), _cancel_soon())
+        except RunCancelled:
+            pass
+
+        attempts = database.connection.execute(
+            "SELECT outcome, error_code, result_json FROM episode_attempts"
+        ).fetchall()
+        assert len(attempts) > 0
+        for att in attempts:
+            if att["outcome"] == "CANCELLED":
+                assert att["error_code"] == "CANCELLED", (
+                    f"parallel cancelled episode mislabeled {att['error_code']!r}"
+                )
+                rd = _json.loads(att["result_json"]) if att["result_json"] else {}
+                assert "WORKER_CRASH" not in str(rd), (
+                    "parallel cancelled result_json must not carry WORKER_CRASH"
+                )
+            assert att["error_code"] != "WORKER_CRASH", (
+                "user-cancelled parallel run must not produce WORKER_CRASH"
+            )
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
 async def test_parallel_normal_completion_emits_exactly_one_run_started(tmp_path):
     """Normal completion emits exactly one run.started (owned by the executor)."""
     from test_platform.execution.event_writer import EventWriter
