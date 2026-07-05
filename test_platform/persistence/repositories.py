@@ -580,9 +580,15 @@ class RunRepository:
                 FROM episodes AS e
                 JOIN episode_attempts AS ea ON ea.episode_id = e.id
                 WHERE e.run_id = ? AND ea.state = 'completed'
-              ) AS completed_episodes
+              ) AS completed_episodes,
+              (
+                SELECT COUNT(*)
+                FROM episode_attempts AS ea
+                JOIN episodes AS e ON e.id = ea.episode_id
+                WHERE e.run_id = ? AND ea.state IN ('completed', 'cancelled')
+              ) AS completed_lane_episodes
             """,
-            (row["id"], row["id"], row["id"]),
+            (row["id"], row["id"], row["id"], row["id"]),
         ).fetchone()
         lane_rows = self.database.connection.execute(
             """
@@ -606,6 +612,7 @@ class RunRepository:
                 "planned_episodes": planned_episodes,
                 "planned_lane_episodes": planned_episodes * lane_count,
                 "completed_episodes": int(counts["completed_episodes"]),
+                "completed_lane_episodes": int(counts["completed_lane_episodes"]),
             },
             lanes=[dict(lane) for lane in lane_rows],
             gate_verdict=None,
@@ -613,6 +620,168 @@ class RunRepository:
             started_at=row["started_at"],
             ended_at=row["ended_at"],
         )
+
+
+class ComparisonRepository:
+    """CRUD for VS-09 comparisons + comparison_pairs.
+
+    A comparison belongs to one run_attempt and joins baseline/candidate
+    episode_attempts by pair_key. ``record_comparison`` + ``record_pair`` build
+    the comparison graph; ``get_comparison`` / ``list_pairs`` read it back for
+    the API and frontend.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def record_comparison(
+        self,
+        *,
+        run_id: str,
+        run_attempt_id: str,
+        baseline_lane_id: str,
+        candidate_lane_id: str,
+        policy: dict[str, Any] | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> str:
+        comparison_id = new_id()
+        now = _utc_timestamp()
+        connection = self.database.connection
+        with self.database._lock:  # noqa: SLF100
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO comparisons (
+                      id, run_id, run_attempt_id, baseline_lane_id,
+                      candidate_lane_id, policy_json, summary_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        comparison_id,
+                        run_id,
+                        run_attempt_id,
+                        baseline_lane_id,
+                        candidate_lane_id,
+                        json.dumps(policy or {}, sort_keys=True, ensure_ascii=False),
+                        json.dumps(summary, sort_keys=True, ensure_ascii=False)
+                        if summary is not None
+                        else None,
+                        now,
+                    ),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return comparison_id
+
+    def record_pair(
+        self,
+        *,
+        comparison_id: str,
+        pair_key: str,
+        classification: str,
+        baseline_episode_attempt_id: str | None = None,
+        candidate_episode_attempt_id: str | None = None,
+        integrity: dict[str, Any] | None = None,
+        delta: dict[str, Any] | None = None,
+    ) -> str:
+        pair_id = new_id()
+        connection = self.database.connection
+        with self.database._lock:  # noqa: SLF100
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO comparison_pairs (
+                      id, comparison_id, pair_key, baseline_episode_attempt_id,
+                      candidate_episode_attempt_id, classification,
+                      integrity_json, delta_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pair_id,
+                        comparison_id,
+                        pair_key,
+                        baseline_episode_attempt_id,
+                        candidate_episode_attempt_id,
+                        classification,
+                        json.dumps(integrity or {}, sort_keys=True, ensure_ascii=False),
+                        json.dumps(delta or {}, sort_keys=True, ensure_ascii=False),
+                    ),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return pair_id
+
+    def get_comparison(self, run_id: str) -> dict[str, Any] | None:
+        """Return the latest comparison for a run, or None if none exists."""
+        row = self.database.connection.execute(
+            """
+            SELECT id, run_id, run_attempt_id, baseline_lane_id, candidate_lane_id,
+                   policy_json, summary_json, created_at
+            FROM comparisons
+            WHERE run_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        pairs = self.list_pairs(str(row["id"]))
+        return {
+            "id": str(row["id"]),
+            "run_id": str(row["run_id"]),
+            "run_attempt_id": str(row["run_attempt_id"]),
+            "baseline_lane_id": str(row["baseline_lane_id"]),
+            "candidate_lane_id": str(row["candidate_lane_id"]),
+            "policy": json.loads(row["policy_json"]) if row["policy_json"] else {},
+            "summary": json.loads(row["summary_json"]) if row["summary_json"] else None,
+            "created_at": str(row["created_at"]),
+            "pairs": pairs,
+        }
+
+    def list_pairs(self, comparison_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT id, comparison_id, pair_key, baseline_episode_attempt_id,
+                   candidate_episode_attempt_id, classification, integrity_json,
+                   delta_json
+            FROM comparison_pairs
+            WHERE comparison_id = ?
+            ORDER BY pair_key
+            """,
+            (comparison_id,),
+        ).fetchall()
+        return [
+            {
+                "id": str(row["id"]),
+                "comparison_id": str(row["comparison_id"]),
+                "pair_key": str(row["pair_key"]),
+                "baseline_episode_attempt_id": (
+                    str(row["baseline_episode_attempt_id"])
+                    if row["baseline_episode_attempt_id"] is not None
+                    else None
+                ),
+                "candidate_episode_attempt_id": (
+                    str(row["candidate_episode_attempt_id"])
+                    if row["candidate_episode_attempt_id"] is not None
+                    else None
+                ),
+                "classification": str(row["classification"]),
+                "integrity": json.loads(row["integrity_json"])
+                if row["integrity_json"]
+                else {},
+                "delta": json.loads(row["delta_json"]) if row["delta_json"] else {},
+            }
+            for row in rows
+        ]
 
 
 def _map_project(row: sqlite3.Row) -> Project:

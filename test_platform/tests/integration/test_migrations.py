@@ -48,6 +48,8 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         "episode_attempts",
         "events",
         "idempotency_keys",
+        "comparisons",
+        "comparison_pairs",
     } <= _table_names(settings.database_path)
     assert _migration_rows(settings.database_path) == [
         (1, "0001_initial.sql"),
@@ -57,6 +59,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (5, "0005_run_planning.sql"),
         (6, "0006_serial_execution.sql"),
         (7, "0007_event_envelope.sql"),
+        (8, "0008_comparison.sql"),
     ]
 
 
@@ -165,4 +168,5 @@ def test_database_initialization_is_idempotent(tmp_path):
         (5, "0005_run_planning.sql"),
         (6, "0006_serial_execution.sql"),
         (7, "0007_event_envelope.sql"),
+        (8, "0008_comparison.sql"),
     ]

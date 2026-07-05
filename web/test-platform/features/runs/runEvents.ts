@@ -88,11 +88,13 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
     case 'episode.completed':
     case 'episode.error':
     case 'episode.cancelled': {
-      // Mark this episode complete (deduped by key). The episode_key is sourced
+      // Mark this episode complete. VS-09 Contract 9: paired runs dedup by
+      // lane_attempt_id + episode_key (not just episode_key) so baseline +
+      // candidate of the SAME episode both count. The episode_key is sourced
       // from the payload first (where the runner puts it) and falls back to the
       // event-level field. Redeliveries are already filtered by lastSequence,
       // but the Set guards against cross-transport duplicates too.
-      const key = episodeKeyOf(event);
+      const key = episodeDedupeKeyOf(event);
       if (key !== null) {
         if (!completedEpisodeKeys.has(key)) {
           completedEpisodeKeys = new Set(completedEpisodeKeys);
@@ -173,6 +175,29 @@ function episodeKeyOf(event: RunEvent): string | null {
     return fromPayload;
   }
   return null;
+}
+
+/**
+ * VS-09 Contract 9: the dedupe key for completed-episode counting. For paired
+ * runs (events carrying a lane_attempt_id), the key is
+ * ``lane_attempt_id + '|' + episode_key`` so baseline + candidate of the same
+ * episode both count. For single-lane runs (no lane_attempt_id), it falls back
+ * to the bare episode_key (legacy behaviour). Returns null when no episode_key
+ * is available.
+ */
+function episodeDedupeKeyOf(event: RunEvent): string | null {
+  const episodeKey = episodeKeyOf(event);
+  if (episodeKey === null) {
+    return null;
+  }
+  const laneAttemptId =
+    typeof event.lane_attempt_id === 'string' && event.lane_attempt_id.length > 0
+      ? event.lane_attempt_id
+      : null;
+  if (laneAttemptId !== null) {
+    return `${laneAttemptId}|${episodeKey}`;
+  }
+  return episodeKey;
 }
 
 /**

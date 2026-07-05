@@ -15,7 +15,7 @@ function baseSnapshot(state = 'running'): RunDetail {
     name: 'multiprocess run',
     state,
     fingerprint: 'fp',
-    progress: { planned_episodes: 4, planned_lane_episodes: 4, completed_episodes: 0 },
+    progress: { planned_episodes: 4, planned_lane_episodes: 4, completed_episodes: 0, completed_lane_episodes: 0 },
     lanes: [],
     gate_verdict: null,
     created_at: '2026-07-04T00:00:00.000Z',

@@ -48,6 +48,7 @@ export type RunSummary = {
     planned_episodes: number;
     planned_lane_episodes: number;
     completed_episodes: number;
+    completed_lane_episodes: number;
   };
   lanes: Array<{
     id: string;
@@ -114,6 +115,57 @@ export type RunEvent = {
   episode_id: string | null;
   episode_attempt_id: string | null;
   worker_id: string | null;
+};
+
+/**
+ * VS-09: a paired-run comparison. Joins baseline/candidate episode_attempts by
+ * pair_key and carries the prepared DTO (params/instruction/projection_hash) so
+ * the UI can show the frozen fixture both lanes reused.
+ */
+export type ComparisonPair = {
+  id: string;
+  comparison_id: string;
+  pair_key: string;
+  baseline_episode_attempt_id: string | null;
+  candidate_episode_attempt_id: string | null;
+  classification:
+    | 'unpaired'
+    | 'pairing_violation'
+    | 'baseline_error'
+    | 'candidate_error'
+    | 'regression'
+    | 'fixed'
+    | 'stable_pass'
+    | 'stable_fail'
+    | string;
+  integrity: {
+    status: string;
+    reason?: string;
+    prepared_projection_hash?: string | null;
+    baseline_actual_projection_hash?: string | null;
+    candidate_actual_projection_hash?: string | null;
+  } & Record<string, unknown>;
+  delta: {
+    baseline_outcome?: string | null;
+    candidate_outcome?: string | null;
+  } & Record<string, unknown>;
+  prepared: {
+    params: Record<string, unknown>;
+    instruction: string | null;
+    projection_hash: string | null;
+  } | null;
+};
+
+export type Comparison = {
+  id: string;
+  run_id: string;
+  run_attempt_id: string;
+  baseline_lane_id: string;
+  candidate_lane_id: string;
+  policy: Record<string, unknown>;
+  summary: Record<string, number> | null;
+  created_at: string;
+  pairs: ComparisonPair[];
 };
 
 export type CancelRunResponse = {

@@ -1,4 +1,5 @@
 from dataclasses import asdict
+import json
 
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel, Field
@@ -6,7 +7,10 @@ from pydantic import BaseModel, Field
 from test_platform.api.dependencies import get_database
 from test_platform.api.errors import ApiError
 from test_platform.domain.runs import RunDomainError, RunIdempotencyConflict
-from test_platform.persistence.repositories import RunRepository
+from test_platform.persistence.repositories import (
+    ComparisonRepository,
+    RunRepository,
+)
 from test_platform.services.runs import RunService
 
 router = APIRouter(prefix="/api/platform/v1")
@@ -72,6 +76,69 @@ def get_run(request: Request, run_id: str) -> dict[str, object]:
         return asdict(RunRepository(get_database(request)).get(run_id))
     except RunDomainError as exc:
         raise _run_error(exc) from exc
+
+
+@router.get("/runs/{run_id}/comparison")
+def get_run_comparison(request: Request, run_id: str) -> dict[str, object]:
+    """Return the comparison (pairs + classifications) for a paired run.
+
+    VS-09 Contract 8: each pair carries a ``prepared`` DTO with only the
+    params/instruction/projection_hash (NOT the full prepared_tasks payload_json).
+    Returns 404 if the run has no comparison yet.
+    """
+    database = get_database(request)
+    # Validate the run exists (404 if not).
+    try:
+        RunRepository(database).get(run_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+    comparison = ComparisonRepository(database).get_comparison(run_id)
+    if comparison is None:
+        raise ApiError(
+            "COMPARISON_NOT_FOUND",
+            "No comparison has been recorded for this run yet.",
+            status_code=404,
+            details=[{"run_id": run_id}],
+        )
+    # Attach a prepared DTO to each pair (Contract 8: subset of payload_json).
+    prepared_by_key = _prepared_dtos_by_materialization_key(database, run_id)
+    for pair in comparison["pairs"]:
+        # pair_key == episode_key == materialization_key|t{trial}; resolve the
+        # materialization_key from the episodes table for this pair_key.
+        mat_key = _materialization_key_for_pair(database, run_id, pair["pair_key"])
+        if mat_key is not None and mat_key in prepared_by_key:
+            pair["prepared"] = prepared_by_key[mat_key]
+        else:
+            pair["prepared"] = None
+    return comparison
+
+
+def _prepared_dtos_by_materialization_key(database, run_id: str) -> dict[str, dict]:
+    """Map materialization_key → prepared DTO (params/instruction/projection_hash)."""
+    rows = database.connection.execute(
+        "SELECT materialization_key, payload_json FROM prepared_tasks WHERE run_id = ?",
+        (run_id,),
+    ).fetchall()
+    dtos: dict[str, dict] = {}
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        dtos[str(row["materialization_key"])] = {
+            "params": payload.get("params", {}),
+            "instruction": payload.get("instruction"),
+            "projection_hash": payload.get("projection_hash"),
+        }
+    return dtos
+
+
+def _materialization_key_for_pair(database, run_id: str, pair_key: str) -> str | None:
+    """Resolve the materialization_key for an episode/pair_key."""
+    row = database.connection.execute(
+        "SELECT materialization_key FROM episodes WHERE run_id = ? AND pair_key = ? "
+        "LIMIT 1",
+        (run_id, pair_key),
+    ).fetchone()
+    return str(row["materialization_key"]) if row else None
 
 
 @router.post("/runs/{run_id}/cancel")
