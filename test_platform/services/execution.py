@@ -1696,7 +1696,6 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         )
         eval_mode = str(lane.runner_config.get("eval_mode", "grounded"))
         outcomes: list[dict[str, Any]] = []
-        lane_cancelled = False
         try:
             for episode in episodes:
                 token.raise_if_cancelled()
@@ -1805,7 +1804,6 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             # partial outcomes accumulated so far MUST reach the caller. The
             # caller detects cancellation via token.cancelled. The finally block
             # below still runs recorder/env cleanup.
-            lane_cancelled = True
         finally:
             recorder.finish_run()
             close = getattr(env, "close", None)
