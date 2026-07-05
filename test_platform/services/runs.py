@@ -82,6 +82,7 @@ class RunSupervisor:
         executor_resolver: Callable[[Any], _Executor] | None = None,
         broker: SSEBroker | None = None,
         clock: Callable[[], str] | None = None,
+        token_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
@@ -105,6 +106,11 @@ class RunSupervisor:
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._now = clock or _utc_timestamp
+        # VS-08: token_factory creates a FRESH cancellation token per run.
+        # Default is a plain CancellationToken (cooperative-only). Multiprocess
+        # runs inject a factory that builds MultiprocCancelToken (wrapping an
+        # mp.Event) so cancel propagates to spawned children.
+        self._token_factory = token_factory
 
     def bind_broker(self, broker: SSEBroker) -> None:
         self._broker = broker
@@ -132,7 +138,13 @@ class RunSupervisor:
     def submit(self, run_id: str) -> None:
         from bench_env.runner.cancellation import CancellationToken
 
-        token = CancellationToken()
+        # VS-08: use the injected token_factory when present (multiprocess runs
+        # inject a factory that creates MultiprocCancelToken sharing an mp.Event).
+        # Default: a plain CancellationToken (cooperative-only fallback).
+        if self._token_factory is not None:
+            token = self._token_factory()
+        else:
+            token = CancellationToken()
         # Register synchronously in THIS thread so a cancel immediately after
         # create_run returns can find the token before the loop task starts.
         self._tokens[run_id] = token
@@ -828,20 +840,28 @@ def _default_executor_resolver(
 ) -> Callable[[Any], Any]:
     """Production lane-aware executor resolver (deferred — VS-07 wires fakes).
 
-    A lane whose ``runner_config['parallel']`` is > 1 gets a ParallelRunExecutor;
-    otherwise a SerialRunExecutor. NOTE: real env/agent factories are not yet
-    wired here (production execution is deferred), so the returned executors
-    carry NO factories and would raise EXECUTOR_FACTORY_MISSING if actually run.
-    VS-07 tests inject their own resolver/fakes; ``create_app`` keeps the
-    FakeRunSupervisor as the default.
+    A lane whose ``runner_config['processes']`` is > 1 gets a
+    MultiprocessRunExecutor; otherwise one with ``parallel`` > 1 gets a
+    ParallelRunExecutor; otherwise a SerialRunExecutor. NOTE: real env/agent
+    factories are not yet wired here (production execution is deferred), so the
+    returned executors carry NO factories and would raise
+    EXECUTOR_FACTORY_MISSING if actually run. VS-07/VS-08 tests inject their own
+    resolver/fakes; ``create_app`` keeps the FakeRunSupervisor as the default.
     """
     # Imported lazily to avoid importing execution.py at module import time
     # (execution.py imports bench_env, which is heavy).
-    from test_platform.services.execution import ParallelRunExecutor, SerialRunExecutor
+    from test_platform.services.execution import (
+        MultiprocessRunExecutor,
+        ParallelRunExecutor,
+        SerialRunExecutor,
+    )
 
     def resolve(lane: Any) -> Any:
         runner_config = getattr(lane, "runner_config", {}) or {}
+        processes = int(runner_config.get("processes", 1) or 1)
         parallel = int(runner_config.get("parallel", 1) or 1)
+        if processes > 1:
+            return MultiprocessRunExecutor(database, settings)
         if parallel > 1:
             return ParallelRunExecutor(database, settings)
         return SerialRunExecutor(database, settings)

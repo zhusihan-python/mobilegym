@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import { cancelRun, getRun, streamRunEvents } from '../../api/client';
 import type { RunDetail } from '../../api/types';
-import { reduceRunEvent, type RunLiveState } from './runEvents';
+import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
 type DetailState =
   | { status: 'loading' }
@@ -36,6 +36,7 @@ export function RunDetailPage() {
           replaying: false,
           completedEpisodeKeys: new Set<string>(),
           activeWorkers: new Set<string>(),
+          activeShards: new Map<string, ShardHealth>(),
         };
         dispose = streamRunEvents(
           runId,
@@ -96,6 +97,8 @@ export function RunDetailPage() {
   // VS-07 live parallel progress: active workers + completed/total episodes.
   const activeWorkers = liveRef.current?.activeWorkers ?? new Set<string>();
   const completedEpisodeKeys = liveRef.current?.completedEpisodeKeys ?? new Set<string>();
+  // VS-08 live multiprocess shard health.
+  const activeShards = liveRef.current?.activeShards ?? new Map<string, ShardHealth>();
   const plannedEpisodes = run.progress.planned_episodes;
   const liveCompleted = Math.max(
     completedEpisodeKeys.size,
@@ -153,6 +156,23 @@ export function RunDetailPage() {
               <span data-testid="tp-active-workers">{activeWorkers.size}</span>
             </dd>
           </div>
+          {activeShards.size > 0 ? (
+            <div>
+              <dt>Shards</dt>
+              <dd>
+                <ul className="tp-shard-list" data-testid="tp-shard-list">
+                  {Array.from(activeShards.entries()).map(([rank, health]) => (
+                    <li key={rank} className={`tp-shard tp-shard-${health.status}`}>
+                      <span data-testid={`tp-shard-${rank}`}>
+                        {rank}: {health.status}
+                        {health.exitcode !== null ? ` (exit ${health.exitcode})` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </dd>
+            </div>
+          ) : null}
           <div>
             <dt>Fingerprint</dt>
             <dd className="tp-mono">{run.fingerprint}</dd>

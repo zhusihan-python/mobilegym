@@ -12,7 +12,17 @@ import type { RunDetail, RunEvent } from '../../api/types';
  *   (completed/error/cancelled), deduped so a reconnect never double-counts.
  * - `activeWorkers`: worker_ids with a `worker.started` but no matching
  *   `worker.stopped` yet, for the live "active workers" count.
+ *
+ * VS-08 multiprocess fields:
+ * - `activeShards`: shard rank → {status, exitcode} for live shard health.
+ *   Status is derived from shard.started/stopped/fatal events; exitcode from
+ *   shard.fatal / shard.stopped payloads. Keyed by normalized rank (p00, p01…).
  */
+export type ShardHealth = {
+  status: 'started' | 'stopped' | 'fatal';
+  exitcode: number | null;
+};
+
 export type RunLiveState = {
   snapshot: RunDetail;
   lastSequence: number;
@@ -20,6 +30,7 @@ export type RunLiveState = {
   replaying: boolean;
   completedEpisodeKeys: Set<string>;
   activeWorkers: Set<string>;
+  activeShards: Map<string, ShardHealth>;
 };
 
 /**
@@ -45,10 +56,11 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
     return state;
   }
 
-  // Copy the mutable Sets only if this event will mutate them; otherwise share
-  // the reference (keeps referential equality for no-op reductions).
+  // Copy the mutable Sets/Maps only if this event will mutate them; otherwise
+  // share the reference (keeps referential equality for no-op reductions).
   let completedEpisodeKeys = state.completedEpisodeKeys;
   let activeWorkers = state.activeWorkers;
+  let activeShards = state.activeShards;
 
   const next: RunLiveState = {
     ...state,
@@ -110,6 +122,37 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
       next.activeWorkers = activeWorkers;
       break;
     }
+    case 'shard.started':
+    case 'shard.stopped':
+    case 'shard.fatal': {
+      // VS-08: track shard health by normalized rank key (p00, p01…).
+      const rank = shardRankOf(event);
+      if (rank !== null) {
+        const shardKey = `p${String(rank).padStart(2, '0')}`;
+        const status: ShardHealth['status'] =
+          event.type === 'shard.started'
+            ? 'started'
+            : event.type === 'shard.stopped'
+              ? 'stopped'
+              : 'fatal';
+        const exitcode = shardExitcodeOf(event);
+        // Copy the Map only when mutating.
+        activeShards = new Map(activeShards);
+        const prev = activeShards.get(shardKey);
+        activeShards.set(shardKey, {
+          status,
+          // Keep the prior exitcode if this event doesn't carry one.
+          exitcode: exitcode ?? prev?.exitcode ?? null,
+        });
+      }
+      next.activeShards = activeShards;
+      break;
+    }
+    case 'stream.events_coalesced':
+      // VS-08: a coalesced event acknowledges dropped step/metric events. It
+      // must advance lastSequence (set above) so the server sees it consumed;
+      // no other state change is required.
+      break;
     default:
       // Unknown / step / metric events: only advance lastSequence (already set).
       break;
@@ -128,6 +171,30 @@ function episodeKeyOf(event: RunEvent): string | null {
   const fromPayload = event.payload?.episode_key;
   if (typeof fromPayload === 'string' && fromPayload.length > 0) {
     return fromPayload;
+  }
+  return null;
+}
+
+/**
+ * Extract the shard rank (0-indexed integer) from a shard.* event's payload.
+ * Returns null when absent (the caller leaves the shard untracked).
+ */
+function shardRankOf(event: RunEvent): number | null {
+  const raw = event.payload?.shard_rank;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.floor(raw);
+  }
+  return null;
+}
+
+/**
+ * Extract the exitcode from a shard.fatal / shard.stopped payload.
+ * Returns null when absent.
+ */
+function shardExitcodeOf(event: RunEvent): number | null {
+  const raw = event.payload?.exitcode;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.floor(raw);
   }
   return null;
 }

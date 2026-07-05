@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace as dataclasses_replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -1118,6 +1118,293 @@ class ParallelRunExecutor(_RunExecutorBase):
         Shaped so ``_result_to_dict``/``_result_outcome`` classify it as ERROR
         (is_error=True) without needing a full EpisodeResult object.
         """
+        return {
+            "id": getattr(work_item.task, "id", "unknown"),
+            "trial_id": work_item.trial_id,
+            "is_success": False,
+            "is_error": True,
+            "execution": {
+                "error": "Worker exited without reporting a result (WORKER_CRASH).",
+                "stop_reason": "ERROR",
+            },
+        }
+
+
+class MultiprocessRunExecutor(_RunExecutorBase):
+    """Execute all episodes of a single lane across N processes (shards).
+
+    VS-08: mirrors ParallelRunExecutor's lifecycle (queued-cancel check → mark
+    running → emit run.started → materialize → run → reconcile → finalize) but
+    shards the prepared work across ``MultiProcessRunner``. Each shard runs a
+    ``ParallelRunner`` (in-process for tests via ``child_runner_factory``; real
+    spawn for production).
+
+    Results are reconciled by episode_key (plan order) via the SHARED
+    ``_reconcile_and_ingest`` helper so behaviour is identical to
+    ParallelRunExecutor: missing → WORKER_CRASH; unknown/duplicate → hard error.
+
+    The ``child_runner_factory`` is the in-process seam: when provided, shards
+    run as asyncio tasks (deterministic tests, no real process); when None,
+    real ``mp.Process`` spawn (production). The executor builds EpisodeWorkSpecs
+    from the materialized plan and hands them to MultiProcessRunner.
+    """
+
+    def __init__(
+        self,
+        database: Database,
+        settings: PlatformSettings,
+        *,
+        task_factory: TaskFactory | None = None,
+        child_runner_factory: Any | None = None,
+        env_pool_factory: Any | None = None,
+        agent_factory: Any | None = None,
+        env_factory: Any | None = None,
+    ) -> None:
+        self.database = database
+        self.settings = settings
+        self.task_factory = task_factory or RegistryTaskFactory()
+        # child_runner_factory: when set, MultiProcessRunner runs shards in-process
+        # (asyncio tasks). When None, real mp.Process spawn (production). Tests
+        # inject a factory that reconstructs tasks + builds ParallelRunners.
+        self.child_runner_factory = child_runner_factory
+        self.env_pool_factory = env_pool_factory
+        # env_factory is used ONLY for the materialization phase.
+        self.env_factory = env_factory
+        self.agent_factory = agent_factory
+
+    async def execute_run(
+        self,
+        run_id: str,
+        *,
+        token: CancellationToken | None = None,
+        events: EventSink | None = None,
+        run_event_writer: Any = None,
+    ) -> RunDetail:
+        from bench_env.runner.multiprocess import MultiProcessRunner
+        from bench_env.runner.work_spec import EpisodeWorkSpec
+
+        token = token or CancellationToken()
+        events = events or NullEventSink()
+        writer = run_event_writer
+
+        # (1) Honor a cancel that landed while queued.
+        if self._cancel_requested(run_id):
+            token.cancel()
+            raise RunCancelled()
+
+        # (2) Mark running + emit run.started.
+        self._mark_run_running(run_id)
+        if writer is not None:
+            try:
+                writer.emit(
+                    run_id, "run.started", {"state": "running"},
+                    entity_type="run", entity_id=run_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # (3) Materialize unique templates.
+        prepared = await SingleLaneMaterializer(
+            self.database,
+            self.settings,
+            task_factory=self.task_factory,
+            env_factory=self.env_factory,
+        ).materialize_run(run_id, token=token, events=events)
+        if not prepared:
+            raise RunDomainError(
+                "UNSUPPORTED_RUN_PLAN",
+                "Multiprocess execution requires at least one prepared task.",
+                status_code=409,
+            )
+
+        plan = self._load_plan(run_id)
+        lane = _single_lane(plan)
+        lane_attempt = self._lane_attempt(run_id)
+        prepared_by_key = {item.materialization_key: item for item in prepared}
+
+        # (4) Build PreparedWorkItems AND pickle-safe EpisodeWorkSpecs for every
+        # planned episode. Children reconstruct tasks from the specs.
+        work_items: list[PreparedWorkItem] = []
+        work_specs: list[EpisodeWorkSpec] = []
+        for episode in plan.episodes:
+            payload = prepared_by_key[episode.materialization_key]
+            task = self.task_factory.instantiate(episode, params=payload.params)
+            work_items.append(
+                PreparedWorkItem(
+                    episode_key=episode.episode_key,
+                    task=task,
+                    trial_id=episode.trial_id,
+                    max_steps=episode.max_steps,
+                )
+            )
+            work_specs.append(
+                EpisodeWorkSpec(
+                    episode_key=episode.episode_key,
+                    task_base_id=episode.task_base_id,
+                    instance_id=episode.instance_id,
+                    instance_seed=episode.instance_seed,
+                    template_index=episode.template_index,
+                    params=payload.params,
+                    trial_id=episode.trial_id,
+                    max_steps=episode.max_steps,
+                )
+            )
+        if not work_items:
+            raise RunDomainError(
+                "UNSUPPORTED_RUN_PLAN",
+                "Multiprocess execution requires at least one episode.",
+                status_code=409,
+            )
+
+        # (5) Build the MultiProcessRunner config from the lane's runner_config.
+        processes = int(lane.runner_config.get("processes", 1) or 1)
+        parallel = int(lane.runner_config.get("parallel", 1) or 1)
+        config = _runner_config(lane)
+        # Override processes/parallel from the lane config so MultiProcessRunner
+        # shards correctly.
+        config = dataclasses_replace(config, processes=processes, parallel=parallel)
+
+        # (6) Run the sharded execution. child_runner_factory is the in-process
+        # seam (tests pass one; production passes None for real spawn). The
+        # events sink bridges child envelopes into the platform stream.
+        runner = MultiProcessRunner(
+            [],  # tasks unused on the platform path (specs drive execution)
+            config,
+            child_runner_factory=self.child_runner_factory,
+            event_sink=events,
+            cancellation_token=token,
+            prepared_work_specs=work_specs,
+        )
+        try:
+            result_dicts = await runner.run()
+        except RunCancelled:
+            token.cancel()
+            result_dicts = []
+
+        # If any single result was CANCELLED, propagate as a run-level cancel.
+        any_result_cancelled = any(
+            (rd.get("execution", {}) or {}).get("stop_reason") == "CANCELLED"
+            for rd in result_dicts
+        )
+        if any_result_cancelled:
+            token.cancel()
+
+        # (7) Reconcile results against expected episode_keys. result_dicts are
+        # plain dicts (from ShardResultEnvelope.result_dict) carrying episode_key.
+        self._reconcile_and_ingest_dicts(
+            run_id=run_id,
+            lane_attempt=lane_attempt,
+            work_items=work_items,
+            result_dicts=result_dicts,
+            cancelled=token.cancelled,
+            event_sink=events,
+        )
+
+        # (8) If cancelled, mark the run cancelled and re-raise.
+        if token.cancelled:
+            ResultIngestor(self.database).mark_run_cancelled(run_id)
+            raise RunCancelled()
+        return RunRepository(self.database).get(run_id)
+
+    def _reconcile_and_ingest_dicts(
+        self,
+        *,
+        run_id: str,
+        lane_attempt: dict[str, str],
+        work_items: list[PreparedWorkItem],
+        result_dicts: list[dict[str, Any]],
+        cancelled: bool,
+        event_sink: Any = None,
+    ) -> None:
+        """Reconcile plain-dict results (from ShardResultEnvelope) against the
+        expected episode_keys and ingest. Mirrors _reconcile_and_ingest but
+        works with dicts instead of EpisodeResult objects."""
+        expected_keys = [item.episode_key for item in work_items]
+        expected_set = set(expected_keys)
+
+        results_by_key: dict[str, dict[str, Any]] = {}
+        unknown_keys: list[str] = []
+        for rd in result_dicts:
+            key = rd.get("episode_key")
+            if key is None:
+                unknown_keys.append("<missing episode_key>")
+                continue
+            if key not in expected_set:
+                unknown_keys.append(key)
+                continue
+            if key in results_by_key:
+                raise RunDomainError(
+                    "EPISODE_RESULT_UNKNOWN",
+                    "The runner returned duplicate results for one episode.",
+                    status_code=500,
+                    details=[{"run_id": run_id, "episode_key": key, "duplicate": True}],
+                )
+            results_by_key[key] = rd
+        if unknown_keys:
+            raise RunDomainError(
+                "EPISODE_RESULT_UNKNOWN",
+                "The runner returned results for unknown episodes.",
+                status_code=500,
+                details=[{"run_id": run_id, "unknown_episode_keys": unknown_keys}],
+            )
+
+        ingestor = ResultIngestor(self.database)
+        for work_item in work_items:
+            key = work_item.episode_key
+            artifact_root = _episode_artifact_root(
+                lane_attempt["artifact_root"],
+                results_by_key.get(key),
+                repeat_n=1,
+                episode_key=key,
+            )
+            if key in results_by_key:
+                ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt["id"],
+                    episode_key=key,
+                    result=results_by_key[key],
+                    artifact_root=artifact_root,
+                    cancelled=cancelled,
+                )
+            else:
+                synthetic = self._synthetic_crash_result(work_item)
+                ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt["id"],
+                    episode_key=key,
+                    result=synthetic,
+                    artifact_root=artifact_root,
+                    cancelled=cancelled,
+                    error_code_override="WORKER_CRASH",
+                )
+                if event_sink is not None:
+                    try:
+                        event_sink.emit(ExecutionEvent(
+                            type="episode.error",
+                            timestamp="",
+                            phase="execute",
+                            task_id=getattr(work_item.task, "id", None),
+                            trial_id=work_item.trial_id,
+                            episode_key=key,
+                            payload={
+                                "outcome": "ERROR",
+                                "error_code": "WORKER_CRASH",
+                                "steps": 0,
+                                "reason": "missing_result",
+                            },
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        ingestor.finalize_lane_run(
+            run_id=run_id,
+            lane_attempt_id=lane_attempt["id"],
+            terminal_state="cancelled" if cancelled else "completed",
+            cancelled=cancelled,
+        )
+
+    @staticmethod
+    def _synthetic_crash_result(work_item: PreparedWorkItem) -> dict[str, Any]:
         return {
             "id": getattr(work_item.task, "id", "unknown"),
             "trial_id": work_item.trial_id,

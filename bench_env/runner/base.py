@@ -658,6 +658,11 @@ class EpisodeResult:
             "false_complete": self.false_complete,
             "overdue_termination": self.overdue_termination,
         }
+        # VS-08: include episode_key so multi-process result reconciliation
+        # (which joins by episode_key) works from result dicts, not just live
+        # EpisodeResult objects. Omitted when None (CLI runs without keys).
+        if self.episode_key is not None:
+            d["episode_key"] = self.episode_key
         # Task taxonomy (omit empty)
         if self.difficulty:
             d["difficulty"] = self.difficulty
