@@ -629,7 +629,7 @@ class _BlockingPairedEnv(_PairedEnv):
         import asyncio as _a
         # Block until the token fires; Controller.run checks the token before
         # each agent.act and returns a CANCELLED result.
-        await _a.sleep(30)
+        await _a.sleep(5)
         return StepResult(observation=await self.get_observation(), done=False, info={})
 
 
@@ -682,7 +682,9 @@ async def test_paired_cancel_during_candidate_preserves_baseline(tmp_path):
         ).fetchone()
         assert run_row["state"] == "cancelled"
 
-        # Baseline episode_attempt is preserved (NOT dropped).
+        # Baseline episode_attempt is preserved (NOT dropped) AND keeps its
+        # actual PASS outcome (P1.1: per-episode cancel does NOT relabel
+        # already-completed results as CANCELLED).
         attempts = database.connection.execute(
             "SELECT lane_key, outcome FROM episode_attempts "
             "JOIN lane_attempts ON lane_attempts.id = episode_attempts.lane_attempt_id "
@@ -691,8 +693,12 @@ async def test_paired_cancel_during_candidate_preserves_baseline(tmp_path):
             (run.id,),
         ).fetchall()
         outcomes = {row["lane_key"]: row["outcome"] for row in attempts}
-        # Baseline completed before cancel; its outcome is preserved.
+        # Baseline completed before cancel; its outcome is preserved as PASS.
         assert "baseline" in outcomes, "baseline outcome was dropped by cancel"
+        assert outcomes["baseline"] == "PASS", (
+            f"baseline relabeled to {outcomes['baseline']} (expected PASS — "
+            "per-episode cancel must not relabel completed results)"
+        )
     finally:
         database.close()
 

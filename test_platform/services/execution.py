@@ -2094,6 +2094,11 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             baseline_attempt = lane_attempts[bl.lane_key]
             candidate_attempt = lane_attempts[cl.lane_key]
 
+        # Resolve episodes for missing-episode reconciliation (P1.2). If cancel
+        # fired during materialize, episodes wasn't set — load from plan.
+        if not locals().get("episodes"):
+            episodes = self._load_plan(run_id).episodes
+
         # (5) Ingest episode_attempts per lane. PAIRING_VIOLATION lanes get an
         # ERROR episode_attempt + episode.error event (Contract 8).
         baseline_ingested = self._ingest_lane_outcomes(
@@ -2103,6 +2108,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             outcomes=baseline_outcomes,
             event_sink=baseline_sink,
             cancelled=cancelled,
+            expected_episodes=episodes,
         )
         candidate_ingested = self._ingest_lane_outcomes(
             ingestor=ingestor,
@@ -2111,6 +2117,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             outcomes=candidate_outcomes,
             event_sink=candidate_sink,
             cancelled=cancelled,
+            expected_episodes=episodes,
         )
 
         # (6) Per-lane finalize_lane_only (Contract 2).
@@ -2204,13 +2211,23 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         outcomes: list[dict[str, Any]],
         event_sink: EventSink,
         cancelled: bool,
+        expected_episodes: list[Any] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Ingest one lane's episode outcomes. Returns pair_key → ingested dict.
 
-        PAIRING_VIOLATION outcomes get error_code_override=PAIRING_VIOLATION and
-        an emitted episode.error event (Contract 8).
+        Per-episode cancellation (P1.1): a run-level ``cancelled`` flag does NOT
+        relabel already-completed results. Only results whose stop_reason is
+        CANCELLED (or missing episodes synthesized below) use cancelled=True.
+
+        Missing-episode reconciliation (P1.2): when the run was cancelled,
+        expected episodes that have no outcome (never ran) are synthesized as
+        CANCELLED attempts with an episode.cancelled event — mirroring the
+        parallel executor's _reconcile_and_ingest missing branch.
         """
         ingested: dict[str, dict[str, Any]] = {}
+        outcomes_by_key = {oc["episode_key"]: oc for oc in outcomes}
+
+        # Ingest actual outcomes with per-result cancellation.
         for outcome in outcomes:
             pair_key = outcome["pair_key"]
             is_violation = outcome["integrity_status"].is_violation
@@ -2221,13 +2238,17 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 episode_key=outcome["episode_key"],
             )
             error_code_override = "PAIRING_VIOLATION" if is_violation else None
+            # P1.1: per-episode cancel — only this result's own stop_reason
+            # determines cancelled, NOT the run-level flag. A baseline episode
+            # that PASSed before candidate cancellation keeps PASS.
+            result_cancelled = _result_is_cancelled(outcome["result"])
             summary = ingestor.ingest_episode_attempt(
                 run_id=run_id,
                 lane_attempt_id=lane_attempt["id"],
                 episode_key=outcome["episode_key"],
                 result=outcome["result"],
                 artifact_root=artifact_root,
-                cancelled=cancelled,
+                cancelled=result_cancelled,
                 error_code_override=error_code_override,
             )
             ingested[pair_key] = summary
@@ -2239,7 +2260,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                         timestamp="",
                         phase="execute",
                         task_id=getattr(outcome["result"], "id", None)
-                        or outcome["result"].get("id"),
+                            or outcome["result"].get("id"),
                         trial_id=outcome.get("trial_id", 0),
                         episode_key=outcome["episode_key"],
                         payload={
@@ -2251,6 +2272,57 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                     ))
                 except Exception:  # noqa: BLE001
                     pass
+
+        # P1.2: missing-episode reconciliation for cancelled runs.
+        if cancelled and expected_episodes is not None:
+            for episode in expected_episodes:
+                if episode.episode_key in outcomes_by_key:
+                    continue  # already ingested above
+                # This episode never ran (cancel before it started). Synthesize
+                # a CANCELLED attempt so the lane has a complete episode grid.
+                artifact_root = _episode_artifact_root(
+                    lane_attempt["artifact_root"],
+                    None,
+                    repeat_n=1,
+                    episode_key=episode.episode_key,
+                )
+                synthetic = {
+                    "id": episode.task_base_id,
+                    "trial_id": episode.trial_id,
+                    "is_success": False,
+                    "is_error": False,
+                    "execution": {"error": None, "stop_reason": "CANCELLED"},
+                    "episode_key": episode.episode_key,
+                }
+                summary = ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt["id"],
+                    episode_key=episode.episode_key,
+                    result=synthetic,
+                    artifact_root=artifact_root,
+                    cancelled=True,
+                    error_code_override="CANCELLED",
+                )
+                ingested[episode.pair_key] = summary
+                # Emit episode.cancelled for the UI's completed-count.
+                try:
+                    event_sink.emit(ExecutionEvent(
+                        type="episode.cancelled",
+                        timestamp="",
+                        phase="execute",
+                        task_id=episode.task_base_id,
+                        trial_id=episode.trial_id,
+                        episode_key=episode.episode_key,
+                        payload={
+                            "outcome": "CANCELLED",
+                            "error_code": "CANCELLED",
+                            "steps": 0,
+                            "reason": "missing_result",
+                        },
+                    ))
+                except Exception:  # noqa: BLE001
+                    pass
+
         return ingested
 
     def _record_comparison(
@@ -2429,6 +2501,18 @@ def _episode_artifact_root(
     trial_id = int(result_dict.get("trial_id") or getattr(result, "trial_id", 0) or 0)
     suffix = f"_t{trial_id}" if repeat_n > 1 else ""
     return f"{lane_artifact_root}/trajectory/{task_id_safe}{suffix}"
+
+
+def _result_is_cancelled(result: Any) -> bool:
+    """Detect whether a single result was cancelled (per-episode, not run-level).
+
+    A completed PASS/FAIL result is NOT cancelled even if the run was later
+    cancelled — only results whose execution.stop_reason is CANCELLED count.
+    """
+    if isinstance(result, dict):
+        return (result.get("execution") or {}).get("stop_reason") == "CANCELLED"
+    exec_r = getattr(result, "execution", None)
+    return exec_r is not None and getattr(exec_r, "stop_reason", None) == "CANCELLED"
 
 
 def _result_to_dict(result: Any) -> dict[str, Any]:
