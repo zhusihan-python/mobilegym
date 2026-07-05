@@ -1804,6 +1804,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             # partial outcomes accumulated so far MUST reach the caller. The
             # caller detects cancellation via token.cancelled. The finally block
             # below still runs recorder/env cleanup.
+            pass
         finally:
             recorder.finish_run()
             close = getattr(env, "close", None)
