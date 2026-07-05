@@ -487,13 +487,33 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
         # CANCELLED (outcome + error_code), NOT WORKER_CRASH. A user cancel is not
         # a crash — conflating them corrupts reports.
         attempts = database.connection.execute(
-            "SELECT outcome, error_code FROM episode_attempts"
+            "SELECT outcome, error_code, result_json FROM episode_attempts"
         ).fetchall()
         assert len(attempts) > 0
+        import json as _json
+
         for att in attempts:
             if att["outcome"] == "CANCELLED":
                 assert att["error_code"] == "CANCELLED", (
                     f"cancelled episode mislabeled {att['error_code']!r} (expected CANCELLED)"
+                )
+                # P2: result_json must NOT carry crash semantics. A missing
+                # episode from a user cancel is synthetic-CANCELLED, not
+                # WORKER_CRASH. (Episodes that ran to completion before the
+                # cancel land have their real stop_reason; only the synthetic
+                # missing ones must avoid WORKER_CRASH.)
+                rd = _json.loads(att["result_json"]) if att["result_json"] else {}
+                assert "WORKER_CRASH" not in str(rd), (
+                    "cancelled result_json must not carry WORKER_CRASH"
+                )
+                # Synthetic cancelled episodes have stop_reason=CANCELLED; real
+                # completed-then-run-cancelled episodes keep their own stop_reason.
+                exec_d = rd.get("execution") or {}
+                assert exec_d.get("stop_reason") != "ERROR", (
+                    "cancelled result_json must not carry crash stop_reason=ERROR"
+                )
+                assert rd.get("is_error") is not True, (
+                    "cancelled result must not be flagged is_error=True"
                 )
             # No episode should carry WORKER_CRASH when the run was user-cancelled.
             assert att["error_code"] != "WORKER_CRASH", (

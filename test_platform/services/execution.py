@@ -1067,10 +1067,20 @@ class ParallelRunExecutor(_RunExecutorBase):
                     cancelled=cancelled,
                 )
             else:
-                # Missing result → the worker crashed/exited before reporting.
-                # Ingest a synthetic ERROR with WORKER_CRASH so the run surfaces
-                # the failure rather than silently dropping the episode.
-                synthetic = self._synthetic_crash_result(work_item)
+                # Missing result → the worker crashed/exited before reporting,
+                # OR the run was cancelled before this episode ran. The label
+                # MUST match the cause (ParallelRunExecutor mirrors
+                # MultiprocessRunExecutor here): a user cancel is CANCELLED
+                # (not a crash). error_code + terminal episode event follow suit.
+                synthetic = self._synthetic_crash_result(work_item, cancelled=cancelled)
+                if cancelled:
+                    missing_code = "CANCELLED"
+                    terminal_event_type = "episode.cancelled"
+                    terminal_outcome = "CANCELLED"
+                else:
+                    missing_code = "WORKER_CRASH"
+                    terminal_event_type = "episode.error"
+                    terminal_outcome = "ERROR"
                 ingestor.ingest_episode_attempt(
                     run_id=run_id,
                     lane_attempt_id=lane_attempt["id"],
@@ -1078,24 +1088,23 @@ class ParallelRunExecutor(_RunExecutorBase):
                     result=synthetic,
                     artifact_root=artifact_root,
                     cancelled=cancelled,
-                    error_code_override="WORKER_CRASH",
+                    error_code_override=missing_code,
                 )
-                # P2: also emit a live episode.error so the UI's completed-count
-                # (deduped by episode_key from terminal episode events) reflects
-                # this missing episode. Without it the UI would show one fewer
-                # completed episode than the DB holds after a worker crash.
+                # P2: also emit a live terminal episode event so the UI's
+                # completed-count (deduped by episode_key) reflects this missing
+                # episode. The event type + payload match the cause.
                 if event_sink is not None:
                     try:
                         event_sink.emit(ExecutionEvent(
-                            type="episode.error",
+                            type=terminal_event_type,
                             timestamp="",
                             phase="execute",
                             task_id=getattr(work_item.task, "id", None),
                             trial_id=work_item.trial_id,
                             episode_key=key,
                             payload={
-                                "outcome": "ERROR",
-                                "error_code": "WORKER_CRASH",
+                                "outcome": terminal_outcome,
+                                "error_code": missing_code,
                                 "steps": 0,
                                 "reason": "missing_result",
                             },
@@ -1112,12 +1121,27 @@ class ParallelRunExecutor(_RunExecutorBase):
         )
 
     @staticmethod
-    def _synthetic_crash_result(work_item: PreparedWorkItem) -> dict[str, Any]:
-        """A minimal ERROR result dict for a missing/crashed episode.
+    def _synthetic_crash_result(
+        work_item: PreparedWorkItem, *, cancelled: bool = False,
+    ) -> dict[str, Any]:
+        """A minimal result dict for a missing/crashed/cancelled episode.
 
-        Shaped so ``_result_to_dict``/``_result_outcome`` classify it as ERROR
-        (is_error=True) without needing a full EpisodeResult object.
+        Shaped so ``_result_to_dict``/``_result_outcome`` classify it correctly:
+        - cancelled → CANCELLED outcome (is_error=False, stop_reason=CANCELLED)
+          so reports/result_json reflect "cancelled", NOT "crashed".
+        - crash (default) → ERROR outcome (is_error=True, stop_reason=ERROR).
         """
+        if cancelled:
+            return {
+                "id": getattr(work_item.task, "id", "unknown"),
+                "trial_id": work_item.trial_id,
+                "is_success": False,
+                "is_error": False,
+                "execution": {
+                    "error": None,
+                    "stop_reason": "CANCELLED",
+                },
+            }
         return {
             "id": getattr(work_item.task, "id", "unknown"),
             "trial_id": work_item.trial_id,
@@ -1372,7 +1396,7 @@ class MultiprocessRunExecutor(_RunExecutorBase):
                 # MUST match the cause: a user cancel is CANCELLED (not a
                 # crash), so the UI/reports distinguish "cancelled" from
                 # "crashed". error_code + terminal episode event follow suit.
-                synthetic = self._synthetic_crash_result(work_item)
+                synthetic = self._synthetic_crash_result(work_item, cancelled=cancelled)
                 if cancelled:
                     missing_code = "CANCELLED"
                     terminal_event_type = "episode.cancelled"
@@ -1417,7 +1441,27 @@ class MultiprocessRunExecutor(_RunExecutorBase):
         )
 
     @staticmethod
-    def _synthetic_crash_result(work_item: PreparedWorkItem) -> dict[str, Any]:
+    def _synthetic_crash_result(
+        work_item: PreparedWorkItem, *, cancelled: bool = False,
+    ) -> dict[str, Any]:
+        """A minimal result dict for a missing/crashed/cancelled episode.
+
+        Shaped so ``_result_to_dict``/``_result_outcome`` classify it correctly:
+        - cancelled → CANCELLED outcome (is_error=False, stop_reason=CANCELLED)
+          so reports/result_json reflect "cancelled", NOT "crashed".
+        - crash (default) → ERROR outcome (is_error=True, stop_reason=ERROR).
+        """
+        if cancelled:
+            return {
+                "id": getattr(work_item.task, "id", "unknown"),
+                "trial_id": work_item.trial_id,
+                "is_success": False,
+                "is_error": False,
+                "execution": {
+                    "error": None,
+                    "stop_reason": "CANCELLED",
+                },
+            }
         return {
             "id": getattr(work_item.task, "id", "unknown"),
             "trial_id": work_item.trial_id,
