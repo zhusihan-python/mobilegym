@@ -1437,8 +1437,14 @@ class MultiprocessRunExecutor(_RunExecutorBase):
         parallel = int(lane.runner_config.get("parallel", 1) or 1)
         config = _runner_config(lane)
         # Override processes/parallel from the lane config so MultiProcessRunner
-        # shards correctly.
-        config = dataclasses_replace(config, processes=processes, parallel=parallel)
+        # shards correctly, and keep generated shard artifacts under the
+        # platform run root instead of bench_env's default runs/ directory.
+        config = dataclasses_replace(
+            config,
+            processes=processes,
+            parallel=parallel,
+            runs_dir=self.settings.runs_dir / run_id / lane_attempt["artifact_root"],
+        )
 
         # (6) Run the sharded execution. child_runner_factory is the in-process
         # seam (tests pass one; production passes None for real spawn). The

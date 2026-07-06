@@ -1,5 +1,7 @@
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -22,7 +24,7 @@ from test_platform.api.routes.events import router as events_router
 from test_platform.config import PlatformSettings
 from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
-from test_platform.services.runs import FakeRunSupervisor, RunService
+from test_platform.services.runs import RunService, RunSupervisor
 
 
 def create_app(
@@ -31,11 +33,19 @@ def create_app(
     database: Database | None = None,
     adapter_registry: object | None = None,
     supervisor: object | None = None,
+    executor_resolver: Callable[[Any], Any] | None = None,
+    token_factory: Callable[[], Any] | None = None,
 ) -> FastAPI:
     platform_database = database or Database(settings)
     platform_adapter_registry = adapter_registry or TargetAdapterRegistry()
-    platform_supervisor = supervisor or FakeRunSupervisor()
     platform_broker = SSEBroker()
+    platform_supervisor = supervisor or RunSupervisor(
+        platform_database,
+        settings,
+        executor_resolver=executor_resolver,
+        broker=platform_broker,
+        token_factory=token_factory,
+    )
     # If the supervisor owns its own broker (real RunSupervisor), share it so
     # published events reach the SSE route's subscribers.
     if hasattr(platform_supervisor, "bind_broker"):

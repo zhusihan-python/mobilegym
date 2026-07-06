@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -1785,15 +1786,13 @@ def _service_restarted_result(*, task_id: str, trial_id: int) -> dict[str, Any]:
 def _default_executor_resolver(
     database: Database, settings: PlatformSettings
 ) -> Callable[[Any], Any]:
-    """Production lane-aware executor resolver (deferred — VS-07 wires fakes).
+    """Production lane-aware executor resolver.
 
     A lane whose ``runner_config['processes']`` is > 1 gets a
     MultiprocessRunExecutor; otherwise one with ``parallel`` > 1 gets a
-    ParallelRunExecutor; otherwise a SerialRunExecutor. NOTE: real env/agent
-    factories are not yet wired here (production execution is deferred), so the
-    returned executors carry NO factories and would raise
-    EXECUTOR_FACTORY_MISSING if actually run. VS-07/VS-08 tests inject their own
-    resolver/fakes; ``create_app`` keeps the FakeRunSupervisor as the default.
+    ParallelRunExecutor; otherwise a SerialRunExecutor. The resolver wires the
+    real bench_env factories so runs created through the API/UI execute instead
+    of remaining queued.
     """
     # Imported lazily to avoid importing execution.py at module import time
     # (execution.py imports bench_env, which is heavy).
@@ -1803,14 +1802,276 @@ def _default_executor_resolver(
         SerialRunExecutor,
     )
 
+    env_factory = _default_env_factory(settings)
+    env_pool_factory = _default_env_pool_factory(settings)
+    agent_factory = _default_agent_factory(settings)
+
     def resolve(lane: Any) -> Any:
         runner_config = getattr(lane, "runner_config", {}) or {}
         processes = int(runner_config.get("processes", 1) or 1)
         parallel = int(runner_config.get("parallel", 1) or 1)
         if processes > 1:
-            return MultiprocessRunExecutor(database, settings)
+            return MultiprocessRunExecutor(
+                database,
+                settings,
+                child_runner_factory=_default_child_runner_factory(lane, settings),
+                env_pool_factory=env_pool_factory,
+                agent_factory=agent_factory,
+                env_factory=env_factory,
+            )
         if parallel > 1:
-            return ParallelRunExecutor(database, settings)
-        return SerialRunExecutor(database, settings)
+            return ParallelRunExecutor(
+                database,
+                settings,
+                env_pool_factory=env_pool_factory,
+                agent_factory=agent_factory,
+                env_factory=env_factory,
+            )
+        return SerialRunExecutor(
+            database,
+            settings,
+            env_factory=env_factory,
+            agent_factory=agent_factory,
+        )
 
     return resolve
+
+
+class _LazyStartedEnv:
+    """Sync factory adapter for bench_env environments with async start()."""
+
+    def __init__(self, env: Any) -> None:
+        self._env = env
+        self._started = False
+        self._start_lock = asyncio.Lock()
+
+    async def _ensure_started(self) -> None:
+        if self._started:
+            return
+        async with self._start_lock:
+            if not self._started:
+                await self._env.start()
+                self._started = True
+
+    async def start(self) -> "_LazyStartedEnv":
+        await self._ensure_started()
+        return self
+
+    async def close(self) -> None:
+        if hasattr(self._env, "close"):
+            await self._env.close()
+        self._started = False
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._env, name)
+        if inspect.iscoroutinefunction(attr):
+
+            async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                await self._ensure_started()
+                return await attr(*args, **kwargs)
+
+            return _wrapped
+        return attr
+
+
+def _default_env_factory(settings: PlatformSettings) -> Callable[[Any], Any]:
+    def create(lane: Any) -> Any:
+        config = _runner_config_for_lane(lane, settings)
+        return _LazyStartedEnv(_build_env(config))
+
+    return create
+
+
+def _default_env_pool_factory(settings: PlatformSettings) -> Callable[[Any], Any]:
+    def create(lane: Any) -> Any:
+        config = _runner_config_for_lane(lane, settings)
+        return _build_env_pool(config)
+
+    return create
+
+
+def _default_agent_factory(settings: PlatformSettings) -> Callable[[Any], Any]:
+    def create(lane: Any) -> Any:
+        config = _runner_config_for_lane(lane, settings)
+        parallel = int(getattr(config, "parallel", 1) or 1)
+        return _create_agent_for_config(config, parallel_worker=parallel > 1)
+
+    return create
+
+
+def _default_child_runner_factory(
+    lane: Any,
+    settings: PlatformSettings,
+) -> Callable[..., Any]:
+    """Build in-process shard runners for the platform multiprocess executor."""
+
+    def factory(
+        shard_spec: Any,
+        work_specs: list[Any],
+        event_sink: Any,
+        cancellation_token: Any,
+    ) -> Any:
+        async def _run() -> list[Any]:
+            from dataclasses import replace as dataclasses_replace
+
+            from bench_env import factory as bench_factory
+            from bench_env.logger import add_log_file
+            from bench_env.runner.parallel import ParallelRunner
+            from bench_env.runner.serial import PreparedWorkItem
+            from bench_env.runner.work_spec import reconstruct_task
+            from bench_env.task.registry import TaskRegistry
+
+            base_config = _runner_config_for_lane(lane, settings)
+            shard_run_dir = Path(shard_spec.run_dir)
+            parent_run_dir = shard_run_dir.parent.parent
+            shard_rank = int(getattr(shard_spec, "rank", 0))
+            shard_parallel = max(
+                1,
+                int(getattr(shard_spec, "parallel", base_config.parallel) or 1),
+            )
+            config = dataclasses_replace(
+                base_config,
+                processes=1,
+                parallel=shard_parallel,
+                num_browsers=int(getattr(shard_spec, "num_browsers", 0) or 0),
+                run_dir=shard_run_dir,
+                runs_dir=shard_run_dir.parent,
+                trajectory_dir=parent_run_dir / "trajectory",
+                browser_log_dir=parent_run_dir / "browser_logs",
+                browser_log_prefix=f"p{shard_rank:02d}_",
+            )
+
+            registry = TaskRegistry()
+            prepared: list[PreparedWorkItem] = []
+            tasks: list[Any] = []
+            for spec in work_specs:
+                task = reconstruct_task(spec, registry)
+                tasks.append(task)
+                prepared.append(
+                    PreparedWorkItem(
+                        episode_key=spec.episode_key,
+                        task=task,
+                        trial_id=spec.trial_id,
+                        max_steps=spec.max_steps,
+                    )
+                )
+
+            recorder = bench_factory.create_recorder(config)
+            llm = _create_llm_for_config(config)
+            evaluator = bench_factory.create_evaluator(config, llm)
+            recorder.start_run(
+                agent=_agent_name_for_config(config),
+                model_name=config.model_name,
+                extra_meta=ParallelRunner.build_run_meta(config, tasks),
+                repeat_n=config.repeat_n,
+            )
+            if recorder.run_dir:
+                add_log_file(recorder.run_dir / "console.log")
+
+            runner = ParallelRunner(
+                _build_env_pool(config),
+                lambda: _create_agent_for_config(config, parallel_worker=True),
+                tasks,
+                config,
+                recorder,
+                evaluator,
+                prepared_work_items=prepared,
+                event_sink=event_sink,
+                cancellation_token=cancellation_token,
+            )
+            return await runner.run()
+
+        return _run()
+
+    return factory
+
+
+def _runner_config_for_lane(lane: Any, settings: PlatformSettings) -> Any:
+    from dataclasses import replace as dataclasses_replace
+
+    from test_platform.services.execution import _runner_config
+
+    return dataclasses_replace(_runner_config(lane), runs_dir=settings.runs_dir)
+
+
+def _build_env(config: Any) -> Any:
+    if config.device == "real":
+        from bench_env.env.real_device import RealDeviceEnv
+
+        return RealDeviceEnv(
+            device_serial=config.device_serial,
+            coord_space=config.coord_space,
+            delay_after_action=config.delay_after_action,
+            physical_size=config.physical_size,
+        )
+
+    if not config.env_url:
+        raise ValueError("Simulator execution requires runner_config.env_url.")
+
+    from bench_env.env import MobileGymEnv
+
+    return MobileGymEnv(
+        url=config.env_url,
+        headless=config.headless,
+        proxy=config.proxy,
+        coord_space=config.coord_space,
+        delay_after_action=config.delay_after_action,
+        verbose=not config.quiet,
+        viewport_size=config.viewport_size,
+        physical_size=config.physical_size,
+        device_scale_factor=config.device_scale_factor,
+    )
+
+
+def _build_env_pool(config: Any) -> Any:
+    if not config.env_url:
+        raise ValueError("Parallel simulator execution requires runner_config.env_url.")
+
+    from bench_env.env import EnvPool
+
+    return EnvPool(
+        url=config.env_url,
+        n=max(1, int(config.parallel or 1)),
+        isolation=config.isolation,
+        num_browsers=config.num_browsers,
+        headless=config.headless,
+        proxy=config.proxy,
+        coord_space=config.coord_space,
+        delay_after_action=config.delay_after_action,
+        viewport_size=config.viewport_size,
+        physical_size=config.physical_size,
+        device_scale_factor=config.device_scale_factor,
+        verbose=not config.quiet,
+    )
+
+
+def _create_llm_for_config(config: Any) -> Any:
+    if config.agent == "human":
+        return None
+
+    from bench_env import factory as bench_factory
+
+    return bench_factory.create_llm(config)
+
+
+def _create_agent_for_config(config: Any, *, parallel_worker: bool = False) -> Any:
+    from dataclasses import replace as dataclasses_replace
+
+    from bench_env import factory as bench_factory
+
+    agent_config = (
+        dataclasses_replace(config, quiet=True, no_stream=True)
+        if parallel_worker
+        else config
+    )
+    llm = _create_llm_for_config(agent_config)
+    return bench_factory.create_agent(agent_config, llm)
+
+
+def _agent_name_for_config(config: Any) -> str:
+    from bench_env import factory as bench_factory
+
+    try:
+        return str(bench_factory.get_agent_name(config))
+    except Exception:  # noqa: BLE001 — unknown agents will fail at construction.
+        return str(getattr(config, "agent", "unknown"))
