@@ -98,6 +98,11 @@ export function createRun(input: {
   name?: string;
   seed: number;
   idempotencyKey: string;
+  execution?: {
+    agent: string;
+    modelName: string;
+    modelBaseUrl: string;
+  };
 }): Promise<RunDetail> {
   return apiFetch<RunDetail>('/runs', {
     method: 'POST',
@@ -105,7 +110,16 @@ export function createRun(input: {
     body: JSON.stringify({
       workflow_version_id: input.workflowVersionId,
       name: input.name,
-      overrides: { seed: input.seed },
+      overrides: {
+        seed: input.seed,
+        execution: input.execution
+          ? {
+              agent: input.execution.agent,
+              model_name: input.execution.modelName,
+              model_base_url: input.execution.modelBaseUrl,
+            }
+          : undefined,
+      },
     }),
   });
 }

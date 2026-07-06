@@ -12,6 +12,14 @@ def _settings(tmp_path):
     )
 
 
+def _execution_overrides():
+    return {
+        "agent": "generic_v2",
+        "model_base_url": "http://127.0.0.1:1234/v1",
+        "model_name": "dogfood-model",
+    }
+
+
 class FakeRegistry:
     def check_health(self, config):
         return {
@@ -127,7 +135,10 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
         request = {
             "workflow_version_id": version["id"],
             "name": "VS-04 API run",
-            "overrides": {"seed": 321},
+            "overrides": {
+                "seed": 321,
+                "execution": _execution_overrides(),
+            },
         }
         first = client.post(
             "/api/platform/v1/runs",
@@ -164,6 +175,34 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
         ]
         assert len(body["episode_identities"]) == 2
         assert body["fingerprint"].startswith("sha256:")
+        assert body["run_plan"]["lanes"][0]["runner_config"]["agent"] == "generic_v2"
+        assert body["run_plan"]["lanes"][0]["runner_config"]["model_base_url"] == "http://127.0.0.1:1234/v1"
+        assert body["run_plan"]["lanes"][0]["runner_config"]["model_name"] == "dogfood-model"
+
+
+def test_runs_api_rejects_launch_without_execution_config(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=FakeRunSupervisor(),
+    )
+
+    with TestClient(app) as client:
+        _project, _revision, version = _published_version(client)
+        response = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version["id"],
+                "name": "missing model config",
+                "overrides": {"seed": 321},
+            },
+            headers={"Idempotency-Key": "ci-launch-missing-execution"},
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "RUN_EXECUTION_CONFIG_MISSING"
+        assert error["details"][0]["field"] == "overrides.execution.agent"
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +367,7 @@ def test_create_run_blocks_when_target_constraints_violated(tmp_path):
             json={
                 "workflow_version_id": version["id"],
                 "name": "VS-10 blocked run",
-                "overrides": {"seed": 1},
+                "overrides": {"seed": 1, "execution": _execution_overrides()},
             },
             headers={"Idempotency-Key": "blocked-pair-1"},
         )
@@ -364,7 +403,7 @@ def test_create_run_proceeds_when_constraints_satisfied(tmp_path):
             json={
                 "workflow_version_id": version["id"],
                 "name": "VS-10 ok run",
-                "overrides": {"seed": 1},
+                "overrides": {"seed": 1, "execution": _execution_overrides()},
             },
             headers={"Idempotency-Key": "ok-pair-1"},
         )
@@ -372,4 +411,3 @@ def test_create_run_proceeds_when_constraints_satisfied(tmp_path):
     assert response.status_code == 201
     assert response.json()["state"] == "queued"
     assert len(supervisor.snapshot()["queued_run_ids"]) == 1
-

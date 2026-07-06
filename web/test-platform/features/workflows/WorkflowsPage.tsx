@@ -23,6 +23,20 @@ import type {
   WorkflowVersion,
 } from '../../api/types';
 
+const AGENT_OPTIONS = [
+  'generic_v2',
+  'generic',
+  'gui_owl',
+  'uitars',
+  'mai_ui',
+  'autoglm',
+  'gelab',
+  'venus',
+];
+const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
+const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
+const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
+
 type LoadState =
   | { status: 'loading' }
   | {
@@ -59,6 +73,15 @@ export function WorkflowsPage() {
   const [preview, setPreview] = useState<WorkflowCompilePreview | null>(null);
   const [publishedVersion, setPublishedVersion] = useState<WorkflowVersion | null>(null);
   const [runSeed, setRunSeed] = useState(0);
+  const [runAgent, setRunAgent] = useState(
+    () => window.localStorage.getItem(AGENT_STORAGE_KEY) ?? 'generic_v2',
+  );
+  const [runModelBaseUrl, setRunModelBaseUrl] = useState(
+    () => window.localStorage.getItem(MODEL_BASE_URL_STORAGE_KEY) ?? '',
+  );
+  const [runModelName, setRunModelName] = useState(
+    () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
+  );
   const [error, setError] = useState<string | null>(null);
   // VS-10 Contract 3: create-run is the authoritative gate (409). When a paired
   // run is rejected for constraint violations, surface the structured list.
@@ -207,6 +230,13 @@ export function WorkflowsPage() {
 
   const launch = () => {
     if (!publishedVersion) return;
+    const trimmedAgent = runAgent.trim();
+    const trimmedModelBaseUrl = runModelBaseUrl.trim();
+    const trimmedModelName = runModelName.trim();
+    if (!trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
+    window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
+    window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
+    window.localStorage.setItem(MODEL_NAME_STORAGE_KEY, trimmedModelName);
     setBusy(true);
     setError(null);
     setRunViolations([]);
@@ -215,6 +245,11 @@ export function WorkflowsPage() {
       name: activeWorkflow?.name ?? publishedVersion.definition.name,
       seed: runSeed,
       idempotencyKey: crypto.randomUUID(),
+      execution: {
+        agent: trimmedAgent,
+        modelBaseUrl: trimmedModelBaseUrl,
+        modelName: trimmedModelName,
+      },
     })
       .then((run) => navigate(`/runs/${run.id}`))
       .catch((runError) => {
@@ -263,7 +298,11 @@ export function WorkflowsPage() {
             Publish workflow
           </button>
           {publishedVersion ? (
-            <button type="button" onClick={launch} disabled={busy}>
+            <button
+              type="button"
+              onClick={launch}
+              disabled={busy || !runAgent.trim() || !runModelBaseUrl.trim() || !runModelName.trim()}
+            >
               Launch version {publishedVersion.version_no}
             </button>
           ) : null}
@@ -349,6 +388,35 @@ export function WorkflowsPage() {
             type="number"
             value={runSeed}
             onChange={(event) => setRunSeed(Number(event.target.value) || 0)}
+          />
+
+          <label htmlFor="tp-workflow-agent">Agent</label>
+          <select
+            id="tp-workflow-agent"
+            value={runAgent}
+            onChange={(event) => setRunAgent(event.target.value)}
+          >
+            {AGENT_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+
+          <label htmlFor="tp-workflow-model-base-url">Model base URL</label>
+          <input
+            id="tp-workflow-model-base-url"
+            value={runModelBaseUrl}
+            onChange={(event) => setRunModelBaseUrl(event.target.value)}
+            placeholder="http://127.0.0.1:1234/v1"
+          />
+
+          <label htmlFor="tp-workflow-model-name">Model name</label>
+          <input
+            id="tp-workflow-model-name"
+            value={runModelName}
+            onChange={(event) => setRunModelName(event.target.value)}
+            placeholder="local-model"
           />
         </div>
 

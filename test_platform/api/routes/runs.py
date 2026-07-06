@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/platform/v1")
 
 class RunOverrides(BaseModel):
     seed: int = 0
+    execution: dict[str, object] | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -47,6 +48,8 @@ def create_run(
             workflow_version_id=body.workflow_version_id,
             name=body.name,
             seed=body.overrides.seed,
+            execution_overrides=body.overrides.execution,
+            require_execution_config=True,
             idempotency_key=idempotency_key,
         )
     except RunDomainError as exc:

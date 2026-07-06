@@ -650,14 +650,18 @@ class RunService:
         name: str | None,
         seed: int,
         idempotency_key: str,
+        execution_overrides: dict[str, Any] | None = None,
+        require_execution_config: bool = False,
     ) -> RunDetail:
-        request_hash = canonical_sha256(
-            {
-                "workflow_version_id": workflow_version_id,
-                "name": name,
-                "seed": seed,
-            }
-        )
+        execution_overrides = _clean_execution_overrides(execution_overrides)
+        request_payload: dict[str, Any] = {
+            "workflow_version_id": workflow_version_id,
+            "name": name,
+            "seed": seed,
+        }
+        if execution_overrides:
+            request_payload["execution_overrides"] = execution_overrides
+        request_hash = canonical_sha256(request_payload)
         existing = self._find_idempotent_run(idempotency_key, request_hash)
         if existing is not None:
             return existing
@@ -675,6 +679,13 @@ class RunService:
             ) from exc
 
         definition = WorkflowDefinition.model_validate(version.definition)
+        if execution_overrides:
+            definition = _definition_with_execution_overrides(
+                definition,
+                execution_overrides,
+            )
+        if require_execution_config:
+            _require_launch_execution_config(definition)
         targets = self._resolve_targets(definition)
         # VS-10 Contract 3: create-run is the AUTHORITATIVE constraint gate.
         # Resolve frozen target revisions (already done above) and evaluate the
@@ -1781,6 +1792,85 @@ def _service_restarted_result(*, task_id: str, trial_id: int) -> dict[str, Any]:
             "stop_reason": "SERVICE_RESTARTED",
         },
     }
+
+
+_ALLOWED_EXECUTION_OVERRIDE_KEYS = frozenset(
+    {
+        "agent",
+        "model_name",
+        "model_base_url",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "no_stream",
+        "infer_timeout",
+    }
+)
+
+
+def _clean_execution_overrides(
+    overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(overrides, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, value in overrides.items():
+        if key not in _ALLOWED_EXECUTION_OVERRIDE_KEYS:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        if value is not None:
+            cleaned[key] = value
+    return cleaned
+
+
+def _definition_with_execution_overrides(
+    definition: WorkflowDefinition,
+    overrides: dict[str, Any],
+) -> WorkflowDefinition:
+    payload = definition.model_dump(mode="json")
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        return definition
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == "execute":
+            config = node.get("config")
+            if not isinstance(config, dict):
+                config = {}
+            node["config"] = {**config, **overrides}
+            break
+    return WorkflowDefinition.model_validate(payload)
+
+
+def _require_launch_execution_config(definition: WorkflowDefinition) -> None:
+    execute_node = next((node for node in definition.nodes if node.type == "execute"), None)
+    config = execute_node.config if execute_node is not None else {}
+    agent = config.get("agent")
+    if not isinstance(agent, str) or not agent.strip():
+        raise RunDomainError(
+            "RUN_EXECUTION_CONFIG_MISSING",
+            "Run execution requires an agent.",
+            details=[{"field": "overrides.execution.agent"}],
+        )
+    if agent == "human":
+        raise RunDomainError(
+            "RUN_EXECUTION_AGENT_UNSUPPORTED",
+            "The web test platform cannot launch blocking human-agent runs.",
+            details=[{"field": "overrides.execution.agent", "agent": agent}],
+        )
+    missing = [
+        field
+        for field in ("model_base_url", "model_name")
+        if not isinstance(config.get(field), str) or not str(config.get(field)).strip()
+    ]
+    if missing:
+        raise RunDomainError(
+            "RUN_EXECUTION_CONFIG_MISSING",
+            "AI agent runs require a model base URL and model name.",
+            details=[{"field": f"overrides.execution.{field}"} for field in missing],
+        )
 
 
 def _default_executor_resolver(

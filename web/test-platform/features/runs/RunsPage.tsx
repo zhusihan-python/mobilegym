@@ -5,6 +5,20 @@ import { createRun, importLegacyRun, listRuns, listWorkflows } from '../../api/c
 import type { CollectionResponse, Project, RunSummary, WorkflowSummary } from '../../api/types';
 import { EmptyState } from '../../components/EmptyState';
 
+const AGENT_OPTIONS = [
+  'generic_v2',
+  'generic',
+  'gui_owl',
+  'uitars',
+  'mai_ui',
+  'autoglm',
+  'gelab',
+  'venus',
+];
+const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
+const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
+const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
+
 type RunsState =
   | { status: 'loading' }
   | { status: 'loaded'; data: CollectionResponse<RunSummary> }
@@ -24,6 +38,15 @@ export function RunsPage() {
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState('');
   const [runName, setRunName] = useState('');
+  const [agent, setAgent] = useState(
+    () => window.localStorage.getItem(AGENT_STORAGE_KEY) ?? 'generic_v2',
+  );
+  const [modelBaseUrl, setModelBaseUrl] = useState(
+    () => window.localStorage.getItem(MODEL_BASE_URL_STORAGE_KEY) ?? '',
+  );
+  const [modelName, setModelName] = useState(
+    () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
+  );
   const [launchState, setLaunchState] = useState<
     { status: 'idle' } | { status: 'submitting' } | { status: 'error'; message: string }
   >({ status: 'idle' });
@@ -142,13 +165,24 @@ export function RunsPage() {
 
   const submitLaunch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!selectedVersionId) return;
+    const trimmedAgent = agent.trim();
+    const trimmedModelBaseUrl = modelBaseUrl.trim();
+    const trimmedModelName = modelName.trim();
+    if (!selectedVersionId || !trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
+    window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
+    window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
+    window.localStorage.setItem(MODEL_NAME_STORAGE_KEY, trimmedModelName);
     setLaunchState({ status: 'submitting' });
     createRun({
       workflowVersionId: selectedVersionId,
       name: runName.trim() || undefined,
       seed: Math.floor(Math.random() * 1000000),
       idempotencyKey: `launch-${Date.now()}`,
+      execution: {
+        agent: trimmedAgent,
+        modelBaseUrl: trimmedModelBaseUrl,
+        modelName: trimmedModelName,
+      },
     })
       .then((run) => navigate(`/runs/${run.id}`))
       .catch((error) => {
@@ -186,7 +220,42 @@ export function RunsPage() {
                 placeholder="Optional"
               />
             </label>
-            <button type="submit" disabled={launchState.status === 'submitting' || !selectedVersionId}>
+            <label>
+              <span>Agent</span>
+              <select value={agent} onChange={(event) => setAgent(event.target.value)}>
+                {AGENT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Model base URL</span>
+              <input
+                value={modelBaseUrl}
+                onChange={(event) => setModelBaseUrl(event.target.value)}
+                placeholder="http://127.0.0.1:1234/v1"
+              />
+            </label>
+            <label>
+              <span>Model name</span>
+              <input
+                value={modelName}
+                onChange={(event) => setModelName(event.target.value)}
+                placeholder="local-model"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={
+                launchState.status === 'submitting'
+                || !selectedVersionId
+                || !agent.trim()
+                || !modelBaseUrl.trim()
+                || !modelName.trim()
+              }
+            >
               {launchState.status === 'submitting' ? 'Launching...' : 'Launch run'}
             </button>
           </form>

@@ -220,6 +220,12 @@ describe('Test Platform immutable run planning', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Workflows' })).toBeTruthy();
+    fireEvent.change(await screen.findByLabelText('Model base URL'), {
+      target: { value: 'http://127.0.0.1:1234/v1' },
+    });
+    fireEvent.change(await screen.findByLabelText('Model name'), {
+      target: { value: 'dogfood-model' },
+    });
     fireEvent.click(await screen.findByRole('button', { name: 'Launch version 1' }));
 
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
@@ -317,10 +323,25 @@ describe('Test Platform immutable run planning', () => {
     });
     expect(screen.getByText('WeChat smoke (v1, sha256:f3dcc1a8...8efe75)')).toBeTruthy();
 
+    fireEvent.change(screen.getByLabelText('Model base URL'), {
+      target: { value: 'http://127.0.0.1:1234/v1' },
+    });
+    fireEvent.change(screen.getByLabelText('Model name'), {
+      target: { value: 'dogfood-model' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Launch run' }));
 
     await waitFor(() => {
-      expect(launchedBody).toMatchObject({ workflow_version_id: newVersion.id });
+      expect(launchedBody).toMatchObject({
+        workflow_version_id: newVersion.id,
+        overrides: {
+          execution: {
+            agent: 'generic_v2',
+            model_base_url: 'http://127.0.0.1:1234/v1',
+            model_name: 'dogfood-model',
+          },
+        },
+      });
     });
   });
 });
