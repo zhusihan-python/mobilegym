@@ -101,6 +101,13 @@ def compile_workflow_preview(request: Request, workflow_id: str) -> dict[str, ob
     definition = _workflow_definition(workflow)
     catalog = build_task_catalog_snapshot()
     preview = WorkflowCompiler().compile_preview(definition, catalog)
+    # VS-10 Contract 3: advisory constraint validation. Resolve the latest
+    # target revisions for the lane targets and evaluate the compare node's
+    # target_constraints. The preview is ALWAYS a 200 (advisory) — violations
+    # are surfaced in the success response, not as an error.
+    preview.violations = _advisory_constraint_violations(
+        request, workflow.project_id, definition
+    )
     return preview.model_dump(mode="json")
 
 
@@ -151,6 +158,58 @@ def _validate_definition(request: Request, workflow: Workflow, definition: Workf
         for target, _revision in TargetRepository(get_database(request)).list(project_id=workflow.project_id)
     }
     return WorkflowValidator().validate(definition, catalog, targets)
+
+
+def _advisory_constraint_violations(
+    request: Request,
+    project_id: str,
+    definition: WorkflowDefinition,
+) -> list[dict[str, Any]]:
+    """VS-10 Contract 3: evaluate the compare node's target_constraints against
+    the latest target revisions for a paired (2-lane) workflow. Returns a list
+    of violation dicts (empty when satisfied or not applicable). Advisory: never
+    raises — unknown targets / missing revisions degrade to no violations so the
+    preview stays a 200.
+    """
+    matrix_node = next(
+        (node for node in definition.nodes if node.type == "matrix"), None
+    )
+    compare_node = next(
+        (node for node in definition.nodes if node.type == "compare"), None
+    )
+    if matrix_node is None or compare_node is None:
+        return []
+    lanes = matrix_node.config.get("lanes")
+    if not isinstance(lanes, dict) or len(lanes) < 2:
+        return []
+    constraints = compare_node.config.get("target_constraints")
+    if not isinstance(constraints, list):
+        constraints = None  # default to all axes
+
+    # Resolve the latest revision for each lane target. Lanes are unordered
+    # (a dict); order by lane_key so baseline/candidate are deterministic.
+    repository = TargetRepository(get_database(request))
+    ordered_keys = sorted(lanes)
+    revisions: list[dict[str, Any] | None] = []
+    target_ids: list[str] = []
+    for lane_key in ordered_keys:
+        lane = lanes[lane_key]
+        target_id = lane.get("target_id") if isinstance(lane, dict) else None
+        if not isinstance(target_id, str):
+            return []  # malformed lane — leave to the validator
+        target_ids.append(target_id)
+        revision = repository.latest_revision(target_id)
+        revisions.append(revision.metadata if revision is not None else None)
+
+    from test_platform.domain.comparison_constraints import evaluate_target_constraints
+
+    # Pairwise compare baseline vs candidate (the first two ordered lanes).
+    violations = evaluate_target_constraints(
+        baseline_metadata=revisions[0],
+        candidate_metadata=revisions[1],
+        constraints=constraints,
+    )
+    return [v.to_dict() for v in violations]
 
 
 def _workflow_definition(workflow: Workflow) -> WorkflowDefinition:

@@ -295,6 +295,18 @@ export type WorkflowSummary = {
   updated_at: string;
 };
 
+/**
+ * VS-10 Contract 3: a structured target-revision constraint violation. Surfaced
+ * as advisory output in compile-preview (the authoritative gate is create-run).
+ * Mirrors the backend `ConstraintViolation.to_dict()` shape.
+ */
+export type ConstraintViolation = {
+  constraint: string;
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
 export type WorkflowCompilePreview = {
   task_count: number;
   task_instance_count: number;
@@ -302,6 +314,8 @@ export type WorkflowCompilePreview = {
   lane_count: number;
   total_episodes: number;
   lane_keys: string[];
+  /** VS-10: advisory target-revision constraint violations (Contract 3). */
+  violations?: ConstraintViolation[];
 };
 
 export type WorkflowPublishResponse = {

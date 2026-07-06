@@ -376,34 +376,40 @@ class RunSupervisor:
         return terminal_event or "run.failed"
 
     async def _execute_paired(self, run_id: str, token: Any) -> str:
-        """VS-09 paired (2-lane) execution path.
+        """VS-09/VS-10 paired (2-lane) execution path.
 
-        Resolves a PairedSerialRunExecutor (the executor builds its own per-lane
-        event sinks from the writer — Contract 3 — so the supervisor passes the
-        writer through and lets the executor handle lane scoping). Falls back to
-        the single-lane resolver's executor if no paired executor is available
-        (e.g. the default resolver was overridden in tests).
+        Resolves the appropriate paired executor. VS-10 Contract 1: the compare
+        node's ``execution`` axis selects between ``serial`` (default,
+        PairedSerialRunExecutor) and ``parallel`` (PairedParallelRunExecutor).
+        The executor builds its own per-lane event sinks from the writer
+        (Contract 3), so the supervisor passes the writer through.
         """
         from bench_env.runner.cancellation import RunCancelled
         from bench_env.runner.events import NullEventSink
 
-        from test_platform.services.execution import PairedSerialRunExecutor
+        from test_platform.services.execution import (
+            PairedParallelRunExecutor,
+            PairedSerialRunExecutor,
+        )
 
         lane = self._resolve_lane(run_id)
-        executor = self._executor_resolver(lane)
-        # If the resolver returned a single-lane executor but the plan has 2
-        # lanes, construct a PairedSerialRunExecutor. Tests inject a paired
-        # executor directly (via a resolver that returns one); production uses
-        # the default resolver which returns SerialRunExecutor for serial lanes,
-        # so we promote it to a paired executor here.
-        if not isinstance(executor, PairedSerialRunExecutor):
-            # Carry over any factories the resolver-configured executor had.
-            executor = PairedSerialRunExecutor(
+        resolved_executor = self._executor_resolver(lane)
+        parallel_execution = self._paired_execution_axis(run_id) == "parallel"
+
+        # If the resolver already returned the correct paired executor type, use
+        # it. Otherwise construct one (carrying over any injected factories).
+        desired_type = (
+            PairedParallelRunExecutor if parallel_execution else PairedSerialRunExecutor
+        )
+        if isinstance(resolved_executor, desired_type):
+            executor = resolved_executor
+        else:
+            executor = desired_type(
                 self._database,
                 self._settings,
-                task_factory=getattr(executor, "task_factory", None),
-                env_factory=getattr(executor, "env_factory", None),
-                agent_factory=getattr(executor, "agent_factory", None),
+                task_factory=getattr(resolved_executor, "task_factory", None),
+                env_factory=getattr(resolved_executor, "env_factory", None),
+                agent_factory=getattr(resolved_executor, "agent_factory", None),
             )
 
         terminal_event: str | None = None
@@ -422,6 +428,26 @@ class RunSupervisor:
             await self._mark_run_failed(run_id)
             terminal_event = "run.failed"
         return terminal_event or "run.failed"
+
+    def _paired_execution_axis(self, run_id: str) -> str:
+        """Read the compare node's ``execution`` axis from the run plan.
+
+        VS-10 Contract 1: ``serial`` (default) or ``parallel``. Cheap read: the
+        compare node config is stored in ``run_plan_json.comparison``.
+        """
+        row = self._database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return "serial"
+        try:
+            plan = json.loads(row["run_plan_json"])
+            comparison = plan.get("comparison") or {}
+            execution = comparison.get("execution")
+            return str(execution) if execution in ("serial", "parallel") else "serial"
+        except (ValueError, TypeError):
+            return "serial"
 
     def _plan_lane_count(self, run_id: str) -> int:
         """Count lanes for the run's persisted plan (cheap DB read).
@@ -642,6 +668,11 @@ class RunService:
 
         definition = WorkflowDefinition.model_validate(version.definition)
         targets = self._resolve_targets(definition)
+        # VS-10 Contract 3: create-run is the AUTHORITATIVE constraint gate.
+        # Resolve frozen target revisions (already done above) and evaluate the
+        # compare node's target_constraints. Any violation raises RunDomainError
+        # (409) with the violation details — the run is NOT created.
+        self._enforce_target_constraints(definition, targets)
         run_id = new_id()
         created_at = _utc_timestamp()
         try:
@@ -743,6 +774,63 @@ class RunService:
                 )
             targets[target_id] = {"target": target, "revision": revision}
         return targets
+
+    def _enforce_target_constraints(
+        self,
+        definition: WorkflowDefinition,
+        targets: dict[str, Any],
+    ) -> None:
+        """VS-10 Contract 3: the AUTHORITATIVE constraint gate.
+
+        For a paired (2-lane) workflow whose compare node declares
+        ``target_constraints``, evaluate them against the FROZEN
+        TargetRevision.metadata (Contract 6) and raise RunDomainError (409) with
+        the violation details if any constraint is violated. Single-lane
+        workflows and workflows without a compare node are unaffected.
+        """
+        from test_platform.domain.comparison_constraints import (
+            evaluate_target_constraints,
+        )
+
+        matrix = next((node for node in definition.nodes if node.type == "matrix"), None)
+        compare = next((node for node in definition.nodes if node.type == "compare"), None)
+        if matrix is None or compare is None:
+            return
+        lanes = matrix.config.get("lanes", {}) if matrix else {}
+        if not isinstance(lanes, dict) or len(lanes) < 2:
+            return
+        constraints = compare.config.get("target_constraints")
+        if not isinstance(constraints, list):
+            constraints = None  # default to all axes
+
+        # Order lanes by lane_key so baseline/candidate are deterministic.
+        ordered_keys = sorted(lanes)
+        ordered_lanes = [lanes[k] for k in ordered_keys]
+        baseline_lane = ordered_lanes[0]
+        candidate_lane = ordered_lanes[1]
+        baseline_target_id = baseline_lane.get("target_id") if isinstance(baseline_lane, dict) else None
+        candidate_target_id = candidate_lane.get("target_id") if isinstance(candidate_lane, dict) else None
+        baseline_resolved = targets.get(baseline_target_id) if isinstance(baseline_target_id, str) else None
+        candidate_resolved = targets.get(candidate_target_id) if isinstance(candidate_target_id, str) else None
+        if baseline_resolved is None or candidate_resolved is None:
+            return  # _resolve_targets already raised for missing targets
+        baseline_revision = baseline_resolved.get("revision")
+        candidate_revision = candidate_resolved.get("revision")
+        baseline_metadata = getattr(baseline_revision, "metadata", None)
+        candidate_metadata = getattr(candidate_revision, "metadata", None)
+
+        violations = evaluate_target_constraints(
+            baseline_metadata=baseline_metadata,
+            candidate_metadata=candidate_metadata,
+            constraints=constraints,
+        )
+        if violations:
+            raise RunDomainError(
+                "COMPARISON_CONSTRAINT_VIOLATED",
+                "The paired comparison constraints are not satisfied.",
+                status_code=409,
+                details=[violation.to_dict() for violation in violations],
+            )
 
     def _write_plan_artifact(self, temporary_root: Path, plan: RunPlan) -> None:
         platform_dir = temporary_root / "platform"
