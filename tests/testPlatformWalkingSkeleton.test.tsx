@@ -66,6 +66,10 @@ describe('Test Platform walking skeleton', () => {
         return jsonResponse({ items: [], next_cursor: null });
       }
 
+      if (path.startsWith('/api/platform/v1/projects/') && path.endsWith('/workflows')) {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
+
       throw new Error(`Unexpected request: ${path}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -79,7 +83,7 @@ describe('Test Platform walking skeleton', () => {
     expect(await screen.findByText('No runs yet')).toBeTruthy();
     expect(screen.getByText('The API returned zero runs for Mobile App Regression.')).toBeTruthy();
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
   });
 

@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useOutletContext } from 'react-router-dom';
 
-import { importLegacyRun, listRuns } from '../../api/client';
-import type { CollectionResponse, Project, RunSummary } from '../../api/types';
+import { createRun, importLegacyRun, listRuns, listWorkflows } from '../../api/client';
+import type { CollectionResponse, Project, RunSummary, WorkflowSummary } from '../../api/types';
 import { EmptyState } from '../../components/EmptyState';
 
 type RunsState =
@@ -19,6 +19,34 @@ export function RunsPage() {
   const [importState, setImportState] = useState<
     { status: 'idle' } | { status: 'submitting' } | { status: 'error'; message: string }
   >({ status: 'idle' });
+
+  // Launch run state
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+  const [selectedVersionId, setSelectedVersionId] = useState('');
+  const [runName, setRunName] = useState('');
+  const [launchState, setLaunchState] = useState<
+    { status: 'idle' } | { status: 'submitting' } | { status: 'error'; message: string }
+  >({ status: 'idle' });
+
+  useEffect(() => {
+    let active = true;
+    listWorkflows(selectedProject.id)
+      .then((data) => {
+        if (active) {
+          const published = data.items.filter((w) => w.latest_version);
+          setWorkflows(published);
+          if (published.length > 0 && !selectedVersionId) {
+            setSelectedVersionId(published[0].latest_version!.id);
+          }
+        }
+      })
+      .catch(() => {
+        // workflows load failure is non-fatal for runs page
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedProject.id]);
 
   useEffect(() => {
     let active = true;
@@ -113,8 +141,61 @@ export function RunsPage() {
     );
   })();
 
+  const submitLaunch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedVersionId) return;
+    setLaunchState({ status: 'submitting' });
+    createRun({
+      workflowVersionId: selectedVersionId,
+      name: runName.trim() || undefined,
+      seed: Math.floor(Math.random() * 1000000),
+      idempotencyKey: `launch-${Date.now()}`,
+    })
+      .then((run) => navigate(`/runs/${run.id}`))
+      .catch((error) => {
+        setLaunchState({
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Unable to create the run.',
+        });
+      });
+  };
+
   return (
     <>
+      {workflows.length > 0 ? (
+        <section className="tp-panel">
+          <h2>Launch run</h2>
+          <form className="tp-form-grid" onSubmit={submitLaunch}>
+            <label>
+              <span>Workflow version</span>
+              <select
+                value={selectedVersionId}
+                onChange={(event) => setSelectedVersionId(event.target.value)}
+              >
+                {workflows.map((wf) => (
+                  <option key={wf.latest_version!.id} value={wf.latest_version!.id}>
+                    {wf.name} (v{wf.latest_version!.version_no})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Run name</span>
+              <input
+                value={runName}
+                onChange={(event) => setRunName(event.target.value)}
+                placeholder="Optional"
+              />
+            </label>
+            <button type="submit" disabled={launchState.status === 'submitting' || !selectedVersionId}>
+              {launchState.status === 'submitting' ? 'Launching...' : 'Launch run'}
+            </button>
+          </form>
+          {launchState.status === 'error' ? (
+            <p className="tp-error-text" role="alert">{launchState.message}</p>
+          ) : null}
+        </section>
+      ) : null}
       <section className="tp-panel">
         <h2>Import legacy run</h2>
         <form className="tp-form-grid" onSubmit={submitImport}>
