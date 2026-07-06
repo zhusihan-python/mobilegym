@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -232,5 +232,95 @@ describe('Test Platform immutable run planning', () => {
       (request) => request.path === '/api/platform/v1/runs' && request.method === 'POST',
     );
     expect(launch?.headers.get('Idempotency-Key')).toBeTruthy();
+  });
+
+  it('resets the launch workflow version when switching projects with same-named workflows', async () => {
+    window.history.pushState({}, '', '/test-platform/runs');
+    const otherProject = {
+      ...project,
+      id: 'project-2',
+      name: 'Manual test',
+      slug: 'manual-test',
+    };
+    const oldVersion = {
+      ...version,
+      id: 'version-old',
+      definition_hash: 'sha256:dda7fe69a308ac0a535f47280937b79e93ea04578f50ceb8c0d3e6e187667699',
+    };
+    const newVersion = {
+      ...version,
+      id: 'version-new',
+      definition_hash: 'sha256:f3dcc1a8a377a3115f78a9037c0dfd6a0ab13acca7fd888dc330c1e7ee8efe75',
+    };
+    const oldWorkflow = {
+      ...workflow,
+      latest_version: oldVersion,
+    };
+    const newWorkflow = {
+      ...workflow,
+      id: 'workflow-2',
+      project_id: otherProject.id,
+      latest_version: newVersion,
+    };
+    let launchedBody: unknown = null;
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project, otherProject], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
+        return jsonResponse({ items: [oldWorkflow], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${otherProject.id}/workflows`) {
+        return jsonResponse({ items: [newWorkflow], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/runs' && (init?.method ?? 'GET') === 'GET') {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/runs' && init?.method === 'POST') {
+        launchedBody = JSON.parse(String(init.body));
+        return jsonResponse({ ...run, id: 'run-new', workflow_version_id: newVersion.id }, 201);
+      }
+      if (url.pathname === '/api/platform/v1/runs/run-new') {
+        return jsonResponse({ ...run, id: 'run-new', workflow_version_id: newVersion.id });
+      }
+
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Runs' })).toBeTruthy();
+    const workflowSelect = await screen.findByLabelText('Workflow version') as HTMLSelectElement;
+    await waitFor(() => {
+      expect(workflowSelect.value).toBe(oldVersion.id);
+    });
+
+    fireEvent.change(await screen.findByLabelText('Project'), {
+      target: { value: otherProject.id },
+    });
+
+    await waitFor(() => {
+      expect(workflowSelect.value).toBe(newVersion.id);
+    });
+    expect(screen.getByText('WeChat smoke (v1, sha256:f3dcc1a8...8efe75)')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Launch run' }));
+
+    await waitFor(() => {
+      expect(launchedBody).toMatchObject({ workflow_version_id: newVersion.id });
+    });
   });
 });

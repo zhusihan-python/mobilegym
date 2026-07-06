@@ -33,11 +33,10 @@ export function RunsPage() {
     listWorkflows(selectedProject.id)
       .then((data) => {
         if (active) {
-          const published = data.items.filter((w) => w.latest_version);
+          const published = data.items.filter((workflow) => workflow.latest_version?.status === 'published');
           setWorkflows(published);
-          if (published.length > 0 && !selectedVersionId) {
-            setSelectedVersionId(published[0].latest_version!.id);
-          }
+          setSelectedVersionId(published[0]?.latest_version?.id ?? '');
+          setLaunchState({ status: 'idle' });
         }
       })
       .catch(() => {
@@ -174,7 +173,7 @@ export function RunsPage() {
               >
                 {workflows.map((wf) => (
                   <option key={wf.latest_version!.id} value={wf.latest_version!.id}>
-                    {wf.name} (v{wf.latest_version!.version_no})
+                    {workflowVersionLabel(wf)}
                   </option>
                 ))}
               </select>
@@ -226,4 +225,23 @@ export function RunsPage() {
       {runsContent}
     </>
   );
+}
+
+function workflowVersionLabel(workflow: WorkflowSummary): string {
+  const version = workflow.latest_version;
+  if (!version) {
+    return workflow.name;
+  }
+  return `${workflow.name} (v${version.version_no}, ${shortDefinitionHash(version.definition_hash)})`;
+}
+
+function shortDefinitionHash(hash: string): string {
+  const [algorithm, digest] = hash.split(':', 2);
+  if (!algorithm || !digest) {
+    return hash.length > 18 ? `${hash.slice(0, 12)}...${hash.slice(-6)}` : hash;
+  }
+  if (digest.length <= 14) {
+    return hash;
+  }
+  return `${algorithm}:${digest.slice(0, 8)}...${digest.slice(-6)}`;
 }
