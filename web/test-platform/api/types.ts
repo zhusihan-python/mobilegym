@@ -234,6 +234,59 @@ export type RunReport = {
   created_at: string;
 };
 
+export type DiagnosticItem = {
+  id: string;
+  code: string;
+  category: string;
+  phase: string | null;
+  severity: 'info' | 'warning' | 'error' | string;
+  retryable: boolean;
+  message: string;
+  entity_type: string;
+  run_id: string;
+  run_attempt_id: string;
+  lane_attempt_id?: string | null;
+  episode_attempt_id?: string | null;
+  episode_key?: string | null;
+  lane_key?: string | null;
+  comparison_id?: string | null;
+  comparison_pair_id?: string | null;
+  pair_key?: string | null;
+  gate_result_id?: string | null;
+  report_id?: string | null;
+  artifact_refs: string[];
+  recommended_action?: string | null;
+  raw: Record<string, unknown>;
+};
+
+export type RunDiagnostics = {
+  schema_version: number;
+  run_id: string;
+  run_attempt_id: string;
+  input_hash: string;
+  provenance: RunReport['provenance'];
+  summary: {
+    total: number;
+    by_category: Record<string, number>;
+    by_severity: Record<string, number>;
+  };
+  items: DiagnosticItem[];
+};
+
+export type ArtifactItem = {
+  id: string;
+  run_id: string;
+  run_attempt_id: string | null;
+  lane_attempt_id: string | null;
+  episode_attempt_id: string | null;
+  kind: string;
+  relative_path: string;
+  media_type: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+  created_at: string;
+};
+
 export type Baseline = {
   id: string;
   report_id: string;

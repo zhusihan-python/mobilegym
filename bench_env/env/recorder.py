@@ -15,7 +15,7 @@ import logging
 import math
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
@@ -25,12 +25,28 @@ if TYPE_CHECKING:
 from PIL import Image, ImageDraw, ImageFont
 
 from bench_env.env.base import ActionType
+from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
 
 logger = logging.getLogger(__name__)
 
 
 def _safe_json_dump(obj: Any, indent: int = 2) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=indent, default=str)
+
+
+def _event_timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _artifact_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        return "screenshot"
+    if suffix in {".json", ".jsonl"}:
+        return "json"
+    if suffix in {".log", ".txt"}:
+        return "log"
+    return "file"
 
 
 def allocate_run_dir(runs_root: Path, timestamp: str) -> Path:
@@ -339,11 +355,13 @@ class EpisodeRecorder:
         task_id: str,
         task_name: str,
         episode_dir: Optional[Path],
+        trial_id: int = 0,
     ):
         self._run_recorder = run_recorder
         self.task_id = task_id
         self.task_name = task_name
         self._episode_dir = episode_dir
+        self.trial_id = trial_id
         self._steps: list[TrajectoryStep] = []
         self._start_time = datetime.now()
 
@@ -383,11 +401,23 @@ class EpisodeRecorder:
                     except Exception as e:
                         logger.debug(f"Screenshot resize failed, using original: {type(e).__name__}: {e}")
                 (self._episode_dir / shot_name).write_bytes(img_bytes)
+                cfg._emit_artifact_created(
+                    self._episode_dir / shot_name,
+                    kind="screenshot",
+                    task_id=self.task_id,
+                    trial_id=self.trial_id,
+                )
 
         resp_path: Optional[str] = None
         if cfg.save_model_response and model_response:
             resp_name = f"step_{step_idx:03d}_response.txt"
             (self._episode_dir / resp_name).write_text(str(model_response), encoding="utf-8")
+            cfg._emit_artifact_created(
+                self._episode_dir / resp_name,
+                kind="log",
+                task_id=self.task_id,
+                trial_id=self.trial_id,
+            )
             resp_path = resp_name
 
         # 保存完整的 prompt
@@ -398,6 +428,12 @@ class EpisodeRecorder:
             prompt_for_save = _strip_image_data_from_messages(model_prompt)
             (self._episode_dir / prompt_name).write_text(
                 _safe_json_dump(prompt_for_save), encoding="utf-8"
+            )
+            cfg._emit_artifact_created(
+                self._episode_dir / prompt_name,
+                kind="json",
+                task_id=self.task_id,
+                trial_id=self.trial_id,
             )
             prompt_path = prompt_name
 
@@ -414,6 +450,12 @@ class EpisodeRecorder:
             if ann_bytes:
                 ann_name = f"step_{step_idx:03d}_annot.jpg"
                 (self._episode_dir / ann_name).write_bytes(ann_bytes)
+                cfg._emit_artifact_created(
+                    self._episode_dir / ann_name,
+                    kind="screenshot",
+                    task_id=self.task_id,
+                    trial_id=self.trial_id,
+                )
 
         rec = TrajectoryStep(
             step=step_idx,
@@ -446,7 +488,14 @@ class EpisodeRecorder:
             }
             for s in self._steps
         ]
-        (self._episode_dir / "trajectory.json").write_text(_safe_json_dump(payload), encoding="utf-8")
+        trajectory_path = self._episode_dir / "trajectory.json"
+        trajectory_path.write_text(_safe_json_dump(payload), encoding="utf-8")
+        self._run_recorder._emit_artifact_created(
+            trajectory_path,
+            kind="json",
+            task_id=self.task_id,
+            trial_id=self.trial_id,
+        )
 
     def get_trajectory_for_vlm(self) -> list[dict[str, Any]]:
         """
@@ -493,10 +542,22 @@ class EpisodeRecorder:
             (self._episode_dir / "vlm_judge_prompt.json").write_text(
                 _safe_json_dump(prompt_for_save), encoding="utf-8"
             )
+            self._run_recorder._emit_artifact_created(
+                self._episode_dir / "vlm_judge_prompt.json",
+                kind="json",
+                task_id=self.task_id,
+                trial_id=self.trial_id,
+            )
             
             # 保存 response
             (self._episode_dir / "vlm_judge_response.txt").write_text(
                 str(response), encoding="utf-8"
+            )
+            self._run_recorder._emit_artifact_created(
+                self._episode_dir / "vlm_judge_response.txt",
+                kind="log",
+                task_id=self.task_id,
+                trial_id=self.trial_id,
             )
             logger.debug(f"Saved VLM judge data to {self._episode_dir}")
         except Exception as e:
@@ -543,6 +604,7 @@ class RunRecorder:
         screenshot_scale: float = 1.0,  # JPEG 已足够小，默认保留原始分辨率
         fixed_run_dir: str | Path | None = None,
         trajectory_dir_override: str | Path | None = None,
+        event_sink: EventSink | None = None,
     ):
         self.runs_root = Path(runs_root).expanduser().resolve()
         self.fixed_run_dir = Path(fixed_run_dir).expanduser().resolve() if fixed_run_dir else None
@@ -560,6 +622,7 @@ class RunRecorder:
         self.save_model_response = save_model_response
         self.save_screenshots = save_screenshots
         self.screenshot_scale = screenshot_scale
+        self._event_sink: EventSink = event_sink or NullEventSink()
 
         self._run_dir: Optional[Path] = None
         self._trajectory_dir: Optional[Path] = None
@@ -572,6 +635,43 @@ class RunRecorder:
     @property
     def run_dir(self) -> Optional[Path]:
         return self._run_dir
+
+    def _emit_artifact_created(
+        self,
+        path: Path,
+        *,
+        kind: str | None = None,
+        task_id: str | None = None,
+        trial_id: int | None = None,
+    ) -> None:
+        if self._run_dir is None or not path.exists():
+            return
+        try:
+            relative_path = path.relative_to(self._run_dir).as_posix()
+        except ValueError:
+            return
+        payload = {
+            "relative_path": relative_path,
+            "kind": kind or _artifact_kind(path),
+            "size_bytes": path.stat().st_size,
+        }
+        try:
+            self._event_sink.emit(
+                ExecutionEvent(
+                    type="artifact.created",
+                    timestamp=_event_timestamp(),
+                    phase="record",
+                    task_id=task_id,
+                    trial_id=trial_id,
+                    payload=payload,
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "artifact event sink failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     def start_run(
         self,
@@ -614,6 +714,10 @@ class RunRecorder:
             **(extra_meta or {}),
         }
         (self._run_dir / "meta.json").write_text(_safe_json_dump(meta), encoding="utf-8")
+        self._emit_artifact_created(
+            self._run_dir / "meta.json",
+            kind="json",
+        )
         return self._run_dir
 
     def start_episode(
@@ -651,8 +755,14 @@ class RunRecorder:
 
             meta = {"task_id": task_id, "task_name": task_name, "trial_id": trial_id, **(extra_meta or {})}
             (episode_dir / "meta.json").write_text(_safe_json_dump(meta), encoding="utf-8")
+            self._emit_artifact_created(
+                episode_dir / "meta.json",
+                kind="json",
+                task_id=task_id,
+                trial_id=trial_id,
+            )
 
-        return EpisodeRecorder(self, task_id, task_name, episode_dir)
+        return EpisodeRecorder(self, task_id, task_name, episode_dir, trial_id=trial_id)
 
     def _record_result(self, result: dict[str, Any]) -> None:
         """内部方法：线程安全地记录结果"""

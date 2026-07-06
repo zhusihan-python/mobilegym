@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   ApiErrorDetail,
+  ArtifactItem,
   Baseline,
   CancelRunResponse,
   CollectionResponse,
@@ -9,6 +10,7 @@ import type {
   ReadinessResponse,
   RunDetail,
   RunEvent,
+  RunDiagnostics,
   RunReport,
   RunSummary,
   TaskCatalogItem,
@@ -121,6 +123,14 @@ export function getComparison(runId: string): Promise<Comparison> {
 
 export function getReport(runId: string): Promise<RunReport> {
   return apiFetch<RunReport>(`/runs/${encodeURIComponent(runId)}/report`);
+}
+
+export function getDiagnostics(runId: string): Promise<RunDiagnostics> {
+  return apiFetch<RunDiagnostics>(`/runs/${encodeURIComponent(runId)}/diagnostics`);
+}
+
+export function listArtifacts(runId: string): Promise<{ items: ArtifactItem[] }> {
+  return apiFetch<{ items: ArtifactItem[] }>(`/runs/${encodeURIComponent(runId)}/artifacts`);
 }
 
 export async function getReportExport(

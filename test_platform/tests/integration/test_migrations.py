@@ -53,6 +53,8 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         "reports",
         "quality_gate_results",
         "baselines",
+        "diagnostics",
+        "artifacts",
     } <= _table_names(settings.database_path)
     assert _migration_rows(settings.database_path) == [
         (1, "0001_initial.sql"),
@@ -64,7 +66,57 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (7, "0007_event_envelope.sql"),
         (8, "0008_comparison.sql"),
         (9, "0009_reports_baselines.sql"),
+        (10, "0010_diagnostics_artifacts.sql"),
     ]
+
+
+def test_diagnostics_and_artifacts_tables_are_created(tmp_path):
+    settings = PlatformSettings(
+        database_path=tmp_path / "platform.sqlite3",
+        runs_dir=tmp_path / "runs",
+    )
+    database = Database(settings)
+    try:
+        database.initialize()
+        diagnostic_columns = {
+            row[1]
+            for row in database.connection.execute("PRAGMA table_info(diagnostics)")
+        }
+        artifact_columns = {
+            row[1]
+            for row in database.connection.execute("PRAGMA table_info(artifacts)")
+        }
+
+        assert {
+            "id",
+            "run_id",
+            "run_attempt_id",
+            "entity_type",
+            "code",
+            "category",
+            "phase",
+            "severity",
+            "retryable",
+            "message",
+            "raw_json",
+            "artifact_refs_json",
+            "input_hash",
+            "created_at",
+        } <= diagnostic_columns
+        assert {
+            "id",
+            "run_id",
+            "run_attempt_id",
+            "episode_attempt_id",
+            "kind",
+            "relative_path",
+            "media_type",
+            "size_bytes",
+            "sha256",
+            "created_at",
+        } <= artifact_columns
+    finally:
+        database.close()
 
 
 def test_event_envelope_columns_are_nullable_and_backward_compatible(tmp_path):
@@ -174,4 +226,5 @@ def test_database_initialization_is_idempotent(tmp_path):
         (7, "0007_event_envelope.sql"),
         (8, "0008_comparison.sql"),
         (9, "0009_reports_baselines.sql"),
+        (10, "0010_diagnostics_artifacts.sql"),
     ]

@@ -6,7 +6,9 @@ from fastapi import FastAPI
 from test_platform.adapters.targets import TargetAdapterRegistry
 from test_platform.api.errors import install_error_handlers
 from test_platform.api.middleware import install_request_id_middleware
+from test_platform.api.routes.artifacts import router as artifacts_router
 from test_platform.api.routes.health import router as health_router
+from test_platform.api.routes.diagnostics import router as diagnostics_router
 from test_platform.api.routes.projects import router as projects_router
 from test_platform.api.routes.reports import router as reports_router
 from test_platform.api.routes.runs import router as runs_router
@@ -66,6 +68,8 @@ def create_app(
 
     install_request_id_middleware(app)
     install_error_handlers(app)
+    app.include_router(artifacts_router)
+    app.include_router(diagnostics_router)
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(reports_router)

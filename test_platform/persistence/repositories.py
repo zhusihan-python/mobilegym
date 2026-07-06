@@ -1,10 +1,19 @@
 from datetime import UTC, datetime
+import hashlib
 import json
+import mimetypes
 import sqlite3
+from pathlib import Path
 from typing import Any
 
-from test_platform.domain.events import PersistedEvent
-from test_platform.domain.ids import new_id
+from test_platform.artifacts.paths import (
+    ArtifactPathError,
+    resolve_artifact_directory,
+    resolve_artifact_path,
+)
+from test_platform.domain.canonical_json import canonical_json, canonical_sha256
+from test_platform.domain.diagnostics.builder import build_diagnostics
+from test_platform.domain.diagnostics.input import DiagnosticInput
 from test_platform.domain.projects import (
     DuplicateProjectName,
     Project,
@@ -13,7 +22,8 @@ from test_platform.domain.projects import (
     next_available_slug,
     normalize_project_name,
 )
-from test_platform.domain.canonical_json import canonical_json
+from test_platform.domain.events import PersistedEvent
+from test_platform.domain.ids import new_id
 from test_platform.domain.reports.comparison import build_comparison_report
 from test_platform.domain.reports.functional import build_functional_report
 from test_platform.domain.reports.gates import evaluate_gates
@@ -879,6 +889,96 @@ class ReportInputRepository:
         }
 
 
+class DiagnosticInputRepository:
+    """Build the stable raw input used by diagnostic builders."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get_for_run(self, run_id: str) -> DiagnosticInput:
+        report_input = ReportInputRepository(self.database).get_for_run(run_id)
+        report = self._latest_report(report_input.run_id, report_input.run_attempt_id)
+        gate_results = self._gate_results(
+            report_input.run_id,
+            report_input.run_attempt_id,
+            report["id"] if report is not None else None,
+        )
+        return DiagnosticInput.from_payload(
+            run_id=report_input.run_id,
+            run_attempt_id=report_input.run_attempt_id,
+            provenance=report_input.provenance,
+            planned_lane_episodes=report_input.planned_lane_episodes,
+            episode_attempts=report_input.episode_attempts,
+            comparison=report_input.comparison,
+            report=report,
+            gate_results=gate_results,
+        )
+
+    def _latest_report(
+        self,
+        run_id: str,
+        run_attempt_id: str,
+    ) -> dict[str, Any] | None:
+        row = self.database.connection.execute(
+            """
+            SELECT id, run_id, run_attempt_id, schema_version, input_hash,
+                   report_json, created_at
+            FROM reports
+            WHERE run_id = ?
+              AND run_attempt_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id, run_attempt_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row["id"]),
+            "run_id": str(row["run_id"]),
+            "run_attempt_id": str(row["run_attempt_id"]),
+            "schema_version": int(row["schema_version"]),
+            "input_hash": str(row["input_hash"]),
+            "report": _json_or_empty_object(row["report_json"]),
+            "created_at": str(row["created_at"]),
+        }
+
+    def _gate_results(
+        self,
+        run_id: str,
+        run_attempt_id: str,
+        report_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if report_id is None:
+            return []
+        rows = self.database.connection.execute(
+            """
+            SELECT id, report_id, run_id, run_attempt_id, verdict,
+                   thresholds_json, observed_json, reasons_json, created_at
+            FROM quality_gate_results
+            WHERE run_id = ?
+              AND run_attempt_id = ?
+              AND report_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (run_id, run_attempt_id, report_id),
+        ).fetchall()
+        return [
+            {
+                "id": str(row["id"]),
+                "report_id": str(row["report_id"]),
+                "run_id": str(row["run_id"]),
+                "run_attempt_id": str(row["run_attempt_id"]),
+                "verdict": str(row["verdict"]),
+                "thresholds": _json_or_empty_object(row["thresholds_json"]),
+                "observed": _json_or_empty_object(row["observed_json"]),
+                "reasons": _json_or_empty_array(row["reasons_json"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+
 class ReportRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -967,6 +1067,199 @@ class ReportRepository:
             (report_input.run_id, report_input.run_attempt_id, report_input.input_hash),
         ).fetchone()
         return json.loads(row["report_json"]) if row is not None else None
+
+
+class DiagnosticRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get_or_create(self, run_id: str) -> dict[str, Any]:
+        ReportRepository(self.database).get_or_create(run_id)
+        diagnostic_input = DiagnosticInputRepository(self.database).get_for_run(run_id)
+        payload = build_diagnostics(diagnostic_input)
+        now = _utc_timestamp()
+        connection = self.database.connection
+        with self.database._lock:  # noqa: SLF100
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                for item in payload["items"]:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO diagnostics (
+                          id, run_id, run_attempt_id, lane_attempt_id,
+                          episode_attempt_id, comparison_id, comparison_pair_id,
+                          gate_result_id, entity_type, code, category, phase,
+                          severity, retryable, message, recommended_action,
+                          raw_json, artifact_refs_json, input_hash, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item["id"],
+                            payload["run_id"],
+                            payload["run_attempt_id"],
+                            item.get("lane_attempt_id"),
+                            item.get("episode_attempt_id"),
+                            item.get("comparison_id"),
+                            item.get("comparison_pair_id"),
+                            item.get("gate_result_id"),
+                            item["entity_type"],
+                            item["code"],
+                            item["category"],
+                            item.get("phase"),
+                            item["severity"],
+                            1 if item["retryable"] else 0,
+                            item["message"],
+                            item.get("recommended_action"),
+                            canonical_json(item.get("raw") or {}),
+                            canonical_json(item.get("artifact_refs") or []),
+                            payload["input_hash"],
+                            now,
+                        ),
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return payload
+
+
+class ArtifactRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def list_for_run(self, run_id: str) -> dict[str, Any]:
+        self._ensure_run_exists(run_id)
+        self._index_run(run_id)
+        rows = self.database.connection.execute(
+            """
+            SELECT id, run_id, run_attempt_id, lane_attempt_id,
+                   episode_attempt_id, kind, relative_path, media_type,
+                   size_bytes, sha256, created_at
+            FROM artifacts
+            WHERE run_id = ?
+            ORDER BY relative_path, id
+            """,
+            (run_id,),
+        ).fetchall()
+        return {"items": [_map_artifact(row) for row in rows]}
+
+    def content_path(self, run_id: str, artifact_id: str) -> tuple[dict[str, Any], Path]:
+        self._ensure_run_exists(run_id)
+        row = self.database.connection.execute(
+            """
+            SELECT id, run_id, run_attempt_id, lane_attempt_id,
+                   episode_attempt_id, kind, relative_path, media_type,
+                   size_bytes, sha256, created_at
+            FROM artifacts
+            WHERE run_id = ? AND id = ?
+            """,
+            (run_id, artifact_id),
+        ).fetchone()
+        if row is None:
+            self._index_run(run_id)
+            row = self.database.connection.execute(
+                """
+                SELECT id, run_id, run_attempt_id, lane_attempt_id,
+                       episode_attempt_id, kind, relative_path, media_type,
+                       size_bytes, sha256, created_at
+                FROM artifacts
+                WHERE run_id = ? AND id = ?
+                """,
+                (run_id, artifact_id),
+            ).fetchone()
+        if row is None:
+            raise RunDomainError(
+                "ARTIFACT_NOT_FOUND",
+                "The requested artifact does not exist.",
+                status_code=404,
+                details=[{"run_id": run_id, "artifact_id": artifact_id}],
+            )
+        artifact = _map_artifact(row)
+        path = resolve_artifact_path(
+            self.database.settings.runs_dir / run_id,
+            artifact["relative_path"],
+        )
+        return artifact, path
+
+    def _ensure_run_exists(self, run_id: str) -> None:
+        row = self.database.connection.execute(
+            "SELECT id FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunNotFound(run_id)
+
+    def _index_run(self, run_id: str) -> None:
+        rows = self.database.connection.execute(
+            """
+            SELECT ea.id AS episode_attempt_id, ea.artifact_root,
+                   la.id AS lane_attempt_id, la.run_attempt_id
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+            WHERE e.run_id = ?
+            ORDER BY ea.artifact_root, ea.id
+            """,
+            (run_id,),
+        ).fetchall()
+        now = _utc_timestamp()
+        run_root = self.database.settings.runs_dir / run_id
+        with self.database._lock:  # noqa: SLF100
+            connection = self.database.connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                for row in rows:
+                    try:
+                        artifact_root = resolve_artifact_directory(
+                            run_root,
+                            str(row["artifact_root"]),
+                        )
+                    except ArtifactPathError:
+                        continue
+                    for file_path in sorted(artifact_root.rglob("*")):
+                        if not file_path.is_file():
+                            continue
+                        try:
+                            resolved_file = resolve_artifact_path(
+                                run_root,
+                                file_path.relative_to(run_root).as_posix(),
+                            )
+                        except (ArtifactPathError, ValueError):
+                            continue
+                        relative_path = file_path.relative_to(run_root).as_posix()
+                        payload = {
+                            "run_id": run_id,
+                            "relative_path": relative_path,
+                        }
+                        connection.execute(
+                            """
+                            INSERT OR IGNORE INTO artifacts (
+                              id, run_id, run_attempt_id, lane_attempt_id,
+                              episode_attempt_id, kind, relative_path,
+                              media_type, size_bytes, sha256, created_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                "artifact_"
+                                + canonical_sha256(payload).removeprefix("sha256:"),
+                                run_id,
+                                str(row["run_attempt_id"]),
+                                str(row["lane_attempt_id"]),
+                                str(row["episode_attempt_id"]),
+                                _artifact_kind(relative_path),
+                                relative_path,
+                                _media_type(relative_path),
+                                resolved_file.stat().st_size,
+                                _file_sha256(resolved_file),
+                                now,
+                            ),
+                        )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
 
 class BaselineRepository:
@@ -1227,6 +1520,13 @@ def _json_or_empty_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _json_or_empty_array(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    parsed = json.loads(value) if isinstance(value, str) else value
+    return parsed if isinstance(parsed, list) else []
+
+
 def _build_report_payload(
     *,
     report_id: str,
@@ -1306,6 +1606,60 @@ def _map_report_episode_attempt(row: sqlite3.Row) -> dict[str, Any]:
         "ended_at": row["ended_at"],
         "created_at": str(row["created_at"]),
     }
+
+
+def _map_artifact(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "run_id": str(row["run_id"]),
+        "run_attempt_id": (
+            str(row["run_attempt_id"]) if row["run_attempt_id"] is not None else None
+        ),
+        "lane_attempt_id": (
+            str(row["lane_attempt_id"]) if row["lane_attempt_id"] is not None else None
+        ),
+        "episode_attempt_id": (
+            str(row["episode_attempt_id"])
+            if row["episode_attempt_id"] is not None
+            else None
+        ),
+        "kind": str(row["kind"]),
+        "relative_path": str(row["relative_path"]),
+        "media_type": (
+            str(row["media_type"]) if row["media_type"] is not None else None
+        ),
+        "size_bytes": int(row["size_bytes"]) if row["size_bytes"] is not None else None,
+        "sha256": str(row["sha256"]) if row["sha256"] is not None else None,
+        "created_at": str(row["created_at"]),
+    }
+
+
+def _artifact_kind(relative_path: str) -> str:
+    suffix = relative_path.rsplit(".", 1)[-1].lower() if "." in relative_path else ""
+    if suffix in {"png", "jpg", "jpeg", "webp"}:
+        return "screenshot"
+    if suffix in {"json", "jsonl"}:
+        return "json"
+    if suffix in {"log", "txt"}:
+        return "log"
+    return "file"
+
+
+def _media_type(relative_path: str) -> str:
+    guessed, _encoding = mimetypes.guess_type(relative_path)
+    if guessed is not None:
+        return guessed
+    if relative_path.endswith(".jsonl"):
+        return "application/x-ndjson"
+    return "application/octet-stream"
+
+
+def _file_sha256(path: Any) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _latest_attempts_by_lane_episode(

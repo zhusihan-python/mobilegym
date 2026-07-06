@@ -10,6 +10,7 @@ import gzip
 import json as json_mod
 import logging
 import random
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -17,6 +18,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from bench_env.logger import get_logger
 from bench_env.env.base import Action, ActionType, BaseMobileEnv, Observation, StepResult
+from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
 from bench_env.task import TaskRegistry, JudgeInput, JudgeResult, BaseTask
 
 logger = get_logger(__name__)
@@ -33,6 +35,11 @@ def _log_env_info(env: "MobileGymEnv", message: str) -> None:
 
 def _log_env_debug(env: "MobileGymEnv", message: str) -> None:
     logger.debug(_env_message(env, message))
+
+
+def _event_timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
 
 class ActionHandler:
     """
@@ -433,6 +440,7 @@ class MobileGymEnv(BaseMobileEnv):
         self._log_prefix = f"[W{worker_id}]" if worker_id >= 0 else ""
         self._current_task_id: str = ""
         self._browser_logger: Optional[logging.Logger] = None
+        self._diagnostic_event_sink: EventSink = NullEventSink()
         self._fresh = False  # True after start(), skip first reset
 
         # Profiling
@@ -490,6 +498,42 @@ class MobileGymEnv(BaseMobileEnv):
         self._current_task_id = task_id
         if self._browser_logger:
             self._browser_logger.info(f"===== TASK: {task_id} =====")
+
+    def set_diagnostic_event_sink(self, event_sink: EventSink | None) -> None:
+        """Set an optional sink for structured browser diagnostics."""
+        self._diagnostic_event_sink = event_sink or NullEventSink()
+
+    def _emit_browser_diagnostic(
+        self,
+        *,
+        code: str,
+        message: str,
+        phase: str,
+        payload: dict[str, Any],
+    ) -> None:
+        event_payload = {
+            "code": code,
+            "message": message,
+            **payload,
+        }
+        worker_id = f"W{self.worker_id}" if self.worker_id >= 0 else None
+        try:
+            self._diagnostic_event_sink.emit(
+                ExecutionEvent(
+                    type="diagnostic.browser",
+                    timestamp=_event_timestamp(),
+                    phase=phase,
+                    worker_id=worker_id,
+                    task_id=self._current_task_id or None,
+                    payload=event_payload,
+                )
+            )
+        except Exception as exc:
+            logger.debug(
+                "browser diagnostic sink failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     # ==================== Lifecycle ====================
 
@@ -722,11 +766,27 @@ class MobileGymEnv(BaseMobileEnv):
             bl = self._browser_logger
             if bl:
                 bl.warning(f"{_btag()}[page#{seq}] pageerror: {err}")
+            self._emit_browser_diagnostic(
+                code="BROWSER_PAGE_ERROR",
+                message=str(err),
+                phase="browser.page",
+                payload={"page_sequence": seq},
+            )
 
         def on_requestfailed(req):
             bl = self._browser_logger
             if bl:
                 bl.warning(f"{_btag()}[page#{seq}] requestfailed: {req.failure} — {req.url}")
+            self._emit_browser_diagnostic(
+                code="BROWSER_REQUEST_FAILED",
+                message=str(req.failure),
+                phase="browser.network",
+                payload={
+                    "page_sequence": seq,
+                    "url": req.url,
+                    "failure": req.failure,
+                },
+            )
 
         def on_response(resp):
             status = resp.status
@@ -736,11 +796,28 @@ class MobileGymEnv(BaseMobileEnv):
                     bl = self._browser_logger
                     if bl:
                         bl.info(f"{_btag()}[page#{seq}] http_error: {status} — {url}")
+                    self._emit_browser_diagnostic(
+                        code="BROWSER_HTTP_ERROR",
+                        message=f"HTTP {status}: {url}",
+                        phase="browser.network",
+                        payload={
+                            "page_sequence": seq,
+                            "url": url,
+                            "status": status,
+                        },
+                    )
 
         def on_console(msg):
             bl = self._browser_logger
             if bl:
                 bl.debug(f"{_btag()}[page#{seq}] console.{msg.type}: {msg.text}")
+            if msg.type == "error":
+                self._emit_browser_diagnostic(
+                    code="BROWSER_CONSOLE_ERROR",
+                    message=str(msg.text),
+                    phase="browser.console",
+                    payload={"page_sequence": seq, "console_type": msg.type},
+                )
 
         if self._page:
             self._page.on("pageerror", on_pageerror)

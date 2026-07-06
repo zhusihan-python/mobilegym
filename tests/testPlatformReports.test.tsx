@@ -227,6 +227,20 @@ describe('Test Platform reports UI', () => {
       if (url.pathname === `/api/platform/v1/runs/${run.id}/report`) {
         return jsonResponse(report);
       }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/diagnostics`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          run_attempt_id: 'attempt-1',
+          input_hash: 'sha256:diagnostics',
+          provenance: report.provenance,
+          summary: { total: 0, by_category: {}, by_severity: {} },
+          items: [],
+        });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/artifacts`) {
+        return jsonResponse({ items: [] });
+      }
       if (url.pathname === `/api/platform/v1/runs/${run.id}/report/export`) {
         return textResponse(
           url.searchParams.get('format') === 'html' ? '<html>report</html>' : JSON.stringify(report),

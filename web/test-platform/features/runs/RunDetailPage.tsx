@@ -4,13 +4,15 @@ import { Link, useParams } from 'react-router-dom';
 import {
   cancelRun,
   getComparison,
+  getDiagnostics,
   getReport,
   getReportExport,
   getRun,
+  listArtifacts,
   promoteBaseline,
   streamRunEvents,
 } from '../../api/client';
-import type { Comparison, RunDetail, RunReport } from '../../api/types';
+import type { ArtifactItem, Comparison, RunDetail, RunDiagnostics, RunReport } from '../../api/types';
 import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
 type DetailState =
@@ -32,6 +34,12 @@ type ReportState =
   | { status: 'none' }
   | { status: 'error'; message: string };
 
+type DiagnosticsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'loaded'; diagnostics: RunDiagnostics; artifacts: ArtifactItem[] }
+  | { status: 'error'; message: string };
+
 const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
 const REPORTABLE_RUN_STATES = new Set(['completed', 'failed']);
 
@@ -46,6 +54,7 @@ export function RunDetailPage() {
   // 2 lanes (a paired run) and is in a terminal/running state.
   const [comparison, setComparison] = useState<ComparisonState>({ status: 'idle' });
   const [report, setReport] = useState<ReportState>({ status: 'idle' });
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsState>({ status: 'idle' });
 
   useEffect(() => {
     let active = true;
@@ -146,6 +155,35 @@ export function RunDetailPage() {
         setReport({
           status: 'error',
           message: error instanceof Error ? error.message : 'No report is available.',
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [runId, runState]);
+
+  useEffect(() => {
+    if (!REPORTABLE_RUN_STATES.has(runState)) {
+      setDiagnostics({ status: 'idle' });
+      return;
+    }
+    let active = true;
+    setDiagnostics({ status: 'loading' });
+    Promise.all([getDiagnostics(runId), listArtifacts(runId)])
+      .then(([diagnosticData, artifactData]) => {
+        if (active) {
+          setDiagnostics({
+            status: 'loaded',
+            diagnostics: diagnosticData,
+            artifacts: artifactData.items,
+          });
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        setDiagnostics({
+          status: 'error',
+          message: error instanceof Error ? error.message : 'No diagnostics are available.',
         });
       });
     return () => {
@@ -265,6 +303,7 @@ export function RunDetailPage() {
       </section>
 
       <ReportPanel run={run} report={report} />
+      <DiagnosticsPanel run={run} diagnostics={diagnostics} />
 
       {laneAttempts.length > 0 ? (
         <section className="tp-panel">
@@ -578,6 +617,159 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
   );
 }
 
+function DiagnosticsPanel({
+  run,
+  diagnostics,
+}: {
+  run: RunDetail;
+  diagnostics: DiagnosticsState;
+}) {
+  const [errorsOnly, setErrorsOnly] = useState(false);
+
+  if (!REPORTABLE_RUN_STATES.has(run.state)) {
+    return (
+      <section className="tp-panel" data-testid="tp-diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p>Diagnostics will be available after the run reaches a terminal state.</p>
+      </section>
+    );
+  }
+
+  if (diagnostics.status === 'loading' || diagnostics.status === 'idle') {
+    return (
+      <section className="tp-panel" data-testid="tp-diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p>Loading diagnostics...</p>
+      </section>
+    );
+  }
+
+  if (diagnostics.status === 'error') {
+    return (
+      <section className="tp-panel" data-testid="tp-diagnostics-panel">
+        <h2>Diagnostics</h2>
+        <p>{diagnostics.message}</p>
+      </section>
+    );
+  }
+
+  const data = diagnostics.diagnostics;
+  const visibleItems = errorsOnly
+    ? data.items.filter((item) => item.severity === 'error')
+    : data.items;
+
+  return (
+    <section className="tp-panel" data-testid="tp-diagnostics-panel">
+      <div className="tp-run-heading">
+        <div>
+          <h2>Diagnostics</h2>
+          <p>
+            <span data-testid="tp-diagnostics-total">{data.summary.total}</span>
+            {' records'}
+          </p>
+        </div>
+      </div>
+
+      <dl className="tp-run-facts">
+        <div>
+          <dt>Errors</dt>
+          <dd data-testid="tp-diagnostics-errors">{data.summary.by_severity.error ?? 0}</dd>
+        </div>
+        <div>
+          <dt>Warnings</dt>
+          <dd>{data.summary.by_severity.warning ?? 0}</dd>
+        </div>
+        <div>
+          <dt>Execution</dt>
+          <dd>{data.summary.by_category.execution ?? 0}</dd>
+        </div>
+        <div>
+          <dt>Comparison</dt>
+          <dd>{data.summary.by_category.comparison ?? 0}</dd>
+        </div>
+      </dl>
+
+      <label className="tp-inline-control">
+        <input
+          type="checkbox"
+          checked={errorsOnly}
+          onChange={(event) => setErrorsOnly(event.currentTarget.checked)}
+        />
+        Errors only
+      </label>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Severity</th>
+            <th>Entity</th>
+            <th>Message</th>
+            <th>Artifacts</th>
+          </tr>
+        </thead>
+        <tbody>
+          {visibleItems.map((item) => (
+            <tr key={item.id} data-testid={`tp-diagnostic-${item.code}`}>
+              <td className="tp-mono">{item.code}</td>
+              <td>
+                <span className={`tp-classification tp-diagnostic-${item.severity}`}>
+                  {item.severity}
+                </span>
+              </td>
+              <td>
+                {item.entity_type}
+                {item.episode_attempt_id ? (
+                  <span className="tp-mono"> {item.episode_attempt_id}</span>
+                ) : null}
+                {item.pair_key ? <span className="tp-mono"> {item.pair_key}</span> : null}
+              </td>
+              <td>{item.message}</td>
+              <td>
+                {item.artifact_refs.length > 0
+                  ? item.artifact_refs.map((ref) => (
+                      <a key={ref} href={runExplorerHref(run.id, ref)}>
+                        {ref}
+                      </a>
+                    ))
+                  : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {diagnostics.artifacts.length > 0 ? (
+        <div className="tp-artifact-browser">
+          <h3>Artifacts</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>Kind</th>
+                <th>Size</th>
+                <th>Content</th>
+              </tr>
+            </thead>
+            <tbody>
+              {diagnostics.artifacts.map((artifact) => (
+                <tr key={artifact.id} data-testid={`tp-artifact-${artifact.id}`}>
+                  <td className="tp-mono">{artifact.relative_path}</td>
+                  <td>{artifact.kind}</td>
+                  <td>{artifact.size_bytes ?? '—'}</td>
+                  <td>
+                    <a href={artifactContentHref(run.id, artifact.id)}>Open</a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function formatRate(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return '—';
@@ -608,4 +800,10 @@ function downloadText(content: string, filename: string, type: string) {
 function runExplorerHref(runId: string, artifactRoot: string) {
   const runPath = `${runId}/${artifactRoot}`.replace(/\\/g, '/');
   return `/run_explorer.html?run=${encodeURIComponent(runPath)}`;
+}
+
+function artifactContentHref(runId: string, artifactId: string) {
+  return `/api/platform/v1/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(
+    artifactId,
+  )}/content`;
 }
