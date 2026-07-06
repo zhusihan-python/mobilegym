@@ -6,6 +6,7 @@ import type {
   CancelRunResponse,
   CollectionResponse,
   Comparison,
+  FollowupRunAttempt,
   Project,
   ReadinessResponse,
   RunDetail,
@@ -162,6 +163,18 @@ export function cancelRun(runId: string, idempotencyKey?: string): Promise<Cance
   return apiFetch<CancelRunResponse>(`/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
     headers,
+  });
+}
+
+export function retryRun(runId: string): Promise<FollowupRunAttempt> {
+  return apiFetch<FollowupRunAttempt>(`/runs/${encodeURIComponent(runId)}/retry`, {
+    method: 'POST',
+  });
+}
+
+export function resumeRun(runId: string): Promise<FollowupRunAttempt> {
+  return apiFetch<FollowupRunAttempt>(`/runs/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST',
   });
 }
 

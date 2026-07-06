@@ -55,6 +55,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         "baselines",
         "diagnostics",
         "artifacts",
+        "run_attempt_episode_selection",
     } <= _table_names(settings.database_path)
     assert _migration_rows(settings.database_path) == [
         (1, "0001_initial.sql"),
@@ -67,6 +68,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (8, "0008_comparison.sql"),
         (9, "0009_reports_baselines.sql"),
         (10, "0010_diagnostics_artifacts.sql"),
+        (11, "0011_retry_resume_selection.sql"),
     ]
 
 
@@ -115,6 +117,32 @@ def test_diagnostics_and_artifacts_tables_are_created(tmp_path):
             "sha256",
             "created_at",
         } <= artifact_columns
+    finally:
+        database.close()
+
+
+def test_retry_resume_selection_table_is_created(tmp_path):
+    settings = PlatformSettings(
+        database_path=tmp_path / "platform.sqlite3",
+        runs_dir=tmp_path / "runs",
+    )
+    database = Database(settings)
+    try:
+        database.initialize()
+        columns = {
+            row[1]
+            for row in database.connection.execute(
+                "PRAGMA table_info(run_attempt_episode_selection)"
+            )
+        }
+        assert {
+            "id",
+            "run_attempt_id",
+            "lane_id",
+            "episode_id",
+            "reason",
+            "created_at",
+        } <= columns
     finally:
         database.close()
 
@@ -227,4 +255,5 @@ def test_database_initialization_is_idempotent(tmp_path):
         (8, "0008_comparison.sql"),
         (9, "0009_reports_baselines.sql"),
         (10, "0010_diagnostics_artifacts.sql"),
+        (11, "0011_retry_resume_selection.sql"),
     ]

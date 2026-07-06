@@ -109,7 +109,9 @@ class SingleLaneMaterializer:
 
         plan = self._load_plan(run_id)
         lane = self._source_lane(plan)
-        templates = self._unique_templates(plan.episodes)
+        templates = self._unique_templates(
+            _selected_episodes_for_attempt(self.database, run_id, plan)
+        )
         prepared: list[PreparedTaskInstance] = []
 
         for template in templates:
@@ -655,6 +657,59 @@ class ResultIngestor:
                 raise
 
 
+def _current_run_attempt_id(database: Database, run_id: str) -> str:
+    row = database.connection.execute(
+        """
+        SELECT id
+        FROM run_attempts
+        WHERE run_id = ?
+        ORDER BY attempt_no DESC, id DESC
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise RunDomainError(
+            "RUN_ATTEMPT_NOT_FOUND",
+            "Run attempt was not found.",
+            status_code=500,
+            details=[{"run_id": run_id}],
+        )
+    return str(row["id"])
+
+
+def _selected_episodes_for_attempt(
+    database: Database,
+    run_id: str,
+    plan: RunPlan,
+    *,
+    lane_key: str | None = None,
+) -> list[EpisodeTemplate]:
+    run_attempt_id = _current_run_attempt_id(database, run_id)
+    lane_filter = ""
+    params: tuple[Any, ...]
+    if lane_key is None:
+        params = (run_attempt_id,)
+    else:
+        lane_filter = " AND l.lane_key = ?"
+        params = (run_attempt_id, lane_key)
+    rows = database.connection.execute(
+        f"""
+        SELECT e.episode_key
+        FROM run_attempt_episode_selection AS s
+        JOIN episodes AS e ON e.id = s.episode_id
+        JOIN lanes AS l ON l.id = s.lane_id
+        WHERE s.run_attempt_id = ?{lane_filter}
+        ORDER BY e.episode_key
+        """,
+        params,
+    ).fetchall()
+    if not rows:
+        return list(plan.episodes)
+    selected_keys = {str(row["episode_key"]) for row in rows}
+    return [episode for episode in plan.episodes if episode.episode_key in selected_keys]
+
+
 class _RunExecutorBase:
     """Shared run-lifecycle helpers used by both Serial and Parallel executors.
 
@@ -675,16 +730,17 @@ class _RunExecutorBase:
         return RunPlan.model_validate(json.loads(row["run_plan_json"]))
 
     def _lane_attempt(self, run_id: str) -> dict[str, str]:
+        run_attempt_id = _current_run_attempt_id(self.database, run_id)
         row = self.database.connection.execute(
             """
             SELECT la.id, la.artifact_root
             FROM lane_attempts AS la
             JOIN lanes AS l ON l.id = la.lane_id
-            WHERE l.run_id = ?
+            WHERE l.run_id = ? AND la.run_attempt_id = ?
             ORDER BY l.lane_key
             LIMIT 1
             """,
-            (run_id,),
+            (run_id, run_attempt_id),
         ).fetchone()
         if row is None:
             raise RunDomainError("LANE_ATTEMPT_NOT_FOUND", "Lane attempt was not found.", status_code=500)
@@ -700,6 +756,7 @@ class _RunExecutorBase:
     def _mark_run_running(self, run_id: str) -> None:
         now = _utc_timestamp()
         connection = self.database.connection
+        run_attempt_id = _current_run_attempt_id(self.database, run_id)
         with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -718,18 +775,18 @@ class _RunExecutorBase:
                     UPDATE run_attempts
                     SET state = 'running',
                         started_at = COALESCE(started_at, ?)
-                    WHERE run_id = ?
+                    WHERE id = ?
                     """,
-                    (now, run_id),
+                    (now, run_attempt_id),
                 )
                 connection.execute(
                     """
                     UPDATE lane_attempts
                     SET state = 'running',
                         started_at = COALESCE(started_at, ?)
-                    WHERE lane_id IN (SELECT id FROM lanes WHERE run_id = ?)
+                    WHERE run_attempt_id = ?
                     """,
-                    (now, run_id),
+                    (now, run_attempt_id),
                 )
                 connection.commit()
             except Exception:
@@ -804,7 +861,7 @@ class SerialRunExecutor(_RunExecutorBase):
         lane_attempt = self._lane_attempt(run_id)
         prepared_by_key = {item.materialization_key: item for item in prepared}
         work_items: list[PreparedWorkItem] = []
-        for episode in plan.episodes:
+        for episode in _selected_episodes_for_attempt(self.database, run_id, plan):
             payload = prepared_by_key[episode.materialization_key]
             task = self.task_factory.instantiate(episode, params=payload.params)
             work_items.append(
@@ -1004,7 +1061,7 @@ class ParallelRunExecutor(_RunExecutorBase):
         # trial of a repeated task becomes its own work item with a distinct
         # episode_key, so workers can run them concurrently.
         work_items: list[PreparedWorkItem] = []
-        for episode in plan.episodes:
+        for episode in _selected_episodes_for_attempt(self.database, run_id, plan):
             payload = prepared_by_key[episode.materialization_key]
             task = self.task_factory.instantiate(episode, params=payload.params)
             work_items.append(
@@ -1345,7 +1402,7 @@ class MultiprocessRunExecutor(_RunExecutorBase):
         # planned episode. Children reconstruct tasks from the specs.
         work_items: list[PreparedWorkItem] = []
         work_specs: list[EpisodeWorkSpec] = []
-        for episode in plan.episodes:
+        for episode in _selected_episodes_for_attempt(self.database, run_id, plan):
             payload = prepared_by_key[episode.materialization_key]
             task = self.task_factory.instantiate(episode, params=payload.params)
             work_items.append(
@@ -1632,16 +1689,17 @@ class PairedSerialRunExecutor(_RunExecutorBase):
 
     def _lane_attempts_by_key(self, run_id: str) -> dict[str, dict[str, str]]:
         """Map lane_key → {id, artifact_root, lane_id, run_attempt_id} for this run."""
+        run_attempt_id = _current_run_attempt_id(self.database, run_id)
         rows = self.database.connection.execute(
             """
             SELECT l.lane_key, la.id, la.artifact_root, l.id AS lane_id,
                    la.run_attempt_id
             FROM lane_attempts AS la
             JOIN lanes AS l ON l.id = la.lane_id
-            WHERE l.run_id = ?
+            WHERE l.run_id = ? AND la.run_attempt_id = ?
             ORDER BY l.lane_key
             """,
-            (run_id,),
+            (run_id, run_attempt_id),
         ).fetchall()
         if not rows:
             raise RunDomainError(
@@ -2040,7 +2098,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
 
             ingestor = ResultIngestor(self.database)
             run_attempt_id = self._run_attempt_id(run_id)
-            episodes = plan.episodes
+            episodes = _selected_episodes_for_attempt(self.database, run_id, plan)
 
             # (4) Run baseline lane, then candidate lane (serial).
             baseline_agent = self.agent_factory(baseline_lane)
@@ -2115,7 +2173,8 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         # Resolve episodes for missing-episode reconciliation (P1.2). If cancel
         # fired during materialize, episodes wasn't set — load from plan.
         if not locals().get("episodes"):
-            episodes = self._load_plan(run_id).episodes
+            plan_fallback = self._load_plan(run_id)
+            episodes = _selected_episodes_for_attempt(self.database, run_id, plan_fallback)
 
         # (5) Ingest episode_attempts per lane. PAIRING_VIOLATION lanes get an
         # ERROR episode_attempt + episode.error event (Contract 8).
@@ -2177,17 +2236,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         return RunRepository(self.database).get(run_id)
 
     def _run_attempt_id(self, run_id: str) -> str:
-        row = self.database.connection.execute(
-            "SELECT id FROM run_attempts WHERE run_id = ? ORDER BY attempt_no DESC LIMIT 1",
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            raise RunDomainError(
-                "LANE_ATTEMPT_NOT_FOUND",
-                "Run attempt was not found.",
-                status_code=500,
-            )
-        return str(row["id"])
+        return _current_run_attempt_id(self.database, run_id)
 
     def _make_episode_key_resolver(self, run_id: str):
         def resolver(episode_key: str) -> str | None:
@@ -2737,7 +2786,7 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             candidate_sink = self._build_lane_sink(
                 writer, run_id, candidate_lane, candidate_attempt, episode_key_resolver
             )
-            episodes = plan.episodes
+            episodes = _selected_episodes_for_attempt(self.database, run_id, plan)
             baseline_agent = self.agent_factory(baseline_lane)
             candidate_agent = self.agent_factory(candidate_lane)
 
@@ -2810,7 +2859,9 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             bl, cl = self._paired_lanes(run_id)
             baseline_attempt = lane_attempts[bl.lane_key]
             candidate_attempt = lane_attempts[cl.lane_key]
-        episodes = episodes or self._load_plan(run_id).episodes
+        if not episodes:
+            plan_fallback = self._load_plan(run_id)
+            episodes = _selected_episodes_for_attempt(self.database, run_id, plan_fallback)
 
         # (5) Ingest per lane (reuse the serial paired helper).
         # On sibling failure, completed outcomes keep their real outcome (per-episode

@@ -495,25 +495,37 @@ class RunRepository:
         ).fetchall()
         lane_attempts = self.database.connection.execute(
             """
-            SELECT la.id, la.lane_id, l.lane_key, la.state, la.artifact_root,
+            SELECT la.id, la.lane_id, l.lane_key, la.run_attempt_id,
+                   ra.attempt_no, ra.reason, la.state, la.artifact_root,
                    la.started_at, la.ended_at
             FROM lane_attempts AS la
             JOIN lanes AS l ON l.id = la.lane_id
+            JOIN run_attempts AS ra ON ra.id = la.run_attempt_id
             WHERE l.run_id = ?
-            ORDER BY l.lane_key, la.created_at
+            ORDER BY ra.attempt_no, l.lane_key, la.created_at
+            """,
+            (run_id,),
+        ).fetchall()
+        run_attempts = self.database.connection.execute(
+            """
+            SELECT id, attempt_no, reason, state, started_at, ended_at, created_at
+            FROM run_attempts
+            WHERE run_id = ?
+            ORDER BY attempt_no, created_at
             """,
             (run_id,),
         ).fetchall()
         episode_attempts = self.database.connection.execute(
             """
-            SELECT e.episode_key, l.lane_key, ea.attempt_no, ea.state,
+            SELECT e.episode_key, l.lane_key, la.run_attempt_id,
+                   la.id AS lane_attempt_id, ea.attempt_no, ea.state,
                    ea.outcome, ea.error_code, ea.artifact_root
             FROM episode_attempts AS ea
             JOIN episodes AS e ON e.id = ea.episode_id
             JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
             JOIN lanes AS l ON l.id = la.lane_id
             WHERE e.run_id = ?
-            ORDER BY e.episode_key, l.lane_key, ea.attempt_no
+            ORDER BY la.run_attempt_id, e.episode_key, l.lane_key, ea.attempt_no
             """,
             (run_id,),
         ).fetchall()
@@ -540,6 +552,7 @@ class RunRepository:
                     }
                     for lane in lane_rows
                 ],
+                "run_attempts": [dict(attempt) for attempt in run_attempts],
                 "episode_identities": [dict(episode) for episode in episodes],
                 "lane_attempts": [dict(attempt) for attempt in lane_attempts],
                 "episode_attempts": [dict(attempt) for attempt in episode_attempts],

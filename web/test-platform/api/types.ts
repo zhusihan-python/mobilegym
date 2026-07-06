@@ -65,10 +65,22 @@ export type RunSummary = {
 
 export type RunDetail = RunSummary & {
   run_plan: Record<string, unknown>;
+  run_attempts?: Array<{
+    id: string;
+    attempt_no: number;
+    reason: string;
+    state: string;
+    started_at: string | null;
+    ended_at: string | null;
+    created_at: string;
+  }>;
   lane_attempts?: Array<{
     id: string;
     lane_id: string;
     lane_key: string;
+    run_attempt_id?: string;
+    attempt_no?: number;
+    reason?: string;
     state: string;
     artifact_root: string;
     started_at: string | null;
@@ -93,11 +105,25 @@ export type RunDetail = RunSummary & {
   episode_attempts?: Array<{
     episode_key: string;
     lane_key: string;
+    run_attempt_id?: string;
+    lane_attempt_id?: string;
     attempt_no: number;
     state: string;
     outcome: 'PASS' | 'FAIL' | 'ERROR' | 'CANCELLED' | 'SKIPPED' | string | null;
     error_code: string | null;
     artifact_root: string;
+  }>;
+};
+
+export type FollowupRunAttempt = {
+  run_id: string;
+  run_attempt_id: string;
+  attempt_no: number;
+  reason: 'retry' | 'resume' | string;
+  selected_lane_episodes: Array<{
+    episode_key: string;
+    lane_key: string;
+    reason: string;
   }>;
 };
 

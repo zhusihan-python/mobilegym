@@ -59,6 +59,7 @@ class RunSummary:
 @dataclass(frozen=True)
 class RunDetail(RunSummary):
     run_plan: dict[str, Any]
+    run_attempts: list[dict[str, Any]]
     lane_attempts: list[dict[str, Any]]
     target_revisions: list[dict[str, str]]
     episode_identities: list[dict[str, Any]]

@@ -15,6 +15,10 @@ from test_platform.domain.canonical_json import canonical_json, canonical_sha256
 from test_platform.domain.ids import new_id
 from test_platform.domain.run_plans import RunPlan, RunPlanCompiler
 from test_platform.domain.runs import RunDomainError, RunIdempotencyConflict, RunDetail
+from test_platform.domain.retry_resume import (
+    select_resume_lane_episodes,
+    select_retry_lane_episodes,
+)
 from test_platform.domain.task_catalog import TaskCatalogSnapshot, build_task_catalog_snapshot
 from test_platform.domain.workflows import WorkflowDefinition, WorkflowDomainError
 from test_platform.execution.event_writer import EventWriter
@@ -733,6 +737,259 @@ class RunService:
         self.supervisor.submit(run_id)
         return RunRepository(self.database).get(run_id)
 
+    def retry_run(self, run_id: str) -> dict[str, Any]:
+        run = RunRepository(self.database).get(run_id)
+        if run.state not in {"completed", "failed", "cancelled"}:
+            raise RunDomainError(
+                "RUN_RETRY_NOT_TERMINAL",
+                "Only terminal runs can be retried.",
+                status_code=409,
+                details=[{"run_id": run_id, "state": run.state}],
+            )
+
+        source_attempt = self._latest_terminal_run_attempt(run_id)
+        planned = self._planned_lane_episodes(run_id)
+        latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
+        selected = select_retry_lane_episodes(planned, latest_attempts)
+        if not selected:
+            raise RunDomainError(
+                "RUN_RETRY_SELECTION_EMPTY",
+                "No failed or errored lane episodes are available to retry.",
+                status_code=409,
+                details=[{"run_id": run_id}],
+            )
+
+        result = self._create_followup_attempt(
+            run_id=run_id,
+            reason="retry",
+            selected=selected,
+        )
+        self.supervisor.submit(run_id)
+        return result
+
+    def resume_run(self, run_id: str) -> dict[str, Any]:
+        run = RunRepository(self.database).get(run_id)
+        if run.state not in {"completed", "failed", "cancelled"}:
+            raise RunDomainError(
+                "RUN_RESUME_NOT_TERMINAL",
+                "Only terminal runs can be resumed.",
+                status_code=409,
+                details=[{"run_id": run_id, "state": run.state}],
+            )
+
+        self._assert_resume_compatible(run_id)
+        source_attempt = self._latest_terminal_run_attempt(run_id)
+        planned = self._planned_lane_episodes(run_id)
+        latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
+        selected = select_resume_lane_episodes(planned, latest_attempts)
+        if not selected:
+            raise RunDomainError(
+                "RUN_RESUME_SELECTION_EMPTY",
+                "No missing or service-restarted lane episodes are available to resume.",
+                status_code=409,
+                details=[{"run_id": run_id}],
+            )
+
+        result = self._create_followup_attempt(
+            run_id=run_id,
+            reason="resume",
+            selected=selected,
+        )
+        self.supervisor.submit(run_id)
+        return result
+
+    def reconcile_startup(self) -> dict[str, Any]:
+        from test_platform.services.execution import (
+            ResultIngestor,
+            _episode_artifact_root,
+        )
+
+        connection = self.database.connection
+        active_lane_attempts = connection.execute(
+            """
+            SELECT DISTINCT r.id AS run_id, la.id AS lane_attempt_id, la.artifact_root
+            FROM runs AS r
+            JOIN run_attempts AS ra ON ra.run_id = r.id
+            JOIN lane_attempts AS la ON la.run_attempt_id = ra.id
+            WHERE r.state IN ('queued','preparing','running','evaluating','reporting')
+               OR ra.state IN ('queued','preparing','running','evaluating','reporting')
+               OR la.state IN ('queued','preparing','running','evaluating','reporting')
+            ORDER BY r.id, la.id
+            """
+        ).fetchall()
+        if not active_lane_attempts:
+            return {"recovered_runs": 0, "service_restarted_episodes": 0}
+
+        ingestor = ResultIngestor(self.database)
+        recovered_run_ids: set[str] = set()
+        restarted_episodes = 0
+        now = _utc_timestamp()
+
+        for lane_attempt in active_lane_attempts:
+            run_id = str(lane_attempt["run_id"])
+            lane_attempt_id = str(lane_attempt["lane_attempt_id"])
+            recovered_run_ids.add(run_id)
+
+            active_episode_attempts = connection.execute(
+                """
+                SELECT ea.id, e.task_id, e.trial_id
+                FROM episode_attempts AS ea
+                JOIN episodes AS e ON e.id = ea.episode_id
+                WHERE ea.lane_attempt_id = ?
+                  AND ea.state IN ('queued','preparing','running','evaluating','reporting')
+                ORDER BY e.trial_id, e.episode_key
+                """,
+                (lane_attempt_id,),
+            ).fetchall()
+            for attempt in active_episode_attempts:
+                result = _service_restarted_result(
+                    task_id=str(attempt["task_id"]),
+                    trial_id=int(attempt["trial_id"] or 0),
+                )
+                with self.database._lock:  # noqa: SLF100
+                    connection.execute("BEGIN IMMEDIATE")
+                    try:
+                        connection.execute(
+                            """
+                            UPDATE episode_attempts
+                            SET state = 'completed',
+                                outcome = 'ERROR',
+                                error_code = 'SERVICE_RESTARTED',
+                                result_json = ?,
+                                ended_at = COALESCE(ended_at, ?)
+                            WHERE id = ?
+                            """,
+                            (canonical_json(result), now, attempt["id"]),
+                        )
+                        connection.commit()
+                    except Exception:
+                        connection.rollback()
+                        raise
+                restarted_episodes += 1
+
+            missing_episodes = connection.execute(
+                """
+                SELECT e.episode_key, e.task_id, e.trial_id
+                FROM episodes AS e
+                WHERE e.run_id = ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM episode_attempts AS ea
+                    WHERE ea.episode_id = e.id
+                      AND ea.lane_attempt_id = ?
+                      AND ea.state IN ('completed','cancelled')
+                  )
+                ORDER BY e.trial_id, e.episode_key
+                """,
+                (run_id, lane_attempt_id),
+            ).fetchall()
+            for episode in missing_episodes:
+                result = _service_restarted_result(
+                    task_id=str(episode["task_id"]),
+                    trial_id=int(episode["trial_id"] or 0),
+                )
+                ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt_id,
+                    episode_key=str(episode["episode_key"]),
+                    result=result,
+                    artifact_root=_episode_artifact_root(
+                        str(lane_attempt["artifact_root"]),
+                        result,
+                        repeat_n=1,
+                        episode_key=str(episode["episode_key"]),
+                    ),
+                    error_code_override="SERVICE_RESTARTED",
+                )
+                restarted_episodes += 1
+
+            ingestor.finalize_lane_only(
+                lane_attempt_id=lane_attempt_id,
+                terminal_state="failed",
+            )
+
+        for run_id in sorted(recovered_run_ids):
+            ingestor.finalize_run(
+                run_id=run_id,
+                terminal_state="failed",
+                cancelled=False,
+            )
+
+        return {
+            "recovered_runs": len(recovered_run_ids),
+            "service_restarted_episodes": restarted_episodes,
+        }
+
+    def _assert_resume_compatible(self, run_id: str) -> None:
+        target_violations = []
+        target_repository = TargetRepository(self.database)
+        rows = self.database.connection.execute(
+            """
+            SELECT lane_key, target_id, target_revision_id
+            FROM lanes
+            WHERE run_id = ?
+            ORDER BY lane_key
+            """,
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            current = target_repository.latest_revision(str(row["target_id"]))
+            current_revision_id = current.id if current is not None else None
+            if current_revision_id != row["target_revision_id"]:
+                target_violations.append(
+                    {
+                        "kind": "target_revision",
+                        "lane_key": str(row["lane_key"]),
+                        "target_id": str(row["target_id"]),
+                        "expected_revision_id": str(row["target_revision_id"]),
+                        "current_revision_id": current_revision_id,
+                    }
+                )
+        if target_violations:
+            raise RunDomainError(
+                "RUN_RESUME_INCOMPATIBLE_REVISION",
+                "The run cannot be resumed because its frozen target revisions are no longer current.",
+                status_code=409,
+                details=target_violations,
+            )
+
+        row = self.database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunDomainError(
+                "RUN_NOT_FOUND",
+                "Run was not found.",
+                status_code=404,
+                details=[{"run_id": run_id}],
+            )
+        run_plan = json.loads(row["run_plan_json"])
+        task_source = run_plan.get("task_source")
+        if not isinstance(task_source, dict):
+            return
+        current_catalog = self.catalog_builder()
+        expected_repository_revision = task_source.get("repository_revision")
+        expected_registry_digest = task_source.get("registry_digest")
+        if (
+            current_catalog.repository_revision != expected_repository_revision
+            or current_catalog.digest != expected_registry_digest
+        ):
+            raise RunDomainError(
+                "RUN_RESUME_INCOMPATIBLE_REVISION",
+                "The run cannot be resumed because its frozen task source is no longer current.",
+                status_code=409,
+                details=[
+                    {
+                        "kind": "task_source",
+                        "expected_repository_revision": expected_repository_revision,
+                        "current_repository_revision": current_catalog.repository_revision,
+                        "expected_registry_digest": expected_registry_digest,
+                        "current_registry_digest": current_catalog.digest,
+                    }
+                ],
+            )
+
     def _find_idempotent_run(
         self,
         idempotency_key: str,
@@ -751,6 +1008,189 @@ class RunService:
         if row["request_hash"] != request_hash:
             raise RunIdempotencyConflict(idempotency_key)
         return RunRepository(self.database).get(row["run_id"])
+
+    def _latest_terminal_run_attempt(self, run_id: str) -> dict[str, Any]:
+        row = self.database.connection.execute(
+            """
+            SELECT id, attempt_no, state
+            FROM run_attempts
+            WHERE run_id = ?
+              AND state IN ('completed', 'failed', 'cancelled')
+            ORDER BY attempt_no DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunDomainError(
+                "RUN_ATTEMPT_NOT_FOUND",
+                "No terminal run attempt is available.",
+                status_code=409,
+                details=[{"run_id": run_id}],
+            )
+        return {
+            "id": str(row["id"]),
+            "attempt_no": int(row["attempt_no"]),
+            "state": str(row["state"]),
+        }
+
+    def _planned_lane_episodes(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT e.id AS episode_id, e.episode_key, l.id AS lane_id, l.lane_key
+            FROM episodes AS e
+            CROSS JOIN lanes AS l
+            WHERE e.run_id = ? AND l.run_id = ?
+            ORDER BY e.episode_key, l.lane_key
+            """,
+            (run_id, run_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _episode_attempts_for_run_attempt(self, run_attempt_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT e.episode_key, l.lane_key, ea.state, ea.outcome, ea.error_code,
+                   ea.attempt_no
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE la.run_attempt_id = ?
+            ORDER BY e.episode_key, l.lane_key, ea.attempt_no
+            """,
+            (run_attempt_id,),
+        ).fetchall()
+        latest: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            latest[(str(row["episode_key"]), str(row["lane_key"]))] = dict(row)
+        return list(latest.values())
+
+    def _create_followup_attempt(
+        self,
+        *,
+        run_id: str,
+        reason: str,
+        selected: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        now = _utc_timestamp()
+        connection = self.database.connection
+        lanes = connection.execute(
+            """
+            SELECT id, lane_key
+            FROM lanes
+            WHERE run_id = ?
+            ORDER BY lane_key
+            """,
+            (run_id,),
+        ).fetchall()
+        node_rows = connection.execute(
+            """
+            SELECT node_id, node_type
+            FROM workflow_node_runs
+            WHERE run_attempt_id = (
+              SELECT id FROM run_attempts
+              WHERE run_id = ?
+              ORDER BY attempt_no DESC, id DESC
+              LIMIT 1
+            )
+            ORDER BY node_id
+            """,
+            (run_id,),
+        ).fetchall()
+        planned_by_key = {
+            (item["episode_key"], item["lane_key"]): item
+            for item in self._planned_lane_episodes(run_id)
+        }
+        run_attempt_id = new_id()
+        with self.database._lock:  # noqa: SLF100
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """
+                    SELECT COALESCE(MAX(attempt_no), 0) + 1
+                    FROM run_attempts
+                    WHERE run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchone()
+                attempt_no = int(row[0])
+                connection.execute(
+                    """
+                    INSERT INTO run_attempts (
+                      id, run_id, attempt_no, reason, state, created_at
+                    )
+                    VALUES (?, ?, ?, ?, 'queued', ?)
+                    """,
+                    (run_attempt_id, run_id, attempt_no, reason, now),
+                )
+                for node in node_rows:
+                    connection.execute(
+                        """
+                        INSERT INTO workflow_node_runs (
+                          id, run_attempt_id, node_id, node_type, state, created_at
+                        )
+                        VALUES (?, ?, ?, ?, 'queued', ?)
+                        """,
+                        (new_id(), run_attempt_id, node["node_id"], node["node_type"], now),
+                    )
+                for lane in lanes:
+                    connection.execute(
+                        """
+                        INSERT INTO lane_attempts (
+                          id, lane_id, run_attempt_id, state, artifact_root, created_at
+                        )
+                        VALUES (?, ?, ?, 'queued', ?, ?)
+                        """,
+                        (
+                            new_id(),
+                            lane["id"],
+                            run_attempt_id,
+                            f"lanes/{lane['lane_key']}/attempts/{attempt_no:04d}",
+                            now,
+                        ),
+                    )
+                for item in selected:
+                    planned = planned_by_key[(item["episode_key"], item["lane_key"])]
+                    connection.execute(
+                        """
+                        INSERT INTO run_attempt_episode_selection (
+                          id, run_attempt_id, lane_id, episode_id, reason, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id(),
+                            run_attempt_id,
+                            planned["lane_id"],
+                            planned["episode_id"],
+                            item["reason"],
+                            now,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    UPDATE runs
+                    SET state = 'queued',
+                        cancel_requested_at = NULL,
+                        ended_at = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, run_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+        return {
+            "run_id": run_id,
+            "run_attempt_id": run_attempt_id,
+            "attempt_no": attempt_no,
+            "reason": reason,
+            "selected_lane_episodes": selected,
+        }
 
     def _resolve_targets(self, definition: WorkflowDefinition) -> dict[str, Any]:
         matrix = next((node for node in definition.nodes if node.type == "matrix"), None)
@@ -998,6 +1438,19 @@ class RunService:
 
 def _utc_timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _service_restarted_result(*, task_id: str, trial_id: int) -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "trial_id": trial_id,
+        "is_success": False,
+        "is_error": True,
+        "execution": {
+            "error": "Execution was interrupted by a service restart.",
+            "stop_reason": "SERVICE_RESTARTED",
+        },
+    }
 
 
 def _default_executor_resolver(

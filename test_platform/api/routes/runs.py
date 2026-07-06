@@ -1,7 +1,7 @@
 from dataclasses import asdict
 import json
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Request, status
 from pydantic import BaseModel, Field
 
 from test_platform.api.dependencies import get_database
@@ -200,6 +200,30 @@ def cancel_run(
         "cancel_requested": bool(result),
         "state": detail.state,
     }
+
+
+@router.post("/runs/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+def retry_run(request: Request, run_id: str) -> dict[str, object]:
+    try:
+        return RunService(
+            get_database(request),
+            request.app.state.settings,
+            supervisor=request.app.state.supervisor,
+        ).retry_run(run_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.post("/runs/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+def resume_run(request: Request, run_id: str) -> dict[str, object]:
+    try:
+        return RunService(
+            get_database(request),
+            request.app.state.settings,
+            supervisor=request.app.state.supervisor,
+        ).resume_run(run_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
 
 
 def _run_error(error: RunDomainError) -> ApiError:

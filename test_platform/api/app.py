@@ -19,7 +19,7 @@ from test_platform.api.routes.events import router as events_router
 from test_platform.config import PlatformSettings
 from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
-from test_platform.services.runs import FakeRunSupervisor
+from test_platform.services.runs import FakeRunSupervisor, RunService
 
 
 def create_app(
@@ -46,6 +46,11 @@ def create_app(
         app.state.supervisor = platform_supervisor
         app.state.sse_broker = platform_broker
         platform_database.initialize()
+        RunService(
+            platform_database,
+            settings,
+            supervisor=platform_supervisor,
+        ).reconcile_startup()
         platform_broker.bind_loop(asyncio.get_running_loop())
         # Bind the broker to the running loop and start the supervisor if it
         # exposes the async lifecycle (the real RunSupervisor does; the fake one

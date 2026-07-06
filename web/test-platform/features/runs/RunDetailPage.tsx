@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import {
+  ApiError,
   cancelRun,
   getComparison,
   getDiagnostics,
@@ -10,6 +11,8 @@ import {
   getRun,
   listArtifacts,
   promoteBaseline,
+  resumeRun,
+  retryRun,
   streamRunEvents,
 } from '../../api/client';
 import type { ArtifactItem, Comparison, RunDetail, RunDiagnostics, RunReport } from '../../api/types';
@@ -42,6 +45,7 @@ type DiagnosticsState =
 
 const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
 const REPORTABLE_RUN_STATES = new Set(['completed', 'failed']);
+const FOLLOWUP_RUN_STATES = new Set(['completed', 'failed', 'cancelled']);
 
 export function RunDetailPage() {
   const { runId = '' } = useParams();
@@ -55,6 +59,8 @@ export function RunDetailPage() {
   const [comparison, setComparison] = useState<ComparisonState>({ status: 'idle' });
   const [report, setReport] = useState<ReportState>({ status: 'idle' });
   const [diagnostics, setDiagnostics] = useState<DiagnosticsState>({ status: 'idle' });
+  const [followupMessage, setFollowupMessage] = useState<string | null>(null);
+  const [followupBusy, setFollowupBusy] = useState<'retry' | 'resume' | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -206,6 +212,7 @@ export function RunDetailPage() {
 
   // Prefer the live-event-patched snapshot when available.
   const run = liveRef.current?.snapshot ?? state.run;
+  const runAttempts = run.run_attempts ?? [];
   const laneAttempts = run.lane_attempts ?? [];
   const episodeAttempts = run.episode_attempts ?? [];
   // VS-07 live parallel progress: active workers + completed/total episodes.
@@ -225,6 +232,38 @@ export function RunDetailPage() {
     : Math.max(completedEpisodeKeys.size, run.progress.completed_episodes);
   // Reference liveVersion so React re-renders when the ref mutates.
   void liveVersion;
+
+  const refreshRun = () => {
+    getRun(runId)
+      .then((fresh) => {
+        setState({ status: 'loaded', run: fresh });
+        if (liveRef.current) {
+          liveRef.current = { ...liveRef.current, snapshot: fresh };
+          setLiveVersion((v) => v + 1);
+        }
+      })
+      .catch(() => {
+        /* keep the current snapshot; follow-up action already succeeded */
+      });
+  };
+
+  const runFollowup = (kind: 'retry' | 'resume') => {
+    setFollowupBusy(kind);
+    setFollowupMessage(null);
+    const request = kind === 'retry' ? retryRun(run.id) : resumeRun(run.id);
+    request
+      .then((result) => {
+        setFollowupMessage(
+          `${kind === 'retry' ? 'Retry' : 'Resume'} queued attempt ${result.attempt_no} for ${result.selected_lane_episodes.length} lane episodes.`,
+        );
+        refreshRun();
+      })
+      .catch((error) => {
+        setFollowupMessage(formatFollowupError(error));
+      })
+      .finally(() => setFollowupBusy(null));
+  };
+
   return (
     <>
       <section className="tp-panel tp-run-overview">
@@ -249,8 +288,31 @@ export function RunDetailPage() {
                 Cancel run
               </button>
             ) : null}
+            {FOLLOWUP_RUN_STATES.has(run.state) ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => runFollowup('retry')}
+                  disabled={followupBusy !== null}
+                >
+                  {followupBusy === 'retry' ? 'Retrying...' : 'Retry run'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runFollowup('resume')}
+                  disabled={followupBusy !== null}
+                >
+                  {followupBusy === 'resume' ? 'Resuming...' : 'Resume run'}
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
+        {followupMessage ? (
+          <p className="tp-kicker" data-testid="tp-followup-message">
+            {followupMessage}
+          </p>
+        ) : null}
         <dl className="tp-run-facts">
           <div>
             <dt>Plan</dt>
@@ -305,13 +367,43 @@ export function RunDetailPage() {
       <ReportPanel run={run} report={report} />
       <DiagnosticsPanel run={run} diagnostics={diagnostics} />
 
+      {runAttempts.length > 0 ? (
+        <section className="tp-panel">
+          <h2>Attempt history</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Attempt</th>
+                <th>Reason</th>
+                <th>State</th>
+                <th>Started</th>
+                <th>Ended</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runAttempts.map((attempt) => (
+                <tr key={attempt.id}>
+                  <td>{attempt.attempt_no}</td>
+                  <td>{attempt.reason}</td>
+                  <td>{attempt.state}</td>
+                  <td>{attempt.started_at ?? '—'}</td>
+                  <td>{attempt.ended_at ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
       {laneAttempts.length > 0 ? (
         <section className="tp-panel">
           <h2>Lane attempts</h2>
           <table>
             <thead>
               <tr>
+                <th>Attempt</th>
                 <th>Lane</th>
+                <th>Reason</th>
                 <th>State</th>
                 <th>Artifact root</th>
                 <th>Explorer</th>
@@ -320,7 +412,9 @@ export function RunDetailPage() {
             <tbody>
               {laneAttempts.map((attempt) => (
                 <tr key={attempt.id}>
+                  <td>{attempt.attempt_no ?? '—'}</td>
                   <td>{attempt.lane_key}</td>
+                  <td>{attempt.reason ?? '—'}</td>
                   <td>{attempt.state}</td>
                   <td className="tp-mono">{attempt.artifact_root}</td>
                   <td>
@@ -782,6 +876,17 @@ function formatPercentValue(value: number | null | undefined) {
     return '—';
   }
   return `${Math.round(value * 10) / 10}%`;
+}
+
+function formatFollowupError(error: unknown) {
+  if (error instanceof ApiError) {
+    const details = error.details.length > 0 ? ` ${JSON.stringify(error.details)}` : '';
+    return `${error.code}: ${error.message}${details}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return 'Follow-up action failed.';
 }
 
 function downloadText(content: string, filename: string, type: string) {
