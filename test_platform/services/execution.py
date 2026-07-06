@@ -2618,6 +2618,7 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
                         "raw_state": raw_state,
                         "prepared": prepared,
                         "trial_id": episode.trial_id,
+                        "task_app_ids": set(getattr(task, "apps", []) or []),
                     }
                 )
         except RunCancelled:
