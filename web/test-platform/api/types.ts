@@ -168,6 +168,86 @@ export type Comparison = {
   pairs: ComparisonPair[];
 };
 
+export type GateResult = {
+  schema_version: number;
+  verdict: 'passed' | 'failed' | 'error' | string;
+  thresholds: Record<string, number>;
+  observed: Record<string, number | null>;
+  reasons: Array<{
+    metric: string;
+    reason: string;
+    threshold: number;
+    observed: number | null;
+  }>;
+};
+
+export type RunReport = {
+  id: string;
+  schema_version: number;
+  run_id: string;
+  run_attempt_id: string;
+  input_hash: string;
+  provenance: {
+    project_id: string;
+    run_id: string;
+    run_attempt_id: string;
+    workflow_version_id: string;
+    run_plan_hash: string;
+    task_source_digest: string;
+    target_revision_ids: Record<string, string>;
+  };
+  functional: {
+    summary: Record<string, number>;
+    lanes: Record<string, Record<string, number>>;
+    taxonomy: Record<string, Record<string, Record<string, number>>>;
+  };
+  performance: {
+    summary: {
+      unit: string;
+      runtime_s: Record<string, number | null>;
+      phases: Record<string, Record<string, number | null>>;
+      excluded: Record<string, number>;
+    };
+  };
+  comparison: {
+    classification_counts: Record<string, number>;
+    coverage: Record<string, number>;
+    runtime_s: {
+      unit: string;
+      sample_count: number;
+      baseline_p95: number | null;
+      candidate_p95: number | null;
+      absolute_delta: number | null;
+      percent_delta: number | null;
+    };
+    phases: Record<string, Record<string, number | null>>;
+    pairs: Array<{
+      pair_key: string;
+      classification: string;
+      baseline_episode_attempt_id: string | null;
+      candidate_episode_attempt_id: string | null;
+      delta: Record<string, unknown>;
+    }>;
+    pair_deltas: Record<string, Record<string, unknown>>;
+  };
+  gate: GateResult;
+  created_at: string;
+};
+
+export type Baseline = {
+  id: string;
+  report_id: string;
+  run_id: string;
+  project_id: string;
+  workflow_version_id: string;
+  run_plan_hash: string;
+  task_source_digest: string;
+  target_revision_ids: Record<string, string>;
+  lane_key: string;
+  target_revision_id: string;
+  created_at: string;
+};
+
 export type CancelRunResponse = {
   run_id: string;
   cancel_requested: boolean;

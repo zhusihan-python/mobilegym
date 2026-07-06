@@ -50,6 +50,7 @@ class RunPlan(BaseModel):
     episodes: list[EpisodeTemplate]
     materialization: dict[str, Any]
     comparison: dict[str, Any]
+    gates: dict[str, Any] = Field(default_factory=dict)
     agent: dict[str, Any]
     judge: dict[str, Any]
     artifacts: dict[str, Any]
@@ -99,6 +100,7 @@ class RunPlanCompiler:
             },
         )
         comparison = _node_config(definition, "compare")
+        gates = _gate_thresholds(definition)
         agent = _pick_config(
             execute_node.config,
             ("agent", "model_name", "model_base_url", "temperature", "top_p", "max_tokens"),
@@ -135,6 +137,7 @@ class RunPlanCompiler:
                 "source_lane_id": lanes[0].lane_key if lanes else None,
             },
             "comparison": comparison,
+            "gates": gates,
             "agent": agent,
             "judge": judge,
             "artifacts": artifacts,
@@ -148,6 +151,7 @@ class RunPlanCompiler:
             episodes=episodes,
             materialization=materialization,
             comparison=comparison,
+            gates=gates,
             agent=agent,
             judge=judge,
             artifacts=artifacts,
@@ -166,6 +170,12 @@ def _required_node(definition: WorkflowDefinition, node_type: str):
 def _node_config(definition: WorkflowDefinition, node_type: str) -> dict[str, Any]:
     node = next((item for item in definition.nodes if item.type == node_type), None)
     return _sanitize(node.config) if node else {}
+
+
+def _gate_thresholds(definition: WorkflowDefinition) -> dict[str, Any]:
+    config = _node_config(definition, "gate")
+    thresholds = config.get("thresholds") if isinstance(config.get("thresholds"), dict) else config
+    return _sanitize(thresholds) if isinstance(thresholds, dict) else {}
 
 
 def _selected_tasks(

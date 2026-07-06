@@ -13,7 +13,13 @@ from test_platform.domain.projects import (
     next_available_slug,
     normalize_project_name,
 )
-from test_platform.domain.runs import RunDetail, RunNotFound, RunSummary
+from test_platform.domain.canonical_json import canonical_json
+from test_platform.domain.reports.comparison import build_comparison_report
+from test_platform.domain.reports.functional import build_functional_report
+from test_platform.domain.reports.gates import evaluate_gates
+from test_platform.domain.reports.input import ReportInput
+from test_platform.domain.reports.performance import build_performance_report
+from test_platform.domain.runs import RunDetail, RunDomainError, RunNotFound, RunSummary
 from test_platform.domain.targets import (
     DuplicateTargetName,
     Target,
@@ -599,6 +605,16 @@ class RunRepository:
             """,
             (row["id"],),
         ).fetchall()
+        gate_row = self.database.connection.execute(
+            """
+            SELECT verdict
+            FROM quality_gate_results
+            WHERE run_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (row["id"],),
+        ).fetchone()
         planned_episodes = int(counts["episodes"])
         lane_count = int(counts["lanes"])
         return RunSummary(
@@ -615,11 +631,431 @@ class RunRepository:
                 "completed_lane_episodes": int(counts["completed_lane_episodes"]),
             },
             lanes=[dict(lane) for lane in lane_rows],
-            gate_verdict=None,
+            gate_verdict=str(gate_row["verdict"]) if gate_row is not None else None,
             created_at=row["created_at"],
             started_at=row["started_at"],
             ended_at=row["ended_at"],
         )
+
+
+class ReportInputRepository:
+    """Build the stable raw input used by report builders.
+
+    This intentionally does not reuse ``RunRepository.get`` because the UI DTO
+    omits report-critical raw fields such as ``episode_attempts.id`` and
+    ``result_json``.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get_for_run(self, run_id: str) -> ReportInput:
+        run = self.database.connection.execute(
+            """
+            SELECT id, project_id, workflow_version_id, run_plan_json,
+                   run_plan_hash
+            FROM runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise RunNotFound(run_id)
+
+        run_attempt = self.database.connection.execute(
+            """
+            SELECT id, run_id, attempt_no, reason, state, started_at, ended_at,
+                   error_code, created_at
+            FROM run_attempts
+            WHERE run_id = ?
+              AND state IN ('completed', 'failed')
+            ORDER BY attempt_no DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if run_attempt is None:
+            raise RunNotFound(run_id)
+
+        run_attempt_id = str(run_attempt["id"])
+        run_plan = _json_or_empty_object(run["run_plan_json"])
+        lanes = self._lanes_for_attempt(run_id, run_attempt_id)
+        episodes = self._episodes(run_id)
+        episode_attempts = self._episode_attempts(run_id, run_attempt_id)
+        attempts_by_id = {attempt["id"]: attempt for attempt in episode_attempts}
+        latest_attempts_by_lane_episode = _latest_attempts_by_lane_episode(
+            episode_attempts
+        )
+        planned_lane_episodes = _planned_lane_episodes(
+            episodes=episodes,
+            lanes=lanes,
+            latest_attempts=latest_attempts_by_lane_episode,
+        )
+        comparison = self._comparison(run_id, run_attempt_id, attempts_by_id)
+        provenance = {
+            "project_id": str(run["project_id"]),
+            "run_id": str(run["id"]),
+            "run_attempt_id": run_attempt_id,
+            "workflow_version_id": str(run["workflow_version_id"]),
+            "run_plan_hash": str(run["run_plan_hash"]),
+            "task_source_digest": _task_source_digest(run_plan),
+            "target_revision_ids": {
+                lane["lane_key"]: lane["target_revision_id"] for lane in lanes
+            },
+        }
+        return ReportInput.from_payload(
+            run_id=str(run["id"]),
+            run_attempt_id=run_attempt_id,
+            provenance=provenance,
+            planned_lane_episodes=planned_lane_episodes,
+            episode_attempts=episode_attempts,
+            comparison=comparison,
+        )
+
+    def _lanes_for_attempt(
+        self,
+        run_id: str,
+        run_attempt_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT l.id AS lane_id, l.lane_key, l.role, l.target_id,
+                   l.target_revision_id, la.id AS lane_attempt_id,
+                   la.state AS lane_attempt_state
+            FROM lanes AS l
+            LEFT JOIN lane_attempts AS la
+              ON la.lane_id = l.id AND la.run_attempt_id = ?
+            WHERE l.run_id = ?
+            ORDER BY l.lane_key
+            """,
+            (run_attempt_id, run_id),
+        ).fetchall()
+        return [
+            {
+                "lane_id": str(row["lane_id"]),
+                "lane_key": str(row["lane_key"]),
+                "role": str(row["role"]),
+                "target_id": str(row["target_id"]),
+                "target_revision_id": str(row["target_revision_id"]),
+                "lane_attempt_id": (
+                    str(row["lane_attempt_id"])
+                    if row["lane_attempt_id"] is not None
+                    else None
+                ),
+                "lane_attempt_state": (
+                    str(row["lane_attempt_state"])
+                    if row["lane_attempt_state"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        ]
+
+    def _episodes(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT id, episode_key, materialization_key, pair_key, task_base_id,
+                   task_id, instance_id, instance_seed, template_index,
+                   trial_id, max_steps
+            FROM episodes
+            WHERE run_id = ?
+            ORDER BY episode_key
+            """,
+            (run_id,),
+        ).fetchall()
+        return [
+            {
+                "episode_id": str(row["id"]),
+                "episode_key": str(row["episode_key"]),
+                "materialization_key": str(row["materialization_key"]),
+                "pair_key": str(row["pair_key"]),
+                "task_base_id": str(row["task_base_id"]),
+                "task_id": str(row["task_id"]),
+                "instance_id": int(row["instance_id"]),
+                "instance_seed": int(row["instance_seed"]),
+                "template_index": row["template_index"],
+                "trial_id": int(row["trial_id"]),
+                "max_steps": int(row["max_steps"]),
+            }
+            for row in rows
+        ]
+
+    def _episode_attempts(
+        self,
+        run_id: str,
+        run_attempt_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT ea.id, ea.episode_id, e.episode_key, e.pair_key,
+                   ea.lane_attempt_id, la.lane_id, l.lane_key, ea.attempt_no,
+                   ea.state, ea.outcome, ea.error_code, ea.result_json,
+                   ea.artifact_root, ea.started_at, ea.ended_at, ea.created_at
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE e.run_id = ?
+              AND la.run_attempt_id = ?
+            ORDER BY e.episode_key, l.lane_key, ea.attempt_no, ea.id
+            """,
+            (run_id, run_attempt_id),
+        ).fetchall()
+        return [_map_report_episode_attempt(row) for row in rows]
+
+    def _comparison(
+        self,
+        run_id: str,
+        run_attempt_id: str,
+        attempts_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        row = self.database.connection.execute(
+            """
+            SELECT id, run_id, run_attempt_id, baseline_lane_id,
+                   candidate_lane_id, policy_json, summary_json, created_at
+            FROM comparisons
+            WHERE run_id = ? AND run_attempt_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id, run_attempt_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        pair_rows = self.database.connection.execute(
+            """
+            SELECT id, comparison_id, pair_key, baseline_episode_attempt_id,
+                   candidate_episode_attempt_id, classification, integrity_json,
+                   delta_json
+            FROM comparison_pairs
+            WHERE comparison_id = ?
+            ORDER BY pair_key
+            """,
+            (row["id"],),
+        ).fetchall()
+        pairs = []
+        for pair in pair_rows:
+            baseline_attempt_id = pair["baseline_episode_attempt_id"]
+            candidate_attempt_id = pair["candidate_episode_attempt_id"]
+            pairs.append(
+                {
+                    "id": str(pair["id"]),
+                    "comparison_id": str(pair["comparison_id"]),
+                    "pair_key": str(pair["pair_key"]),
+                    "baseline_episode_attempt_id": (
+                        str(baseline_attempt_id)
+                        if baseline_attempt_id is not None
+                        else None
+                    ),
+                    "candidate_episode_attempt_id": (
+                        str(candidate_attempt_id)
+                        if candidate_attempt_id is not None
+                        else None
+                    ),
+                    "classification": str(pair["classification"]),
+                    "integrity": _json_or_empty_object(pair["integrity_json"]),
+                    "delta": _json_or_empty_object(pair["delta_json"]),
+                    "baseline_attempt": attempts_by_id.get(str(baseline_attempt_id))
+                    if baseline_attempt_id is not None
+                    else None,
+                    "candidate_attempt": attempts_by_id.get(str(candidate_attempt_id))
+                    if candidate_attempt_id is not None
+                    else None,
+                }
+            )
+        return {
+            "id": str(row["id"]),
+            "run_id": str(row["run_id"]),
+            "run_attempt_id": str(row["run_attempt_id"]),
+            "baseline_lane_id": str(row["baseline_lane_id"]),
+            "candidate_lane_id": str(row["candidate_lane_id"]),
+            "policy": _json_or_empty_object(row["policy_json"]),
+            "summary": _json_or_empty_object(row["summary_json"])
+            if row["summary_json"] is not None
+            else None,
+            "created_at": str(row["created_at"]),
+            "pairs": pairs,
+        }
+
+
+class ReportRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get_or_create(self, run_id: str) -> dict[str, Any]:
+        report_input = ReportInputRepository(self.database).get_for_run(run_id)
+        existing = self._find_existing(report_input)
+        if existing is not None:
+            return existing
+
+        report_id = new_id()
+        now = _utc_timestamp()
+        report = _build_report_payload(
+            report_id=report_id,
+            created_at=now,
+            report_input=report_input,
+            thresholds=_frozen_gate_thresholds(self.database, run_id),
+        )
+        gate = report["gate"]
+        connection = self.database.connection
+        with self.database._lock:  # noqa: SLF100
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO reports (
+                      id, run_id, run_attempt_id, schema_version, input_hash,
+                      report_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        report_id,
+                        report_input.run_id,
+                        report_input.run_attempt_id,
+                        report["schema_version"],
+                        report_input.input_hash,
+                        canonical_json(report),
+                        now,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO quality_gate_results (
+                      id, report_id, run_id, run_attempt_id, verdict,
+                      thresholds_json, observed_json, reasons_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id(),
+                        report_id,
+                        report_input.run_id,
+                        report_input.run_attempt_id,
+                        gate["verdict"],
+                        canonical_json(gate["thresholds"]),
+                        canonical_json(gate["observed"]),
+                        canonical_json(gate["reasons"]),
+                        now,
+                    ),
+                )
+                connection.commit()
+            except sqlite3.IntegrityError:
+                connection.rollback()
+                existing = self._find_existing(report_input)
+                if existing is not None:
+                    return existing
+                raise
+            except Exception:
+                connection.rollback()
+                raise
+        return report
+
+    def _find_existing(self, report_input: ReportInput) -> dict[str, Any] | None:
+        row = self.database.connection.execute(
+            """
+            SELECT report_json
+            FROM reports
+            WHERE run_id = ?
+              AND run_attempt_id = ?
+              AND schema_version = 1
+              AND input_hash = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (report_input.run_id, report_input.run_attempt_id, report_input.input_hash),
+        ).fetchone()
+        return json.loads(row["report_json"]) if row is not None else None
+
+
+class BaselineRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def promote(self, run_id: str, *, lane_key: str | None = None) -> dict[str, Any]:
+        report = ReportRepository(self.database).get_or_create(run_id)
+        run_row = self.database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        attempt_row = self.database.connection.execute(
+            "SELECT state FROM run_attempts WHERE id = ?",
+            (report["run_attempt_id"],),
+        ).fetchone()
+        if (
+            run_row is None
+            or attempt_row is None
+            or run_row["state"] != "completed"
+            or attempt_row["state"] != "completed"
+        ):
+            raise RunDomainError(
+                "BASELINE_PROMOTION_INVALID_RUN_STATE",
+                "Only completed runs can be promoted as baselines.",
+                status_code=409,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "run_state": run_row["state"] if run_row is not None else None,
+                        "run_attempt_state": (
+                            attempt_row["state"] if attempt_row is not None else None
+                        ),
+                    }
+                ],
+            )
+
+        provenance = report["provenance"]
+        target_revision_ids = provenance.get("target_revision_ids") or {}
+        selected_lane_key = lane_key or _default_baseline_lane_key(target_revision_ids)
+        target_revision_id = target_revision_ids.get(selected_lane_key)
+        if target_revision_id is None:
+            raise RunDomainError(
+                "BASELINE_LANE_NOT_FOUND",
+                "The requested lane is not present in the report provenance.",
+                status_code=400,
+                details=[{"run_id": run_id, "lane_key": selected_lane_key}],
+            )
+
+        baseline_id = new_id()
+        now = _utc_timestamp()
+        row = {
+            "id": baseline_id,
+            "report_id": report["id"],
+            "run_id": report["run_id"],
+            "project_id": provenance["project_id"],
+            "workflow_version_id": provenance["workflow_version_id"],
+            "run_plan_hash": provenance["run_plan_hash"],
+            "task_source_digest": provenance["task_source_digest"],
+            "target_revision_ids": target_revision_ids,
+            "lane_key": selected_lane_key,
+            "target_revision_id": target_revision_id,
+            "created_at": now,
+        }
+        self.database.connection.execute(
+            """
+            INSERT INTO baselines (
+              id, report_id, run_id, project_id, workflow_version_id,
+              run_plan_hash, task_source_digest, target_revision_ids_json,
+              lane_key, target_revision_id, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                baseline_id,
+                row["report_id"],
+                row["run_id"],
+                row["project_id"],
+                row["workflow_version_id"],
+                row["run_plan_hash"],
+                row["task_source_digest"],
+                canonical_json(target_revision_ids),
+                selected_lane_key,
+                target_revision_id,
+                now,
+            ),
+        )
+        self.database.connection.commit()
+        return row
 
 
 class ComparisonRepository:
@@ -782,6 +1218,138 @@ class ComparisonRepository:
             }
             for row in rows
         ]
+
+
+def _json_or_empty_object(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    parsed = json.loads(value) if isinstance(value, str) else value
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_report_payload(
+    *,
+    report_id: str,
+    created_at: str,
+    report_input: ReportInput,
+    thresholds: dict[str, Any],
+) -> dict[str, Any]:
+    functional = build_functional_report(report_input)
+    performance = build_performance_report(report_input)
+    comparison = build_comparison_report(report_input)
+    report = {
+        "id": report_id,
+        "schema_version": 1,
+        "run_id": report_input.run_id,
+        "run_attempt_id": report_input.run_attempt_id,
+        "input_hash": report_input.input_hash,
+        "provenance": report_input.provenance,
+        "functional": functional,
+        "performance": performance,
+        "comparison": comparison,
+        "created_at": created_at,
+    }
+    report["gate"] = evaluate_gates(report, thresholds)
+    return report
+
+
+def _frozen_gate_thresholds(database: Database, run_id: str) -> dict[str, Any]:
+    row = database.connection.execute(
+        "SELECT run_plan_json FROM runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise RunNotFound(run_id)
+    run_plan = _json_or_empty_object(row["run_plan_json"])
+    gates = run_plan.get("gates")
+    return gates if isinstance(gates, dict) else {}
+
+
+def _default_baseline_lane_key(target_revision_ids: dict[str, Any]) -> str:
+    if "candidate" in target_revision_ids:
+        return "candidate"
+    if len(target_revision_ids) == 1:
+        return next(iter(target_revision_ids))
+    return sorted(target_revision_ids)[0]
+
+
+def _json_or_none(value: Any) -> Any:
+    if value is None:
+        return None
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _task_source_digest(run_plan: dict[str, Any]) -> str | None:
+    task_source = run_plan.get("task_source")
+    if not isinstance(task_source, dict):
+        return None
+    digest = task_source.get("registry_digest")
+    return str(digest) if digest is not None else None
+
+
+def _map_report_episode_attempt(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "episode_id": str(row["episode_id"]),
+        "episode_key": str(row["episode_key"]),
+        "pair_key": str(row["pair_key"]),
+        "lane_attempt_id": str(row["lane_attempt_id"]),
+        "lane_id": str(row["lane_id"]),
+        "lane_key": str(row["lane_key"]),
+        "attempt_no": int(row["attempt_no"]),
+        "state": str(row["state"]),
+        "outcome": str(row["outcome"]) if row["outcome"] is not None else None,
+        "error_code": str(row["error_code"]) if row["error_code"] is not None else None,
+        "result_json": _json_or_none(row["result_json"]),
+        "artifact_root": str(row["artifact_root"]),
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "created_at": str(row["created_at"]),
+    }
+
+
+def _latest_attempts_by_lane_episode(
+    attempts: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for attempt in attempts:
+        latest[(attempt["episode_id"], attempt["lane_attempt_id"])] = attempt
+    return latest
+
+
+def _planned_lane_episodes(
+    *,
+    episodes: list[dict[str, Any]],
+    lanes: list[dict[str, Any]],
+    latest_attempts: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    planned: list[dict[str, Any]] = []
+    for episode in episodes:
+        for lane in lanes:
+            lane_attempt_id = lane["lane_attempt_id"]
+            latest = (
+                latest_attempts.get((episode["episode_id"], lane_attempt_id))
+                if lane_attempt_id is not None
+                else None
+            )
+            planned.append(
+                {
+                    "episode_id": episode["episode_id"],
+                    "episode_key": episode["episode_key"],
+                    "pair_key": episode["pair_key"],
+                    "task_base_id": episode["task_base_id"],
+                    "task_id": episode["task_id"],
+                    "lane_id": lane["lane_id"],
+                    "lane_key": lane["lane_key"],
+                    "role": lane["role"],
+                    "lane_attempt_id": lane_attempt_id,
+                    "episode_attempt_id": latest["id"] if latest is not None else None,
+                    "status": latest["state"] if latest is not None else "incomplete",
+                    "outcome": latest["outcome"] if latest is not None else None,
+                    "error_code": latest["error_code"] if latest is not None else None,
+                }
+            )
+    return planned
 
 
 def _map_project(row: sqlite3.Row) -> Project:

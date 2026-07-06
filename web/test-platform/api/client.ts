@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   ApiErrorDetail,
+  Baseline,
   CancelRunResponse,
   CollectionResponse,
   Comparison,
@@ -8,6 +9,7 @@ import type {
   ReadinessResponse,
   RunDetail,
   RunEvent,
+  RunReport,
   RunSummary,
   TaskCatalogItem,
   TaskCatalogResponse,
@@ -115,6 +117,31 @@ export function getRun(runId: string): Promise<RunDetail> {
  */
 export function getComparison(runId: string): Promise<Comparison> {
   return apiFetch<Comparison>(`/runs/${encodeURIComponent(runId)}/comparison`);
+}
+
+export function getReport(runId: string): Promise<RunReport> {
+  return apiFetch<RunReport>(`/runs/${encodeURIComponent(runId)}/report`);
+}
+
+export async function getReportExport(
+  runId: string,
+  format: 'json' | 'html' = 'json',
+): Promise<string> {
+  const response = await fetch(
+    `${API_PREFIX}/runs/${encodeURIComponent(runId)}/report/export?format=${format}`,
+    { headers: { Accept: format === 'html' ? 'text/html' : 'application/json' } },
+  );
+  if (!response.ok) {
+    throw toApiError(await readJson(response));
+  }
+  return response.text();
+}
+
+export function promoteBaseline(runId: string, laneKey?: string): Promise<Baseline> {
+  return apiFetch<Baseline>(`/runs/${encodeURIComponent(runId)}/baseline`, {
+    method: 'POST',
+    body: JSON.stringify({ lane_key: laneKey ?? null }),
+  });
 }
 
 export function cancelRun(runId: string, idempotencyKey?: string): Promise<CancelRunResponse> {

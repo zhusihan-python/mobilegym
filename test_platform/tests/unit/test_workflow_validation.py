@@ -119,3 +119,59 @@ def test_disabled_or_missing_targets_invalidate_publication():
     assert {
         issue.code for issue in result.issues
     } >= {"WORKFLOW_TARGET_DISABLED", "WORKFLOW_TARGET_MISSING"}
+
+
+def test_gate_node_validation_rejects_unknown_or_non_numeric_thresholds():
+    definition = WorkflowDefinition.model_validate(
+        {
+            "schema_version": 1,
+            "name": "Gate workflow",
+            "nodes": [
+                {
+                    "id": "tasks",
+                    "type": "task_selection",
+                    "depends_on": [],
+                    "config": {"task_ids": ["wechat.BlacklistContact"]},
+                },
+                {
+                    "id": "matrix",
+                    "type": "matrix",
+                    "depends_on": ["tasks"],
+                    "config": {
+                        "lanes": {"candidate": {"target_id": "target-1"}},
+                        "repeat_n": 1,
+                    },
+                },
+                {
+                    "id": "execute",
+                    "type": "execute",
+                    "depends_on": ["matrix"],
+                    "config": {"parallel": 1},
+                },
+                {
+                    "id": "quality",
+                    "type": "gate",
+                    "depends_on": ["execute"],
+                    "config": {
+                        "thresholds": {
+                            "max_regressions": 0,
+                            "unknown_metric": 1,
+                            "min_success_rate": "high",
+                        }
+                    },
+                },
+            ],
+        }
+    )
+
+    result = WorkflowValidator().validate(definition, _catalog(), {"target-1": _target()})
+
+    assert result.valid is False
+    assert [
+        (issue.code, issue.pointer, issue.node_id)
+        for issue in result.issues
+        if issue.code == "WORKFLOW_GATE_INVALID_CONFIG"
+    ] == [
+        ("WORKFLOW_GATE_INVALID_CONFIG", "/nodes/3/config/thresholds/unknown_metric", "quality"),
+        ("WORKFLOW_GATE_INVALID_CONFIG", "/nodes/3/config/thresholds/min_success_rate", "quality"),
+    ]

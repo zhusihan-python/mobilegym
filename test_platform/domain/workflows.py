@@ -202,6 +202,8 @@ class WorkflowValidator:
                 issues.extend(_validate_matrix_targets(node, node_index, targets))
             if node.type == "compare":
                 issues.extend(_validate_compare_config(node, node_index))
+            if node.type == "gate":
+                issues.extend(_validate_gate_config(node, node_index))
 
         return WorkflowValidationResult(valid=not issues, issues=issues)
 
@@ -349,6 +351,14 @@ def _validate_matrix_targets(
 _VALID_TARGET_CONSTRAINTS = {"same_app", "same_device", "same_data"}
 _VALID_INITIAL_STATE_POLICIES = {"strict_snapshot", "task_projection"}
 _VALID_EXECUTION_MODES = {"serial", "parallel"}
+_VALID_GATE_THRESHOLDS = {
+    "max_regressions",
+    "max_candidate_errors",
+    "min_success_rate",
+    "max_success_rate_drop",
+    "max_runtime_p95_increase",
+    "max_unpaired",
+}
 
 
 def _validate_compare_config(node: WorkflowNode, node_index: int) -> list[WorkflowIssue]:
@@ -401,6 +411,48 @@ def _validate_compare_config(node: WorkflowNode, node_index: int) -> list[Workfl
             node_id=node.id,
         ))
 
+    return issues
+
+
+def _validate_gate_config(node: WorkflowNode, node_index: int) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    config = node.config or {}
+    thresholds = config.get("thresholds") if isinstance(config.get("thresholds"), dict) else config
+    if not isinstance(thresholds, dict):
+        return [
+            WorkflowIssue(
+                code="WORKFLOW_GATE_INVALID_CONFIG",
+                message="gate thresholds must be an object.",
+                pointer=f"/nodes/{node_index}/config/thresholds",
+                node_id=node.id,
+            )
+        ]
+
+    prefix = (
+        f"/nodes/{node_index}/config/thresholds"
+        if isinstance(config.get("thresholds"), dict)
+        else f"/nodes/{node_index}/config"
+    )
+    for key, value in thresholds.items():
+        if key not in _VALID_GATE_THRESHOLDS:
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_GATE_INVALID_CONFIG",
+                    message=f"Unknown gate threshold '{key}'. Valid: {sorted(_VALID_GATE_THRESHOLDS)}.",
+                    pointer=f"{prefix}/{key}",
+                    node_id=node.id,
+                )
+            )
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_GATE_INVALID_CONFIG",
+                    message=f"Gate threshold '{key}' must be numeric.",
+                    pointer=f"{prefix}/{key}",
+                    node_id=node.id,
+                )
+            )
     return issues
 
 

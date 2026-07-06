@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { cancelRun, getComparison, getRun, streamRunEvents } from '../../api/client';
-import type { Comparison, RunDetail } from '../../api/types';
+import {
+  cancelRun,
+  getComparison,
+  getReport,
+  getReportExport,
+  getRun,
+  promoteBaseline,
+  streamRunEvents,
+} from '../../api/client';
+import type { Comparison, RunDetail, RunReport } from '../../api/types';
 import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
 type DetailState =
@@ -17,7 +25,15 @@ type ComparisonState =
   | { status: 'none' }
   | { status: 'error' };
 
+type ReportState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'loaded'; report: RunReport }
+  | { status: 'none' }
+  | { status: 'error'; message: string };
+
 const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
+const REPORTABLE_RUN_STATES = new Set(['completed', 'failed']);
 
 export function RunDetailPage() {
   const { runId = '' } = useParams();
@@ -29,6 +45,7 @@ export function RunDetailPage() {
   // VS-09: paired-run comparison (side-by-side view). Fetched when the run has
   // 2 lanes (a paired run) and is in a terminal/running state.
   const [comparison, setComparison] = useState<ComparisonState>({ status: 'idle' });
+  const [report, setReport] = useState<ReportState>({ status: 'idle' });
 
   useEffect(() => {
     let active = true;
@@ -112,6 +129,29 @@ export function RunDetailPage() {
       active = false;
     };
   }, [runId, isPaired, runState]);
+
+  useEffect(() => {
+    if (!REPORTABLE_RUN_STATES.has(runState)) {
+      setReport({ status: 'idle' });
+      return;
+    }
+    let active = true;
+    setReport({ status: 'loading' });
+    getReport(runId)
+      .then((data) => {
+        if (active) setReport({ status: 'loaded', report: data });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setReport({
+          status: 'error',
+          message: error instanceof Error ? error.message : 'No report is available.',
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [runId, runState]);
 
   if (state.status === 'loading') {
     return <section className="tp-panel">Loading run plan...</section>;
@@ -223,6 +263,8 @@ export function RunDetailPage() {
           </div>
         </dl>
       </section>
+
+      <ReportPanel run={run} report={report} />
 
       {laneAttempts.length > 0 ? (
         <section className="tp-panel">
@@ -393,6 +435,174 @@ export function RunDetailPage() {
       </section>
     </>
   );
+}
+
+function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
+  const [regressionsOnly, setRegressionsOnly] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  if (!REPORTABLE_RUN_STATES.has(run.state)) {
+    return (
+      <section className="tp-panel" data-testid="tp-report-panel">
+        <h2>Report</h2>
+        <p>Report will be available after the run reaches a terminal state.</p>
+      </section>
+    );
+  }
+
+  if (report.status === 'loading' || report.status === 'idle') {
+    return (
+      <section className="tp-panel" data-testid="tp-report-panel">
+        <h2>Report</h2>
+        <p>Loading report...</p>
+      </section>
+    );
+  }
+
+  if (report.status === 'error') {
+    return (
+      <section className="tp-panel" data-testid="tp-report-panel">
+        <h2>Report</h2>
+        <p>{report.message}</p>
+      </section>
+    );
+  }
+
+  if (report.status === 'none') {
+    return null;
+  }
+
+  const data = report.report;
+  const counts = data.comparison.classification_counts;
+  const visiblePairs = regressionsOnly
+    ? data.comparison.pairs.filter((pair) => pair.classification === 'regression')
+    : data.comparison.pairs;
+
+  const exportReport = (format: 'json' | 'html') => {
+    getReportExport(run.id, format)
+      .then((content) => {
+        downloadText(
+          content,
+          `${run.id}-report.${format === 'json' ? 'json' : 'html'}`,
+          format === 'json' ? 'application/json' : 'text/html',
+        );
+        setMessage(format === 'json' ? 'JSON export ready.' : 'Printable HTML ready.');
+      })
+      .catch((error) => {
+        setMessage(error instanceof Error ? error.message : 'Export failed.');
+      });
+  };
+
+  const promote = () => {
+    promoteBaseline(run.id)
+      .then((baseline) => {
+        setMessage(`Promoted baseline for ${baseline.lane_key}.`);
+      })
+      .catch((error) => {
+        setMessage(error instanceof Error ? error.message : 'Baseline promotion failed.');
+      });
+  };
+
+  return (
+    <section className="tp-panel" data-testid="tp-report-panel">
+      <div className="tp-run-heading">
+        <div>
+          <h2>Report</h2>
+          <p>
+            Gate verdict:{' '}
+            <span className={`tp-run-state tp-gate-${data.gate.verdict}`} data-testid="tp-gate-verdict">
+              {data.gate.verdict}
+            </span>
+          </p>
+        </div>
+        <div className="tp-run-actions">
+          <button type="button" onClick={() => exportReport('json')}>
+            Export JSON
+          </button>
+          <button type="button" onClick={() => exportReport('html')}>
+            Printable HTML
+          </button>
+          <button type="button" onClick={promote}>
+            Promote baseline
+          </button>
+        </div>
+      </div>
+
+      <dl className="tp-run-facts">
+        <div>
+          <dt>Success rate</dt>
+          <dd>{formatRate(data.functional.summary.success_rate)}</dd>
+        </div>
+        <div>
+          <dt>Regressions</dt>
+          <dd data-testid="tp-report-regressions">{counts.regressions ?? 0}</dd>
+        </div>
+        <div>
+          <dt>Candidate errors</dt>
+          <dd>{counts.candidate_errors ?? 0}</dd>
+        </div>
+        <div>
+          <dt>Runtime p95 delta</dt>
+          <dd data-testid="tp-report-runtime-delta">
+            {formatPercentValue(data.comparison.runtime_s.percent_delta)}
+          </dd>
+        </div>
+      </dl>
+
+      <label className="tp-inline-control">
+        <input
+          type="checkbox"
+          checked={regressionsOnly}
+          onChange={(event) => setRegressionsOnly(event.currentTarget.checked)}
+        />
+        Regression pairs only
+      </label>
+
+      {message ? <p className="tp-kicker">{message}</p> : null}
+
+      <div className="tp-report-pairs">
+        {visiblePairs.map((pair) => (
+          <details key={pair.pair_key} data-testid={`tp-report-pair-${pair.pair_key}`}>
+            <summary>
+              <span className="tp-mono">{pair.pair_key}</span>
+              {' · '}
+              <span className={`tp-classification tp-classification-${pair.classification}`}>
+                {pair.classification}
+              </span>
+            </summary>
+            <pre className="tp-report-diff">{JSON.stringify(pair.delta, null, 2)}</pre>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function formatRate(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '—';
+  }
+  return `${Math.round(value * 1000) / 10}%`;
+}
+
+function formatPercentValue(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '—';
+  }
+  return `${Math.round(value * 10) / 10}%`;
+}
+
+function downloadText(content: string, filename: string, type: string) {
+  if (typeof Blob === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return;
+  }
+  const blob = new Blob([content], { type });
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(href);
 }
 
 function runExplorerHref(runId: string, artifactRoot: string) {

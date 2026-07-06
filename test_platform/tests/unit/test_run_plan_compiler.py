@@ -76,6 +76,24 @@ def _definition(target_id="target-a"):
     )
 
 
+def _definition_with_gate():
+    payload = _definition().model_dump(mode="json")
+    payload["nodes"].append(
+        {
+            "id": "quality",
+            "type": "gate",
+            "depends_on": ["execute"],
+            "config": {
+                "thresholds": {
+                    "max_regressions": 0,
+                    "min_success_rate": 0.9,
+                }
+            },
+        }
+    )
+    return WorkflowDefinition.model_validate(payload)
+
+
 def _targets():
     return {
         "target-a": {
@@ -184,3 +202,30 @@ def test_compiler_rejects_catalog_drift_that_removes_a_published_task():
             seed=123,
             created_at="2026-07-03T12:00:00.000Z",
         )
+
+
+def test_compiler_freezes_gate_thresholds_into_run_plan():
+    plan = RunPlanCompiler().compile(
+        run_id="run-random",
+        workflow_version_id="workflow-version-1",
+        definition=_definition_with_gate(),
+        catalog=_catalog(),
+        targets=_targets(),
+        seed=123,
+        created_at="2026-07-03T12:00:00.000Z",
+    )
+
+    assert plan.gates == {
+        "max_regressions": 0,
+        "min_success_rate": 0.9,
+    }
+
+
+def test_legacy_run_plan_payload_defaults_gates_to_empty_dict():
+    plan = _compile()
+    payload = plan.model_dump(mode="json")
+    payload.pop("gates")
+
+    reparsed = type(plan).model_validate(payload)
+
+    assert reparsed.gates == {}
