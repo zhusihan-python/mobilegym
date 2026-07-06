@@ -13,7 +13,7 @@
     "lint": "eslint os/ apps/ && node scripts/lint_store_getters.mjs",
     "build:web-css": "tailwindcss -i web/tailwind.input.css -o web/tailwind.css --minify",
     "watch:web-css": "tailwindcss -i web/tailwind.input.css -o web/tailwind.css --watch",
-    "platform:api": "python -m test_platform.main",
+    "platform:api": "node scripts/run_platform_api.mjs",
     "platform:web": "vite --host 127.0.0.1",
     "platform:test": "vitest run --config vitest.platform.config.ts",
     "platform:typecheck": "tsc --noEmit -p tsconfig.test-platform.json"
