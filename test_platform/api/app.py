@@ -5,7 +5,10 @@ from fastapi import FastAPI
 
 from test_platform.adapters.targets import TargetAdapterRegistry
 from test_platform.api.errors import install_error_handlers
-from test_platform.api.middleware import install_request_id_middleware
+from test_platform.api.middleware import (
+    install_mutation_origin_middleware,
+    install_request_id_middleware,
+)
 from test_platform.api.routes.artifacts import router as artifacts_router
 from test_platform.api.routes.health import router as health_router
 from test_platform.api.routes.diagnostics import router as diagnostics_router
@@ -72,6 +75,7 @@ def create_app(
     app.state.sse_broker = platform_broker
 
     install_request_id_middleware(app)
+    install_mutation_origin_middleware(app)
     install_error_handlers(app)
     app.include_router(artifacts_router)
     app.include_router(diagnostics_router)

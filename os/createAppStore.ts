@@ -44,7 +44,12 @@ export function createDebouncedStorage(): PersistStorage<any> {
 }
 
 function hasLocalStorage(): boolean {
-  return typeof localStorage !== 'undefined';
+  return (
+    typeof localStorage !== 'undefined'
+    && typeof localStorage.getItem === 'function'
+    && typeof localStorage.setItem === 'function'
+    && typeof localStorage.removeItem === 'function'
+  );
 }
 
 function stripFunctions(state: Record<string, any>): Record<string, any> {

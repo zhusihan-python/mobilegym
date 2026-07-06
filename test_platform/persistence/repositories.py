@@ -449,7 +449,7 @@ class RunRepository:
         rows = self.database.connection.execute(
             f"""
             SELECT id, project_id, workflow_version_id, name, state,
-                   run_plan_hash, created_at, started_at, ended_at
+                   run_plan_json, run_plan_hash, created_at, started_at, ended_at
             FROM runs
             {where_clause}
             ORDER BY created_at DESC, id ASC
@@ -658,6 +658,7 @@ class RunRepository:
             created_at=row["created_at"],
             started_at=row["started_at"],
             ended_at=row["ended_at"],
+            imported=_imported_metadata(_json_or_empty_object(row["run_plan_json"])),
         )
 
 
@@ -726,6 +727,9 @@ class ReportInputRepository:
                 lane["lane_key"]: lane["target_revision_id"] for lane in lanes
             },
         }
+        imported = _imported_metadata(run_plan)
+        if imported is not None:
+            provenance["imported"] = imported
         return ReportInput.from_payload(
             run_id=str(run["id"]),
             run_attempt_id=run_attempt_id,
@@ -1218,6 +1222,7 @@ class ArtifactRepository:
         ).fetchall()
         now = _utc_timestamp()
         run_root = self.database.settings.runs_dir / run_id
+        resolved_run_root = run_root.resolve()
         with self.database._lock:  # noqa: SLF100
             connection = self.database.connection
             connection.execute("BEGIN IMMEDIATE")
@@ -1234,13 +1239,19 @@ class ArtifactRepository:
                         if not file_path.is_file():
                             continue
                         try:
+                            relative_path = file_path.relative_to(run_root).as_posix()
+                        except ValueError:
+                            try:
+                                relative_path = file_path.relative_to(resolved_run_root).as_posix()
+                            except ValueError:
+                                continue
+                        try:
                             resolved_file = resolve_artifact_path(
                                 run_root,
-                                file_path.relative_to(run_root).as_posix(),
+                                relative_path,
                             )
-                        except (ArtifactPathError, ValueError):
+                        except ArtifactPathError:
                             continue
-                        relative_path = file_path.relative_to(run_root).as_posix()
                         payload = {
                             "run_id": run_id,
                             "relative_path": relative_path,
@@ -1311,6 +1322,20 @@ class BaselineRepository:
             )
 
         provenance = report["provenance"]
+        imported = provenance.get("imported")
+        if isinstance(imported, dict) and imported.get("provenance_missing"):
+            raise RunDomainError(
+                "BASELINE_PROMOTION_IMPORTED_PROVENANCE_MISSING",
+                "Imported runs with missing provenance cannot be promoted as strict baselines.",
+                status_code=409,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "provenance_missing": imported.get("provenance_missing"),
+                        "source_path": imported.get("source_path"),
+                    }
+                ],
+            )
         target_revision_ids = provenance.get("target_revision_ids") or {}
         selected_lane_key = lane_key or _default_baseline_lane_key(target_revision_ids)
         target_revision_id = target_revision_ids.get(selected_lane_key)
@@ -1538,6 +1563,11 @@ def _json_or_empty_array(value: Any) -> list[Any]:
         return []
     parsed = json.loads(value) if isinstance(value, str) else value
     return parsed if isinstance(parsed, list) else []
+
+
+def _imported_metadata(run_plan: dict[str, Any]) -> dict[str, Any] | None:
+    imported = run_plan.get("imported")
+    return imported if isinstance(imported, dict) else None
 
 
 def _build_report_payload(

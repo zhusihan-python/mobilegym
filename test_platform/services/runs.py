@@ -13,6 +13,8 @@ from typing import Any, Protocol
 from test_platform.config import PlatformSettings
 from test_platform.domain.canonical_json import canonical_json, canonical_sha256
 from test_platform.domain.ids import new_id
+from test_platform.domain.legacy_import import LegacyImportError, load_legacy_run
+from test_platform.domain.projects import ProjectNotFound
 from test_platform.domain.run_plans import RunPlan, RunPlanCompiler
 from test_platform.domain.runs import RunDomainError, RunIdempotencyConflict, RunDetail
 from test_platform.domain.retry_resume import (
@@ -25,6 +27,7 @@ from test_platform.execution.event_writer import EventWriter
 from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
 from test_platform.persistence.repositories import (
+    ProjectRepository,
     RunRepository,
     TargetRepository,
     WorkflowRepository,
@@ -735,6 +738,332 @@ class RunService:
             ) from exc
 
         self.supervisor.submit(run_id)
+        return RunRepository(self.database).get(run_id)
+
+    def import_legacy_run(
+        self,
+        *,
+        project_id: str,
+        source_path: str,
+        name: str | None = None,
+    ) -> RunDetail:
+        try:
+            ProjectRepository(self.database).get(project_id)
+        except ProjectNotFound as exc:
+            raise RunDomainError(
+                "PROJECT_NOT_FOUND",
+                "Project was not found.",
+                status_code=404,
+                details=[{"project_id": project_id}],
+            ) from exc
+        try:
+            legacy = load_legacy_run(source_path)
+        except LegacyImportError as exc:
+            raise RunDomainError(
+                "LEGACY_RUN_IMPORT_INVALID",
+                str(exc),
+                status_code=400,
+                details=[{"source_path": source_path}],
+            ) from exc
+
+        run_id = new_id()
+        workflow_id = new_id()
+        workflow_version_id = new_id()
+        target_id = new_id()
+        target_revision_id = new_id()
+        lane_id = new_id()
+        run_attempt_id = new_id()
+        lane_attempt_id = new_id()
+        now = _utc_timestamp()
+        created_at = legacy.started_at or now
+        ended_at = legacy.ended_at or now
+        source_path_resolved = str(legacy.source_root)
+        imported_metadata = {
+            "source_path": source_path_resolved,
+            "source_name": legacy.source_name,
+            "provenance_missing": legacy.provenance_missing,
+        }
+        plan: dict[str, Any] = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "workflow_version_id": workflow_version_id,
+            "task_source": {
+                "repository_revision": None,
+                "registry_digest": "unknown",
+                "selection": {
+                    "task_ids": sorted({episode.task_id for episode in legacy.episodes}),
+                    "sample_n": len(legacy.episodes),
+                    "seed": legacy.meta.get("sample_seed"),
+                },
+            },
+            "lanes": [
+                {
+                    "lane_id": lane_id,
+                    "lane_key": "legacy",
+                    "role": "candidate",
+                    "target_id": target_id,
+                    "target_revision_id": target_revision_id,
+                    "target_revision_hash": "sha256:unknown",
+                    "runner_config": {
+                        "agent": legacy.meta.get("agent") or "legacy",
+                        "model_name": legacy.meta.get("model_name") or "legacy",
+                        "imported": True,
+                    },
+                }
+            ],
+            "episodes": [
+                {
+                    "episode_key": episode.episode_key,
+                    "materialization_key": episode.materialization_key,
+                    "pair_key": episode.pair_key,
+                    "task_base_id": episode.task_base_id,
+                    "task_id": episode.task_id,
+                    "instance_id": episode.instance_id,
+                    "instance_seed": episode.instance_seed,
+                    "template_index": episode.template_index,
+                    "trial_id": episode.trial_id,
+                    "max_steps": episode.max_steps,
+                }
+                for episode in legacy.episodes
+            ],
+            "materialization": {},
+            "comparison": {},
+            "agent": {},
+            "judge": {},
+            "artifacts": {"source": "legacy"},
+            "imported": imported_metadata,
+            "created_at": created_at,
+        }
+        fingerprint = canonical_sha256(plan)
+        plan["fingerprint"] = fingerprint
+        run_root = self.settings.runs_dir / run_id
+        if run_root.exists() or run_root.is_symlink():
+            raise RunDomainError(
+                "LEGACY_RUN_IMPORT_CONFLICT",
+                "The generated run artifact root already exists.",
+                status_code=500,
+                details=[{"run_id": run_id}],
+            )
+
+        connection = self.database.connection
+        with self.database._lock:  # noqa: SLF100
+            connection.execute("BEGIN IMMEDIATE")
+            symlink_created = False
+            try:
+                target_metadata = {
+                    "schema_version": 1,
+                    "imported": True,
+                    "source_path": source_path_resolved,
+                    "provenance_status": "unknown",
+                }
+                target_metadata_hash = canonical_sha256(target_metadata)
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                      id, project_id, name, draft_definition_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        workflow_id,
+                        project_id,
+                        f"Imported legacy runs / {legacy.source_name}",
+                        created_at,
+                        created_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflow_versions (
+                      id, workflow_id, version_no, status, definition_json,
+                      definition_hash, created_at, published_at
+                    )
+                    VALUES (?, ?, 1, 'imported', ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_version_id,
+                        workflow_id,
+                        canonical_json({"imported": imported_metadata}),
+                        canonical_sha256({"imported": imported_metadata}),
+                        created_at,
+                        created_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO targets (
+                      id, project_id, name, kind, enabled, config_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 'imported', 0, ?, ?, ?)
+                    """,
+                    (
+                        target_id,
+                        project_id,
+                        f"Imported legacy target / {run_id}",
+                        canonical_json({"kind": "imported", "source_path": source_path_resolved}),
+                        created_at,
+                        created_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO target_revisions (
+                      id, target_id, metadata_json, metadata_hash, health_status,
+                      warnings_json, resolved_at
+                    )
+                    VALUES (?, ?, ?, ?, 'unknown', ?, ?)
+                    """,
+                    (
+                        target_revision_id,
+                        target_id,
+                        canonical_json(target_metadata),
+                        target_metadata_hash,
+                        canonical_json(["Imported legacy run has no target revision provenance."]),
+                        created_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runs (
+                      id, project_id, workflow_version_id, name, state,
+                      run_plan_json, run_plan_hash, artifact_root,
+                      next_event_sequence, cancel_requested_at,
+                      created_at, updated_at, started_at, ended_at
+                    )
+                    VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, 2, NULL, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        project_id,
+                        workflow_version_id,
+                        name or f"Imported {legacy.source_name}",
+                        canonical_json(plan),
+                        fingerprint,
+                        source_path_resolved,
+                        created_at,
+                        now,
+                        legacy.started_at or created_at,
+                        ended_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO run_attempts (
+                      id, run_id, attempt_no, reason, state,
+                      started_at, ended_at, created_at
+                    )
+                    VALUES (?, ?, 1, 'imported', 'completed', ?, ?, ?)
+                    """,
+                    (run_attempt_id, run_id, legacy.started_at or created_at, ended_at, created_at),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO lanes (
+                      id, run_id, lane_key, role, target_id, target_revision_id,
+                      runner_config_json, reproducibility_fingerprint, created_at
+                    )
+                    VALUES (?, ?, 'legacy', 'candidate', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lane_id,
+                        run_id,
+                        target_id,
+                        target_revision_id,
+                        canonical_json(plan["lanes"][0]["runner_config"]),
+                        canonical_sha256(plan["lanes"][0]),
+                        created_at,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO lane_attempts (
+                      id, lane_id, run_attempt_id, state, artifact_root,
+                      created_at, started_at, ended_at
+                    )
+                    VALUES (?, ?, ?, 'completed', '.', ?, ?, ?)
+                    """,
+                    (
+                        lane_attempt_id,
+                        lane_id,
+                        run_attempt_id,
+                        created_at,
+                        legacy.started_at or created_at,
+                        ended_at,
+                    ),
+                )
+                for episode in legacy.episodes:
+                    episode_id = new_id()
+                    connection.execute(
+                        """
+                        INSERT INTO episodes (
+                          id, run_id, episode_key, materialization_key, pair_key,
+                          task_base_id, task_id, instance_id, instance_seed,
+                          template_index, trial_id, max_steps, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            episode_id,
+                            run_id,
+                            episode.episode_key,
+                            episode.materialization_key,
+                            episode.pair_key,
+                            episode.task_base_id,
+                            episode.task_id,
+                            episode.instance_id,
+                            episode.instance_seed,
+                            episode.template_index,
+                            episode.trial_id,
+                            episode.max_steps,
+                            created_at,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO episode_attempts (
+                          id, episode_id, lane_attempt_id, attempt_no, state,
+                          outcome, error_code, result_json, artifact_root,
+                          started_at, ended_at, created_at
+                        )
+                        VALUES (?, ?, ?, 1, 'completed', ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id(),
+                            episode_id,
+                            lane_attempt_id,
+                            episode.outcome,
+                            episode.error_code,
+                            canonical_json(episode.result),
+                            episode.artifact_root,
+                            legacy.started_at or created_at,
+                            ended_at,
+                            created_at,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO events (
+                      id, run_id, sequence, type, entity_type, entity_id,
+                      occurred_at, payload_json
+                    )
+                    VALUES (?, ?, 1, 'run.imported', 'run', ?, ?, ?)
+                    """,
+                    (
+                        new_id(),
+                        run_id,
+                        run_id,
+                        created_at,
+                        canonical_json(imported_metadata),
+                    ),
+                )
+                run_root.symlink_to(legacy.source_root, target_is_directory=True)
+                symlink_created = True
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                if symlink_created or run_root.is_symlink():
+                    run_root.unlink(missing_ok=True)
+                raise
         return RunRepository(self.database).get(run_id)
 
     def retry_run(self, run_id: str) -> dict[str, Any]:

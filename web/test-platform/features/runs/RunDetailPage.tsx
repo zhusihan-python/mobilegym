@@ -364,6 +364,20 @@ export function RunDetailPage() {
         </dl>
       </section>
 
+      {run.imported ? (
+        <section className="tp-alert">
+          <h2>Imported legacy run</h2>
+          <p>
+            Source path: <span className="tp-mono">{run.imported.source_path}</span>
+          </p>
+          <p>
+            Missing provenance: {run.imported.provenance_missing.length > 0
+              ? run.imported.provenance_missing.join(', ')
+              : 'none'}
+          </p>
+        </section>
+      ) : null}
+
       <ReportPanel run={run} report={report} />
       <DiagnosticsPanel run={run} diagnostics={diagnostics} />
 
@@ -903,7 +917,8 @@ function downloadText(content: string, filename: string, type: string) {
 }
 
 function runExplorerHref(runId: string, artifactRoot: string) {
-  const runPath = `${runId}/${artifactRoot}`.replace(/\\/g, '/');
+  const normalizedRoot = artifactRoot === '.' ? '' : artifactRoot;
+  const runPath = `${runId}/${normalizedRoot}`.replace(/\\/g, '/').replace(/\/$/, '');
   return `/run_explorer.html?run=${encodeURIComponent(runPath)}`;
 }
 

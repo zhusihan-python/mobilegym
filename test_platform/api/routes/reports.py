@@ -38,12 +38,18 @@ def export_run_report(
 
     if format == "json":
         return Response(
-            export_report_json(report),
+            export_report_json(
+                report,
+                secret_values=_configured_secret_values(request.app.state.settings),
+            ),
             media_type="application/json",
         )
     if format == "html":
         return Response(
-            export_report_html(report),
+            export_report_html(
+                report,
+                secret_values=_configured_secret_values(request.app.state.settings),
+            ),
             media_type="text/html",
         )
     raise ApiError(
@@ -76,3 +82,15 @@ def _run_error(error: RunDomainError) -> ApiError:
         status_code=error.status_code,
         details=error.details,
     )
+
+
+def _configured_secret_values(settings) -> list[str]:
+    auth_token = getattr(settings, "auth_token", None)
+    if auth_token is None:
+        return []
+    get_secret_value = getattr(auth_token, "get_secret_value", None)
+    if callable(get_secret_value):
+        value = get_secret_value()
+        return [value] if value else []
+    value = str(auth_token)
+    return [value] if value else []

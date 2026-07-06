@@ -26,6 +26,12 @@ class CreateRunRequest(BaseModel):
     overrides: RunOverrides = Field(default_factory=RunOverrides)
 
 
+class ImportRunRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    name: str | None = Field(default=None, max_length=100)
+
+
 @router.post("/runs", status_code=201)
 def create_run(
     request: Request,
@@ -42,6 +48,23 @@ def create_run(
             name=body.name,
             seed=body.overrides.seed,
             idempotency_key=idempotency_key,
+        )
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+    return asdict(run)
+
+
+@router.post("/runs/import", status_code=201)
+def import_run(request: Request, body: ImportRunRequest) -> dict[str, object]:
+    try:
+        run = RunService(
+            get_database(request),
+            request.app.state.settings,
+            supervisor=request.app.state.supervisor,
+        ).import_legacy_run(
+            project_id=body.project_id,
+            source_path=body.source_path,
+            name=body.name,
         )
     except RunDomainError as exc:
         raise _run_error(exc) from exc

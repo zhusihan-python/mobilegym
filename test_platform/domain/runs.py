@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -54,6 +54,7 @@ class RunSummary:
     created_at: str
     started_at: str | None
     ended_at: str | None
+    imported: dict[str, Any] | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

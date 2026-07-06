@@ -110,6 +110,21 @@ export function createRun(input: {
   });
 }
 
+export function importLegacyRun(input: {
+  projectId: string;
+  sourcePath: string;
+  name?: string;
+}): Promise<RunDetail> {
+  return apiFetch<RunDetail>('/runs/import', {
+    method: 'POST',
+    body: JSON.stringify({
+      project_id: input.projectId,
+      source_path: input.sourcePath,
+      name: input.name ?? null,
+    }),
+  });
+}
+
 export function getRun(runId: string): Promise<RunDetail> {
   return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
 }

@@ -6,13 +6,22 @@ from typing import Any
 from test_platform.domain.canonical_json import canonical_json
 
 
-def export_report_json(report: dict[str, Any]) -> str:
-    return canonical_json(report)
+def export_report_json(
+    report: dict[str, Any],
+    *,
+    secret_values: list[str] | None = None,
+) -> str:
+    return canonical_json(_redact_secrets(report, secret_values or []))
 
 
-def export_report_html(report: dict[str, Any]) -> str:
-    provenance = report.get("provenance") if isinstance(report, dict) else {}
-    gate = report.get("gate") if isinstance(report, dict) else {}
+def export_report_html(
+    report: dict[str, Any],
+    *,
+    secret_values: list[str] | None = None,
+) -> str:
+    redacted = _redact_secrets(report, secret_values or [])
+    provenance = redacted.get("provenance") if isinstance(redacted, dict) else {}
+    gate = redacted.get("gate") if isinstance(redacted, dict) else {}
     verdict = gate.get("verdict") if isinstance(gate, dict) else None
     return "\n".join(
         [
@@ -32,8 +41,26 @@ def export_report_html(report: dict[str, Any]) -> str:
             "<h2>Provenance</h2>",
             f"<pre>{escape(canonical_json(provenance if isinstance(provenance, dict) else {}))}</pre>",
             "<h2>Report JSON</h2>",
-            f"<pre>{escape(canonical_json(report))}</pre>",
+            f"<pre>{escape(canonical_json(redacted))}</pre>",
             "</body>",
             "</html>",
         ]
     )
+
+
+def _redact_secrets(value: Any, secret_values: list[str]) -> Any:
+    secrets = [secret for secret in secret_values if secret]
+    if not secrets:
+        return value
+    if isinstance(value, dict):
+        return {key: _redact_secrets(child, secrets) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_secrets(child, secrets) for child in value]
+    if isinstance(value, tuple):
+        return [_redact_secrets(child, secrets) for child in value]
+    if isinstance(value, str):
+        redacted = value
+        for secret in secrets:
+            redacted = redacted.replace(secret, "[REDACTED_SECRET]")
+        return redacted
+    return value

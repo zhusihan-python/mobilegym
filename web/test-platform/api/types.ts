@@ -61,6 +61,11 @@ export type RunSummary = {
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
+  imported?: {
+    source_path: string;
+    source_name: string;
+    provenance_missing: string[];
+  } | null;
 };
 
 export type RunDetail = RunSummary & {
@@ -221,6 +226,7 @@ export type RunReport = {
     run_plan_hash: string;
     task_source_digest: string;
     target_revision_ids: Record<string, string>;
+    imported?: RunSummary['imported'];
   };
   functional: {
     summary: Record<string, number>;

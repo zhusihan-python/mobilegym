@@ -306,6 +306,72 @@ function fileSystemPlugin() {
  * Vite plugin to serve runs directory for run_explorer.html
  * Provides /api/runs endpoints to list and read run data
  */
+export function isRunsExplorerRunDir(dir: string) {
+  return fs.existsSync(path.join(dir, 'meta.json'))
+    || fs.existsSync(path.join(dir, 'results.jsonl'))
+    || fs.existsSync(path.join(dir, 'trajectory'));
+}
+
+export function discoverRunsExplorerRuns(runsDir: string): string[] {
+  if (!fs.existsSync(runsDir)) return [];
+  const root = path.resolve(runsDir);
+  const runs: string[] = [];
+
+  function walk(dir: string, rel: string, depth: number) {
+    if (depth > 8) return;
+    if (rel && isRunsExplorerRunDir(dir)) {
+      runs.push(rel);
+      return;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const child = path.join(dir, entry.name);
+      if (!_isRunsExplorerContained(root, child)) continue;
+      walk(child, rel ? `${rel}/${entry.name}` : entry.name, depth + 1);
+    }
+  }
+
+  walk(root, '', 0);
+  return runs.sort((a, b) => b.localeCompare(a));
+}
+
+export function resolveRunsExplorerRunRequest(
+  runsDir: string,
+  pathParts: string[],
+): { runName: string; runDir: string; runDepth: number; subPath: string } | null {
+  if (pathParts.length === 0 || pathParts.some(part => part === '..' || path.isAbsolute(part))) {
+    return null;
+  }
+  const root = path.resolve(runsDir);
+  for (let depth = pathParts.length; depth >= 1; depth -= 1) {
+    const candidate = path.join(root, ...pathParts.slice(0, depth));
+    if (!_isRunsExplorerContained(root, candidate)) continue;
+    if (!fs.existsSync(candidate)) continue;
+    const stat = fs.statSync(candidate);
+    if (!stat.isDirectory() || !isRunsExplorerRunDir(candidate)) continue;
+    return {
+      runName: pathParts.slice(0, depth).join('/'),
+      runDir: candidate,
+      runDepth: depth,
+      subPath: pathParts.slice(depth).join('/'),
+    };
+  }
+  return null;
+}
+
+function _isRunsExplorerContained(root: string, candidate: string) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  return resolvedCandidate === resolvedRoot
+    || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
 function runsExplorerPlugin() {
   const RUNS_DIR = path.resolve(__dirname, 'runs');
   
@@ -317,48 +383,12 @@ function runsExplorerPlugin() {
       server.middlewares.use('/api/runs', (req, res, next) => {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const pathParts = url.pathname.split('/').filter(Boolean);
-        
-        const isRunDir = (dir: string) => {
-          return fs.existsSync(path.join(dir, 'meta.json'))
-            || fs.existsSync(path.join(dir, 'results.jsonl'))
-            || fs.existsSync(path.join(dir, 'trajectory'));
-        };
-        const isDirEntry = (e: fs.Dirent) => e.isDirectory() || e.isSymbolicLink();
 
         // /api/runs - list runs (supports nested dirs like agent/timestamp)
         if (pathParts.length === 0) {
           try {
-            if (!fs.existsSync(RUNS_DIR)) {
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ runs: [] }));
-              return;
-            }
-
-
-
-            const runs: string[] = [];
-            const topEntries = fs.readdirSync(RUNS_DIR, { withFileTypes: true });
-            for (const e of topEntries) {
-              if (!isDirEntry(e)) continue;
-              const topDir = path.join(RUNS_DIR, e.name);
-              if (isRunDir(topDir)) {
-                // Flat: runs/<run_name>/meta.json
-                runs.push(e.name);
-              } else {
-                // Nested: runs/<agent>/<timestamp>/meta.json
-                const subEntries = fs.readdirSync(topDir, { withFileTypes: true });
-                for (const sub of subEntries) {
-                  if (!isDirEntry(sub)) continue;
-                  if (isRunDir(path.join(topDir, sub.name))) {
-                    runs.push(`${e.name}/${sub.name}`);
-                  }
-                }
-              }
-            }
-            runs.sort((a, b) => b.localeCompare(a));
-            
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ runs }));
+            res.end(JSON.stringify({ runs: discoverRunsExplorerRuns(RUNS_DIR) }));
           } catch (err: any) {
             res.statusCode = 500;
             res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -370,26 +400,13 @@ function runsExplorerPlugin() {
         // runName can be 1-part (flat) or 2-part (nested: agent/timestamp)
 
         
-        let runDepth = 1; // how many pathParts make up the runName
-        let runDir = path.join(RUNS_DIR, pathParts[0]);
-        
-        // Try nested: pathParts[0]/pathParts[1]
-        if (pathParts.length >= 2 && !isRunDir(runDir)) {
-          const nested = path.join(RUNS_DIR, pathParts[0], pathParts[1]);
-          if (fs.existsSync(nested) && fs.statSync(nested).isDirectory()) {
-            runDir = nested;
-            runDepth = 2;
-          }
-        }
-        
-        const runName = pathParts.slice(0, runDepth).join('/');
-        
-        // Security: prevent path traversal
-        if (!runDir.startsWith(RUNS_DIR) || runName.includes('..')) {
+        const resolved = resolveRunsExplorerRunRequest(RUNS_DIR, pathParts);
+        if (resolved === null) {
           res.statusCode = 403;
           res.end(JSON.stringify({ error: 'Forbidden' }));
           return;
         }
+        const { runDir } = resolved;
         
         if (!fs.existsSync(runDir)) {
           res.statusCode = 404;
@@ -397,7 +414,7 @@ function runsExplorerPlugin() {
           return;
         }
         
-        const subPath = pathParts.slice(runDepth).join('/');
+        const subPath = resolved.subPath;
         
         // /api/runs/:runName - list run contents (special endpoint)
         if (!subPath) {
@@ -439,7 +456,7 @@ function runsExplorerPlugin() {
         const subParts = subPath.split('/');
         if (subParts[0] === 'trajectory' && subParts.length === 2) {
           const taskDir = path.join(runDir, subPath);
-          if (!taskDir.startsWith(runDir)) {
+          if (!_isRunsExplorerContained(runDir, taskDir)) {
             res.statusCode = 403;
             res.end(JSON.stringify({ error: 'Forbidden' }));
             return;
@@ -466,7 +483,7 @@ function runsExplorerPlugin() {
         const filePath = path.join(runDir, subPath);
         
         // Security: prevent path traversal
-        if (!filePath.startsWith(runDir)) {
+        if (!_isRunsExplorerContained(runDir, filePath)) {
           res.statusCode = 403;
           res.end(JSON.stringify({ error: 'Forbidden' }));
           return;
