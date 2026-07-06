@@ -65,9 +65,17 @@ class PathDiff:
     path: str
     baseline: Any
     candidate: Any
+    baseline_absent: bool = False
+    candidate_absent: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"path": self.path, "baseline": self.baseline, "candidate": self.candidate}
+        return {
+            "path": self.path,
+            "baseline": self.baseline,
+            "candidate": self.candidate,
+            "baseline_absent": self.baseline_absent,
+            "candidate_absent": self.candidate_absent,
+        }
 
 
 @dataclass(frozen=True)
@@ -152,6 +160,7 @@ def compare_paired_states(
     policy: str,
     baseline_apps: list[dict[str, Any]],
     candidate_apps: list[dict[str, Any]],
+    task_app_ids: set[str] | None = None,
 ) -> IntegrityReport:
     """Compare two lane states under *policy* and return an IntegrityReport.
 
@@ -179,8 +188,10 @@ def compare_paired_states(
     raw_diffs = _diff_projected(baseline_projected, candidate_projected)
     # Apply version-direction-aware tolerance (Contract 5).
     candidate_higher_by_app = _candidate_higher_by_app(baseline_apps, candidate_apps)
-    task_app_ids = {str(app.get("id")) for app in baseline_apps if isinstance(app, dict)}
-    task_app_ids |= {str(app.get("id")) for app in candidate_apps if isinstance(app, dict)}
+    if task_app_ids is None:
+        # Fallback: use all metadata apps (P2.2: over-scopes to non-task apps).
+        task_app_ids = {str(app.get("id")) for app in baseline_apps if isinstance(app, dict)}
+        task_app_ids |= {str(app.get("id")) for app in candidate_apps if isinstance(app, dict)}
 
     real_diffs: list[PathDiff] = []
     for diff in raw_diffs:
@@ -232,6 +243,8 @@ def _diff_projected(
                     path=path,
                     baseline=None if b is _ABSENT else b,
                     candidate=None if c is _ABSENT else c,
+                    baseline_absent=b is _ABSENT,
+                    candidate_absent=c is _ABSENT,
                 )
             )
             continue
@@ -285,13 +298,15 @@ def _is_tolerated_addition(
     is allowed because the candidate's versionCode is strictly higher
     (Contract 5).
 
-    A "candidate-only path" is one where the baseline value is None (absent) and
-    the candidate value is present. The path must be under a task app
+    A "candidate-only path" is one where the baseline KEY is absent
+    (``baseline_absent=True``) and the candidate key is present. A real ``None``
+    value on the baseline side is NOT absent — it's a value change and must NOT
+    be tolerated as an addition. The path must be under a task app
     (``apps.<app_id>.``). Removals (baseline-only) are NEVER tolerated.
     """
-    if diff.baseline is not None:
-        return False  # value change or removal — not a tolerated addition
-    if diff.candidate is None:
+    if not diff.baseline_absent:
+        return False  # value change (including None→value) or removal — not tolerated
+    if diff.candidate_absent:
         return False  # both absent — shouldn't happen
     # The path must be under apps.<app_id>...
     for app_id in task_app_ids:

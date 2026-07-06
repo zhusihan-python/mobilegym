@@ -209,6 +209,20 @@ async def test_paired_parallel_sibling_failure_cancels_other_lane(tmp_path):
         assert baseline_env.closed is True
         # The candidate (crashing) env was also closed (its finally block ran).
         assert crashing_env.closed is True
+
+        # P1 fix: sibling failure → lane_attempts and run_attempts finalized as
+        # 'failed' (NOT 'cancelled'). The supervisor will mark runs as 'failed'.
+        lane_rows = database.connection.execute(
+            "SELECT state FROM lane_attempts "
+            "JOIN lanes ON lanes.id = lane_attempts.lane_id "
+            "WHERE lanes.run_id = ?",
+            (run.id,),
+        ).fetchall()
+        for row in lane_rows:
+            assert row["state"] == "failed", (
+                f"lane_attempt state={row['state']} (expected 'failed' for sibling failure, "
+                "not 'cancelled')"
+            )
     finally:
         database.close()
 

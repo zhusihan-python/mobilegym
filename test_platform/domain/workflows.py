@@ -200,6 +200,8 @@ class WorkflowValidator:
                 issues.extend(_validate_task_selection(node, node_index, catalog, catalog_by_id))
             if node.type == "matrix":
                 issues.extend(_validate_matrix_targets(node, node_index, targets))
+            if node.type == "compare":
+                issues.extend(_validate_compare_config(node, node_index))
 
         return WorkflowValidationResult(valid=not issues, issues=issues)
 
@@ -340,6 +342,64 @@ def _validate_matrix_targets(
                     node_id=node.id,
                 )
             )
+
+    return issues
+
+
+_VALID_TARGET_CONSTRAINTS = {"same_app", "same_device", "same_data"}
+_VALID_INITIAL_STATE_POLICIES = {"strict_snapshot", "task_projection"}
+_VALID_EXECUTION_MODES = {"serial", "parallel"}
+
+
+def _validate_compare_config(node: WorkflowNode, node_index: int) -> list[WorkflowIssue]:
+    """Validate the compare node's three-axis config (Contract 1, publish schema).
+
+    This is STRUCTURAL validation only (valid values for known keys). It does
+    NOT resolve target revisions — that happens at compile-preview (advisory)
+    and create-run (authoritative gate).
+    """
+    issues: list[WorkflowIssue] = []
+    config = node.config or {}
+
+    # target_constraints: must be a list of known values.
+    tc = config.get("target_constraints")
+    if tc is not None:
+        if not isinstance(tc, list):
+            issues.append(WorkflowIssue(
+                code="WORKFLOW_COMPARE_INVALID_CONFIG",
+                message="compare.target_constraints must be a list.",
+                pointer=f"/nodes/{node_index}/config/target_constraints",
+                node_id=node.id,
+            ))
+        else:
+            for i, c in enumerate(tc):
+                if c not in _VALID_TARGET_CONSTRAINTS:
+                    issues.append(WorkflowIssue(
+                        code="WORKFLOW_COMPARE_INVALID_CONFIG",
+                        message=f"Unknown target_constraint '{c}'. Valid: {sorted(_VALID_TARGET_CONSTRAINTS)}.",
+                        pointer=f"/nodes/{node_index}/config/target_constraints/{i}",
+                        node_id=node.id,
+                    ))
+
+    # initial_state_policy: must be a known value.
+    isp = config.get("initial_state_policy")
+    if isp is not None and isp not in _VALID_INITIAL_STATE_POLICIES:
+        issues.append(WorkflowIssue(
+            code="WORKFLOW_COMPARE_INVALID_CONFIG",
+            message=f"Unknown initial_state_policy '{isp}'. Valid: {sorted(_VALID_INITIAL_STATE_POLICIES)}.",
+            pointer=f"/nodes/{node_index}/config/initial_state_policy",
+            node_id=node.id,
+        ))
+
+    # execution: must be a known value.
+    exec_mode = config.get("execution")
+    if exec_mode is not None and exec_mode not in _VALID_EXECUTION_MODES:
+        issues.append(WorkflowIssue(
+            code="WORKFLOW_COMPARE_INVALID_CONFIG",
+            message=f"Unknown execution '{exec_mode}'. Valid: {sorted(_VALID_EXECUTION_MODES)}.",
+            pointer=f"/nodes/{node_index}/config/execution",
+            node_id=node.id,
+        ))
 
     return issues
 

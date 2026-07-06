@@ -310,3 +310,33 @@ def test_os_providers_contacts_volatile_path_ignored():
     )
 
     assert not report.is_violation
+
+
+def test_none_value_in_baseline_not_treated_as_absent():
+    """P1 fix: a real ``None`` value in baseline must NOT be treated as an absent
+    key (which would be misjudged as a candidate-only addition). ``None → value``
+    is a VALUE CHANGE, not an addition, and must NOT be tolerated even if
+    candidate versionCode is higher."""
+    baseline_state = {"apps": {"fake": {"choice": None}}}
+    candidate_state = {"apps": {"fake": {"choice": "tampered"}}}
+    baseline_apps = [{"id": "fake", "versionCode": 1}]
+    candidate_apps = [{"id": "fake", "versionCode": 2}]  # higher
+
+    report = compare_paired_states(
+        baseline_state=baseline_state,
+        candidate_state=candidate_state,
+        policy=INITIAL_STATE_POLICY_TASK_PROJECTION,
+        baseline_apps=baseline_apps,
+        candidate_apps=candidate_apps,
+        task_app_ids={"fake"},
+    )
+    # Must be a mismatch — None→"tampered" is NOT a tolerated addition.
+    assert report.is_violation, (
+        "None→value change was misjudged as tolerated candidate-only addition"
+    )
+    # The diff should be a value change, not an addition.
+    assert len(report.path_diffs) == 1
+    diff = report.path_diffs[0]
+    assert not diff.baseline_absent, "real None value mis-flagged as absent"
+    assert diff.baseline is None  # the actual value
+    assert diff.candidate == "tampered"

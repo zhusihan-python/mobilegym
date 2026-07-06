@@ -1798,6 +1798,10 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                         "actual_projection_hash": actual_projection_hash,
                         "prepared": prepared,
                         "trial_id": episode.trial_id,
+                        # P2.2: carry the task's declared apps so pair integrity
+                        # only tolerates additions under these apps (not all
+                        # target metadata apps).
+                        "task_app_ids": set(getattr(task, "apps", []) or []),
                     }
                 )
         except RunCancelled:
@@ -2793,7 +2797,11 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         except RunCancelled:
             token.cancel()
 
-        cancelled = token.cancelled or sibling_exception is not None
+        cancelled = token.cancelled
+        # P1 fix: sibling failure is NOT cancellation. It's an execution failure.
+        # Lanes/run finalize to "failed", not "cancelled". The supervisor's
+        # _mark_run_failed handles the terminal run.failed event.
+        sibling_failed = sibling_exception is not None
 
         # Resolve lane attempts / episodes if materialization failed mid-way.
         if baseline_attempt is None or candidate_attempt is None:
@@ -2804,6 +2812,8 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         episodes = episodes or self._load_plan(run_id).episodes
 
         # (5) Ingest per lane (reuse the serial paired helper).
+        # On sibling failure, completed outcomes keep their real outcome (per-episode
+        # cancel logic in _ingest_lane_outcomes handles CANCELLED stop_reason only).
         baseline_ingested = self._ingest_lane_outcomes(
             ingestor=ingestor,
             run_id=run_id,
@@ -2824,7 +2834,12 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         )
 
         # (6) Per-lane finalize_lane_only.
-        terminal_lane_state = "cancelled" if cancelled else "completed"
+        if sibling_failed:
+            terminal_lane_state = "failed"
+        elif cancelled:
+            terminal_lane_state = "cancelled"
+        else:
+            terminal_lane_state = "completed"
         ingestor.finalize_lane_only(
             lane_attempt_id=baseline_attempt["id"],
             terminal_state=terminal_lane_state,
@@ -2835,7 +2850,7 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         )
 
         # (7) Pair join + classification + comparison (path-level integrity).
-        if not cancelled:
+        if not cancelled and not sibling_failed:
             self._record_comparison(
                 run_id=run_id,
                 run_attempt_id=self._run_attempt_id(run_id),
@@ -2857,8 +2872,9 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         )
 
         if sibling_exception is not None:
-            ingestor.mark_run_cancelled(run_id)
-            # Re-raise so the supervisor emits run.failed.
+            # P1 fix: sibling failure → raise the exception. The supervisor's
+            # _mark_run_failed handles runs/run_attempts/lane_attempts → 'failed'.
+            # Do NOT call mark_run_cancelled — that would conflict with failed.
             raise sibling_exception
         if cancelled:
             ingestor.mark_run_cancelled(run_id)
@@ -2920,12 +2936,17 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             # again (idempotent on already-flat dicts: no nested structure).
             b_raw = (b_out or {}).get("raw_state")
             c_raw = (c_out or {}).get("raw_state")
+            # P2.2: pass task_app_ids from the outcome so version-direction
+            # tolerance only applies to the task's declared apps, not all
+            # target metadata apps.
+            pair_task_app_ids = (b_out or {}).get("task_app_ids") or (c_out or {}).get("task_app_ids")
             report = compare_paired_states(
                 baseline_state=b_raw,
                 candidate_state=c_raw,
                 policy=policy,
                 baseline_apps=baseline_apps,
                 candidate_apps=candidate_apps,
+                task_app_ids=pair_task_app_ids,
             )
 
             integrity = IntegrityStatus.OK
