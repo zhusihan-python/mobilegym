@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
@@ -2437,6 +2438,549 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 canonical_json(summary_counts),
                 comparison_id,
             ),
+        )
+        self.database.connection.commit()
+
+
+class PairedParallelRunExecutor(PairedSerialRunExecutor):
+    """Execute a 2-lane (baseline + candidate) run CONCURRENTLY and compare pairs.
+
+    VS-10 mirrors PairedSerialRunExecutor's per-lane lifecycle (Contracts 5/7/9
+    from VS-09 carry over) but runs the two lanes via ``asyncio.gather`` instead
+    of serial awaits. Differences from the serial paired executor:
+
+    - **concurrent lanes** (Contract C): baseline + candidate run as two
+      ``asyncio`` tasks gathered with ``return_exceptions=True``;
+    - **sibling failure cancel/drain** (Contract 8): if one lane throws a
+      non-cancel exception, ``token.cancel()`` is called so the other lane's
+      ``Controller.run`` returns a CANCELLED result; the other lane is then
+      awaited to completion and its env closed — no leaked env, no duplicate
+      terminal events;
+    - **worker lifecycle emitted manually** (Contract 9): since ``_run_lane``
+      calls ``Controller.run`` directly (no ``ParallelRunner``), the executor
+      emits ``worker.started``/``worker.stopped`` around each lane's episode
+      loop using the lane-scoped sink;
+    - **path-level pair integrity** (Contract 4): the executor captures each
+      lane's projected state dict (BEFORE discard) and computes a path-level
+      diff via ``compare_paired_states`` (version-direction-aware, Contract 5).
+
+    Single-lane guards (Contract 11): this executor does NOT modify
+    ``SerialRunExecutor``/``PairedSerialRunExecutor``/``_single_lane``. The
+    supervisor routes 2-lane runs whose compare node ``execution == "parallel"``
+    here; serial paired runs keep using ``PairedSerialRunExecutor``.
+    """
+
+    async def _run_lane_parallel(
+        self,
+        *,
+        run_id: str,
+        lane: PlannedLane,
+        lane_attempt: dict[str, str],
+        prepared_by_key: dict[str, PreparedTaskInstance],
+        episodes: list,
+        token: CancellationToken,
+        event_sink: EventSink,
+        agent: Any,
+    ) -> list[dict[str, Any]]:
+        """Run ONE lane's episodes, capturing the projected state dict (Contract 4).
+
+        Mirrors ``PairedSerialRunExecutor._run_lane`` but additionally records
+        ``actual_projected_state`` on each outcome so ``_record_comparison`` can
+        compute the path-level diff. Emits worker.started/stopped around the
+        episode loop (Contract 9).
+        """
+        env = self.env_factory(lane)
+        config = _runner_config(lane)
+        lane_root = self.settings.runs_dir / run_id / lane_attempt["artifact_root"]
+        recorder = RunRecorder(
+            self.settings.runs_dir,
+            save_trajectory=not bool(config.no_save_trajectory),
+            coord_space=config.coord_space,
+            screenshot_scale=config.screenshot_scale,
+            fixed_run_dir=lane_root,
+        )
+        recorder.start_run(
+            agent=getattr(agent, "name", config.agent),
+            model_name=config.model_name,
+            extra_meta={"platform_run_id": run_id, "lane_key": lane.lane_key},
+            repeat_n=len(episodes),
+        )
+        eval_mode = str(lane.runner_config.get("eval_mode", "grounded"))
+        outcomes: list[dict[str, Any]] = []
+
+        # Contract 9: emit worker.started for this lane.
+        try:
+            event_sink.emit(ExecutionEvent(
+                type="worker.started",
+                timestamp="",
+                phase="execute",
+                worker_id=lane.lane_key,
+                payload={"lane_key": lane.lane_key, "role": lane.role},
+            ))
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            for episode in episodes:
+                token.raise_if_cancelled()
+                prepared = prepared_by_key[episode.materialization_key]
+                task = self.task_factory.instantiate(episode, params=prepared.params)
+                actual_projection_hash: str | None = None
+                actual_projected_state: dict[str, Any] | None = None
+                integrity_status = IntegrityStatus.OK
+                integrity_reason: str | None = None
+                ran_controller = False
+                _tore_down = [False]
+                result: Any = None
+                try:
+                    initial_obs, _params = await Controller.setup(
+                        env, task, eval_mode=eval_mode
+                    )
+                    if str(task.description) != prepared.instruction:
+                        integrity_status = IntegrityStatus.INSTRUCTION_MISMATCH
+                        integrity_reason = "instruction_mismatch"
+                    state = await env.get_state(required_apps=None)
+                    # Contract 4: capture the raw state (for the path-level diff)
+                    # BEFORE discard. The per-lane projection-hash check uses
+                    # projection_hash_v1 (matching the materializer's
+                    # PairedMaterializer._projection_hash) so the prepared/actual
+                    # hashes compare on the same ignore set. For the strict
+                    # snapshot policy the materializer hash differs from the
+                    # strict profile — but the prepared fixture was hashed with
+                    # projection_hash_v1, so we always compare on that basis.
+                    raw_state = state
+                    actual_projected_state = None  # computed lazily in compare
+                    actual_projection_hash = projection_hash_v1(state)
+                    if actual_projection_hash != prepared.projection_hash:
+                        integrity_status = IntegrityStatus.PROJECTION_MISMATCH
+                        integrity_reason = "projection_mismatch"
+
+                    if integrity_status == IntegrityStatus.OK:
+                        ran_controller = True
+                        exec_result, iobs, fobs, ep_record, _task = await Controller.run(
+                            env,
+                            agent,
+                            task,
+                            initial_obs,
+                            max_steps=episode.max_steps,
+                            recorder=recorder,
+                            trial_id=episode.trial_id,
+                            eval_mode=eval_mode,
+                            cancellation_token=token,
+                            event_sink=event_sink,
+                            worker_id=lane.lane_key,
+                            episode_key=episode.episode_key,
+                        )
+                        result = await self._assemble_episode_result(
+                            task=task,
+                            exec_result=exec_result,
+                            initial_obs=iobs,
+                            final_obs=fobs,
+                            episode_record=ep_record,
+                            recorder=recorder,
+                            trial_id=episode.trial_id,
+                            max_steps=episode.max_steps,
+                            episode_key=episode.episode_key,
+                            eval_mode=eval_mode,
+                            worker_id=lane.lane_key,
+                            event_sink=event_sink,
+                        )
+                        reset_history = getattr(agent, "reset_history", None)
+                        if callable(reset_history):
+                            reset_history()
+                    else:
+                        result = self._pairing_violation_result(task, episode)
+                except RunCancelled:
+                    token.cancel()
+                    if not ran_controller and not _tore_down[0]:
+                        await _maybe_await(task.teardown(env))
+                        _tore_down[0] = True
+                    raise
+                finally:
+                    if not ran_controller and not _tore_down[0]:
+                        await _maybe_await(task.teardown(env))
+                        _tore_down[0] = True
+
+                outcomes.append(
+                    {
+                        "episode_key": episode.episode_key,
+                        "pair_key": episode.pair_key,
+                        "materialization_key": episode.materialization_key,
+                        "result": result,
+                        "integrity_status": integrity_status,
+                        "integrity_reason": integrity_reason,
+                        "actual_projection_hash": actual_projection_hash,
+                        "actual_projected_state": actual_projected_state,
+                        "raw_state": raw_state,
+                        "prepared": prepared,
+                        "trial_id": episode.trial_id,
+                    }
+                )
+        except RunCancelled:
+            # Partial outcomes preserved (mirrors the serial paired executor).
+            pass
+        finally:
+            recorder.finish_run()
+            close = getattr(env, "close", None)
+            if callable(close):
+                await _maybe_await(close())
+            # Contract 9: emit worker.stopped for this lane.
+            try:
+                event_sink.emit(ExecutionEvent(
+                    type="worker.stopped",
+                    timestamp="",
+                    phase="execute",
+                    worker_id=lane.lane_key,
+                    payload={"lane_key": lane.lane_key},
+                ))
+            except Exception:  # noqa: BLE001
+                pass
+        return outcomes
+
+    def _initial_state_policy(self, run_id: str) -> str:
+        """Read the compare node's initial_state_policy from the run plan."""
+        from test_platform.domain.pair_integrity import (
+            DEFAULT_INITIAL_STATE_POLICY,
+        )
+
+        plan = self._load_plan(run_id)
+        return str(plan.comparison.get("initial_state_policy") or DEFAULT_INITIAL_STATE_POLICY)
+
+    def _lane_apps(self, lane: PlannedLane) -> list[dict[str, Any]]:
+        """Read the apps list from the lane's frozen TargetRevision.metadata."""
+        row = self.database.connection.execute(
+            "SELECT metadata_json FROM target_revisions WHERE id = ?",
+            (lane.target_revision_id,),
+        ).fetchone()
+        if row is None:
+            return []
+        metadata = json.loads(row["metadata_json"])
+        apps = metadata.get("apps")
+        return apps if isinstance(apps, list) else []
+
+    async def execute_run(
+        self,
+        run_id: str,
+        *,
+        token: CancellationToken | None = None,
+        events: EventSink | None = None,
+        run_event_writer: Any = None,
+    ) -> RunDetail:
+        """Run both lanes concurrently (gather) with sibling-failure drain."""
+        token = token or CancellationToken()
+        events = events or NullEventSink()
+        writer = run_event_writer
+
+        # (1) Honor a cancel that landed while queued.
+        if self._cancel_requested(run_id):
+            token.cancel()
+            raise RunCancelled()
+
+        # (2) Mark running + emit run.started.
+        self._mark_run_running(run_id)
+        if writer is not None:
+            try:
+                writer.emit(
+                    run_id, "run.started", {"state": "running"},
+                    entity_type="run", entity_id=run_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # (3) Materialize the single shared prepared task.
+        if self.env_factory is None or self.agent_factory is None:
+            raise RunDomainError(
+                "EXECUTOR_FACTORY_MISSING",
+                "Paired parallel execution requires environment and agent factories.",
+                status_code=500,
+            )
+
+        ingestor = ResultIngestor(self.database)
+        baseline_outcomes: list[dict[str, Any]] = []
+        candidate_outcomes: list[dict[str, Any]] = []
+        baseline_attempt: dict[str, str] | None = None
+        candidate_attempt: dict[str, str] | None = None
+        baseline_sink: Any = NullEventSink()
+        candidate_sink: Any = NullEventSink()
+        sibling_exception: BaseException | None = None
+        episodes: list = []
+        try:
+            prepared = await PairedMaterializer(
+                self.database,
+                self.settings,
+                task_factory=self.task_factory,
+                env_factory=self.env_factory,
+            ).materialize_run(run_id, token=token, events=events)
+            if not prepared:
+                raise RunDomainError(
+                    "UNSUPPORTED_RUN_PLAN",
+                    "Paired execution requires at least one prepared task.",
+                    status_code=409,
+                )
+            prepared_by_key = {item.materialization_key: item for item in prepared}
+
+            plan = self._load_plan(run_id)
+            baseline_lane, candidate_lane = self._paired_lanes(run_id)
+            lane_attempts = self._lane_attempts_by_key(run_id)
+            baseline_attempt = lane_attempts[baseline_lane.lane_key]
+            candidate_attempt = lane_attempts[candidate_lane.lane_key]
+
+            episode_key_resolver = self._make_episode_key_resolver(run_id)
+            baseline_sink = self._build_lane_sink(
+                writer, run_id, baseline_lane, baseline_attempt, episode_key_resolver
+            )
+            candidate_sink = self._build_lane_sink(
+                writer, run_id, candidate_lane, candidate_attempt, episode_key_resolver
+            )
+            episodes = plan.episodes
+            baseline_agent = self.agent_factory(baseline_lane)
+            candidate_agent = self.agent_factory(candidate_lane)
+
+            # (4) Run BOTH lanes concurrently (Contract C). Wrap each lane so a
+            # non-cancel exception cancels the token IMMEDIATELY (Contract 8),
+            # letting the sibling lane observe the cancel via Controller.run's
+            # per-step token check and drain cleanly. gather(return_exceptions=True)
+            # then awaits both to completion.
+            async def _lane_with_cancel(coro):
+                try:
+                    return await coro
+                except RunCancelled:
+                    raise
+                except BaseException as exc:  # noqa: BLE001
+                    # Sibling failure: cancel the token so the OTHER lane drains.
+                    token.cancel()
+                    raise
+
+            baseline_task_coro = _lane_with_cancel(
+                self._run_lane_parallel(
+                    run_id=run_id,
+                    lane=baseline_lane,
+                    lane_attempt=baseline_attempt,
+                    prepared_by_key=prepared_by_key,
+                    episodes=episodes,
+                    token=token,
+                    event_sink=baseline_sink,
+                    agent=baseline_agent,
+                )
+            )
+            candidate_task_coro = _lane_with_cancel(
+                self._run_lane_parallel(
+                    run_id=run_id,
+                    lane=candidate_lane,
+                    lane_attempt=candidate_attempt,
+                    prepared_by_key=prepared_by_key,
+                    episodes=episodes,
+                    token=token,
+                    event_sink=candidate_sink,
+                    agent=candidate_agent,
+                )
+            )
+            results = await asyncio.gather(
+                baseline_task_coro, candidate_task_coro, return_exceptions=True
+            )
+            # Contract 8: surface the sibling exception (after both lanes
+            # drained). The other lane was cancelled via the token and its env
+            # closed in its finally block.
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(result, RunCancelled):
+                    sibling_exception = result
+                    token.cancel()
+                    break
+            if not isinstance(results[0], BaseException):
+                baseline_outcomes = results[0]
+            if not isinstance(results[1], BaseException):
+                candidate_outcomes = results[1]
+        except RunCancelled:
+            token.cancel()
+
+        cancelled = token.cancelled or sibling_exception is not None
+
+        # Resolve lane attempts / episodes if materialization failed mid-way.
+        if baseline_attempt is None or candidate_attempt is None:
+            lane_attempts = self._lane_attempts_by_key(run_id)
+            bl, cl = self._paired_lanes(run_id)
+            baseline_attempt = lane_attempts[bl.lane_key]
+            candidate_attempt = lane_attempts[cl.lane_key]
+        episodes = episodes or self._load_plan(run_id).episodes
+
+        # (5) Ingest per lane (reuse the serial paired helper).
+        baseline_ingested = self._ingest_lane_outcomes(
+            ingestor=ingestor,
+            run_id=run_id,
+            lane_attempt=baseline_attempt,
+            outcomes=baseline_outcomes,
+            event_sink=baseline_sink,
+            cancelled=cancelled,
+            expected_episodes=episodes,
+        )
+        candidate_ingested = self._ingest_lane_outcomes(
+            ingestor=ingestor,
+            run_id=run_id,
+            lane_attempt=candidate_attempt,
+            outcomes=candidate_outcomes,
+            event_sink=candidate_sink,
+            cancelled=cancelled,
+            expected_episodes=episodes,
+        )
+
+        # (6) Per-lane finalize_lane_only.
+        terminal_lane_state = "cancelled" if cancelled else "completed"
+        ingestor.finalize_lane_only(
+            lane_attempt_id=baseline_attempt["id"],
+            terminal_state=terminal_lane_state,
+        )
+        ingestor.finalize_lane_only(
+            lane_attempt_id=candidate_attempt["id"],
+            terminal_state=terminal_lane_state,
+        )
+
+        # (7) Pair join + classification + comparison (path-level integrity).
+        if not cancelled:
+            self._record_comparison(
+                run_id=run_id,
+                run_attempt_id=self._run_attempt_id(run_id),
+                baseline_lane=baseline_lane,
+                candidate_lane=candidate_lane,
+                baseline_lane_id=baseline_attempt["lane_id"],
+                candidate_lane_id=candidate_attempt["lane_id"],
+                baseline_ingested=baseline_ingested,
+                candidate_ingested=candidate_ingested,
+                baseline_outcomes=baseline_outcomes,
+                candidate_outcomes=candidate_outcomes,
+            )
+
+        # (8) finalize_run once after the comparison.
+        ingestor.finalize_run(
+            run_id=run_id,
+            terminal_state=terminal_lane_state,
+            cancelled=cancelled,
+        )
+
+        if sibling_exception is not None:
+            ingestor.mark_run_cancelled(run_id)
+            # Re-raise so the supervisor emits run.failed.
+            raise sibling_exception
+        if cancelled:
+            ingestor.mark_run_cancelled(run_id)
+            raise RunCancelled()
+        return RunRepository(self.database).get(run_id)
+
+    def _record_comparison(
+        self,
+        *,
+        run_id: str,
+        run_attempt_id: str,
+        baseline_lane: PlannedLane,
+        candidate_lane: PlannedLane,
+        baseline_lane_id: str,
+        candidate_lane_id: str,
+        baseline_ingested: dict[str, dict[str, Any]],
+        candidate_ingested: dict[str, dict[str, Any]],
+        baseline_outcomes: list[dict[str, Any]],
+        candidate_outcomes: list[dict[str, Any]],
+    ) -> None:
+        """Join pairs by pair_key, classify, and persist the comparison with
+        PATH-LEVEL integrity (Contract 4). Overrides the serial paired executor
+        to compute the path-level diff via compare_paired_states."""
+        from test_platform.domain.pair_integrity import (
+            compare_paired_states,
+        )
+        from test_platform.persistence.repositories import ComparisonRepository
+
+        baseline_by_pair = {o["pair_key"]: o for o in baseline_outcomes}
+        candidate_by_pair = {o["pair_key"]: o for o in candidate_outcomes}
+        pair_keys = sorted(set(baseline_by_pair) | set(candidate_by_pair))
+
+        repo = ComparisonRepository(self.database)
+        comparison_id = repo.record_comparison(
+            run_id=run_id,
+            run_attempt_id=run_attempt_id,
+            baseline_lane_id=baseline_lane_id,
+            candidate_lane_id=candidate_lane_id,
+            policy=self._load_plan(run_id).comparison,
+        )
+
+        policy = self._initial_state_policy(run_id)
+        baseline_apps = self._lane_apps(baseline_lane)
+        candidate_apps = self._lane_apps(candidate_lane)
+
+        summary_counts: dict[str, int] = {}
+        for pair_key in pair_keys:
+            b_out = baseline_by_pair.get(pair_key)
+            c_out = candidate_by_pair.get(pair_key)
+            b_attempt = baseline_ingested.get(pair_key)
+            c_attempt = candidate_ingested.get(pair_key)
+
+            # Contract 4: path-level integrity via compare_paired_states.
+            # Reconstruct the raw states from the projected dicts is not
+            # possible; compare_paired_states re-projects internally, so pass
+            # the captured raw state is ideal. We captured projected dicts; to
+            # reuse compare_paired_states we feed the projected dicts back as
+            # "states" (they are already flat). compare_paired_states projects
+            # again (idempotent on already-flat dicts: no nested structure).
+            b_raw = (b_out or {}).get("raw_state")
+            c_raw = (c_out or {}).get("raw_state")
+            report = compare_paired_states(
+                baseline_state=b_raw,
+                candidate_state=c_raw,
+                policy=policy,
+                baseline_apps=baseline_apps,
+                candidate_apps=candidate_apps,
+            )
+
+            integrity = IntegrityStatus.OK
+            integrity_reason = "OK"
+            # Per-lane instruction/projection-hash mismatch (VS-09 semantics)
+            # takes precedence — a lane that didn't honor its prepared fixture is
+            # a pairing violation regardless of the path-level report.
+            if b_out is not None and b_out["integrity_status"].is_violation:
+                integrity = b_out["integrity_status"]
+                integrity_reason = b_out.get("integrity_reason") or integrity.value
+            elif c_out is not None and c_out["integrity_status"].is_violation:
+                integrity = c_out["integrity_status"]
+                integrity_reason = c_out.get("integrity_reason") or integrity.value
+            elif report.is_violation:
+                integrity = IntegrityStatus.PROJECTION_MISMATCH
+                integrity_reason = "projection_mismatch"
+
+            b_outcome = b_attempt["outcome"] if b_attempt else None
+            c_outcome = c_attempt["outcome"] if c_attempt else None
+            classification = classify_pair(b_outcome, c_outcome, integrity_status=integrity)
+
+            integrity_json = {
+                "status": integrity.value,
+                "reason": integrity_reason,
+                "prepared_projection_hash": (b_out or {}).get("prepared").projection_hash
+                if (b_out or {}).get("prepared")
+                else None,
+                "baseline_actual_projection_hash": (b_out or {}).get("actual_projection_hash"),
+                "candidate_actual_projection_hash": (c_out or {}).get("actual_projection_hash"),
+                "path_diffs": [d.to_dict() for d in report.path_diffs],
+            }
+            delta_json = {
+                "baseline_outcome": b_outcome,
+                "candidate_outcome": c_outcome,
+            }
+            repo.record_pair(
+                comparison_id=comparison_id,
+                pair_key=pair_key,
+                classification=classification.value,
+                baseline_episode_attempt_id=(
+                    b_attempt["id"] if b_attempt else None
+                ),
+                candidate_episode_attempt_id=(
+                    c_attempt["id"] if c_attempt else None
+                ),
+                integrity=integrity_json,
+                delta=delta_json,
+            )
+            summary_counts[classification.value] = (
+                summary_counts.get(classification.value, 0) + 1
+            )
+
+        self.database.connection.execute(
+            "UPDATE comparisons SET summary_json = ? WHERE id = ?",
+            (canonical_json(summary_counts), comparison_id),
         )
         self.database.connection.commit()
 

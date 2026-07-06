@@ -130,6 +130,13 @@ class WorkflowCompilePreview(BaseModel):
     lane_count: int
     total_episodes: int
     lane_keys: list[str]
+    # VS-10 Contract 3: advisory constraint violations for paired (2-lane)
+    # workflows. Populated by the compile-preview route after resolving the
+    # latest target revisions and evaluating the compare node's
+    # target_constraints. Empty list for single-lane workflows or when the
+    # constraints are satisfied. The preview is ALWAYS a 200 (advisory) — the
+    # authoritative gate is create-run.
+    violations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkflowValidator:

@@ -69,4 +69,7 @@ def test_compile_preview_counts_tasks_trials_lanes_and_total_episodes():
         "lane_count": 2,
         "total_episodes": 12,
         "lane_keys": ["baseline", "candidate"],
+        # VS-10: violations defaults to [] at the domain layer; the
+        # compile-preview ROUTE populates it after resolving revisions.
+        "violations": [],
     }
