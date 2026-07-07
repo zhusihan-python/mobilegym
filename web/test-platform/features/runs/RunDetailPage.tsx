@@ -16,6 +16,7 @@ import {
   streamRunEvents,
 } from '../../api/client';
 import type { ArtifactItem, Comparison, RunDetail, RunDiagnostics, RunReport } from '../../api/types';
+import { RunObservatory } from './RunObservatory';
 import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
 type DetailState =
@@ -274,7 +275,9 @@ export function RunDetailPage() {
             <p>{run.name ?? run.id}</p>
           </div>
           <div className="tp-run-actions">
-            <span className="tp-run-state">{run.state}</span>
+            <span className="tp-run-state" data-testid="tp-run-state">
+              {run.state}
+            </span>
             {ACTIVE_RUN_STATES.has(run.state) ? (
               <button
                 type="button"
@@ -378,6 +381,8 @@ export function RunDetailPage() {
         </section>
       ) : null}
 
+      <RunObservatory run={run} live={liveRef.current} />
+
       <ReportPanel run={run} report={report} />
       <DiagnosticsPanel run={run} diagnostics={diagnostics} />
 
@@ -469,7 +474,7 @@ export function RunDetailPage() {
       </section>
 
       {episodeAttempts.length > 0 ? (
-        <section className="tp-panel">
+        <section className="tp-panel" data-testid="tp-episode-attempts">
           <h2>Episode attempts</h2>
           <table>
             <thead>

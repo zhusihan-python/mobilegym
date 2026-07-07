@@ -229,7 +229,7 @@ describe('Test Platform immutable run planning', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Launch version 1' }));
 
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
-    expect(screen.getByText('queued')).toBeTruthy();
+    expect(screen.getByTestId('tp-run-state').textContent).toBe('queued');
     expect(screen.getByText('2 planned episodes')).toBeTruthy();
     expect(screen.getByText('revision-1')).toBeTruthy();
     expect(screen.getByText('sha256:run-plan-vs04')).toBeTruthy();

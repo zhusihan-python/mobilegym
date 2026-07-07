@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -142,9 +142,10 @@ describe('Test Platform serial run detail', () => {
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
     // The completed counter shows "completed / planned" (VS-07 parallel progress).
     expect(screen.getByTestId('tp-completed-episodes').textContent).toBe('3');
-    expect(screen.getByText('PASS')).toBeTruthy();
-    expect(screen.getByText('FAIL')).toBeTruthy();
-    expect(screen.getByText('ERROR')).toBeTruthy();
+    const episodeAttempts = within(screen.getByTestId('tp-episode-attempts'));
+    expect(episodeAttempts.getByText('PASS')).toBeTruthy();
+    expect(episodeAttempts.getByText('FAIL')).toBeTruthy();
+    expect(episodeAttempts.getByText('ERROR')).toBeTruthy();
 
     const explorerLink = screen.getByRole('link', { name: 'Open in Run Explorer' });
     expect(explorerLink.getAttribute('href')).toContain('/run_explorer.html');
