@@ -62,6 +62,7 @@ export function RunDetailPage() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsState>({ status: 'idle' });
   const [followupMessage, setFollowupMessage] = useState<string | null>(null);
   const [followupBusy, setFollowupBusy] = useState<'retry' | 'resume' | null>(null);
+  const [followupModelApiKey, setFollowupModelApiKey] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -218,6 +219,7 @@ export function RunDetailPage() {
 
   // Prefer the live-event-patched snapshot when available.
   const run = liveRef.current?.snapshot ?? state.run;
+  const followupRequiresModelApiKey = runRequiresModelApiKey(run);
   const runAttempts = run.run_attempts ?? [];
   const laneAttempts = run.lane_attempts ?? [];
   const episodeAttempts = run.episode_attempts ?? [];
@@ -254,14 +256,25 @@ export function RunDetailPage() {
   };
 
   const runFollowup = (kind: 'retry' | 'resume') => {
+    const modelApiKey = followupModelApiKey.trim();
+    if (followupRequiresModelApiKey && !modelApiKey) {
+      setFollowupMessage(
+        'Model API key is required for retry/resume because run secrets are not persisted.',
+      );
+      return;
+    }
     setFollowupBusy(kind);
     setFollowupMessage(null);
-    const request = kind === 'retry' ? retryRun(run.id) : resumeRun(run.id);
+    const followupInput = modelApiKey ? { execution: { modelApiKey } } : undefined;
+    const request = kind === 'retry'
+      ? retryRun(run.id, followupInput)
+      : resumeRun(run.id, followupInput);
     request
       .then((result) => {
         setFollowupMessage(
           `${kind === 'retry' ? 'Retry' : 'Resume'} queued attempt ${result.attempt_no} for ${result.selected_lane_episodes.length} lane episodes.`,
         );
+        setFollowupModelApiKey('');
         refreshRun();
       })
       .catch((error) => {
@@ -283,6 +296,18 @@ export function RunDetailPage() {
             <span className="tp-run-state" data-testid="tp-run-state">
               {run.state}
             </span>
+            {FOLLOWUP_RUN_STATES.has(run.state) && followupRequiresModelApiKey ? (
+              <label className="tp-followup-secret">
+                <span>Model API key</span>
+                <input
+                  type="password"
+                  value={followupModelApiKey}
+                  onChange={(event) => setFollowupModelApiKey(event.target.value)}
+                  placeholder="Required for Retry/Resume"
+                  autoComplete="off"
+                />
+              </label>
+            ) : null}
             {ACTIVE_RUN_STATES.has(run.state) ? (
               <button
                 type="button"
@@ -893,6 +918,19 @@ function formatRate(value: number | null | undefined) {
     return '—';
   }
   return `${Math.round(value * 1000) / 10}%`;
+}
+
+function runRequiresModelApiKey(run: RunDetail): boolean {
+  const lanes = Array.isArray(run.run_plan.lanes) ? run.run_plan.lanes : [];
+  return lanes.some((lane) => {
+    if (!lane || typeof lane !== 'object') return false;
+    const runnerConfig = (lane as { runner_config?: unknown }).runner_config;
+    return (
+      !!runnerConfig
+      && typeof runnerConfig === 'object'
+      && (runnerConfig as { model_api_key_configured?: unknown }).model_api_key_configured === true
+    );
+  });
 }
 
 function formatPercentValue(value: number | null | undefined) {

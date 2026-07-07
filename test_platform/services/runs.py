@@ -1122,7 +1122,12 @@ class RunService:
                 raise
         return RunRepository(self.database).get(run_id)
 
-    def retry_run(self, run_id: str) -> dict[str, Any]:
+    def retry_run(
+        self,
+        run_id: str,
+        *,
+        execution_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         run = RunRepository(self.database).get(run_id)
         if run.state not in {"completed", "failed", "cancelled"}:
             raise RunDomainError(
@@ -1132,6 +1137,7 @@ class RunService:
                 details=[{"run_id": run_id, "state": run.state}],
             )
 
+        self._register_followup_execution_secrets(run_id, execution_overrides)
         source_attempt = self._latest_terminal_run_attempt(run_id)
         planned = self._planned_lane_episodes(run_id)
         latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
@@ -1152,7 +1158,12 @@ class RunService:
         self.supervisor.submit(run_id)
         return result
 
-    def resume_run(self, run_id: str) -> dict[str, Any]:
+    def resume_run(
+        self,
+        run_id: str,
+        *,
+        execution_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         run = RunRepository(self.database).get(run_id)
         if run.state not in {"completed", "failed", "cancelled"}:
             raise RunDomainError(
@@ -1162,6 +1173,7 @@ class RunService:
                 details=[{"run_id": run_id, "state": run.state}],
             )
 
+        self._register_followup_execution_secrets(run_id, execution_overrides)
         self._assert_resume_compatible(run_id)
         source_attempt = self._latest_terminal_run_attempt(run_id)
         planned = self._planned_lane_episodes(run_id)
@@ -1374,6 +1386,42 @@ class RunService:
                     }
                 ],
             )
+
+    def _register_followup_execution_secrets(
+        self,
+        run_id: str,
+        execution_overrides: dict[str, Any] | None,
+    ) -> None:
+        secrets = _followup_execution_secrets_from_overrides(execution_overrides)
+        if secrets:
+            _RUN_SECRET_STORE.register(run_id, secrets)
+        if (
+            self._run_requires_model_api_key(run_id)
+            and not _RUN_SECRET_STORE.get(run_id).get("model_api_key")
+        ):
+            raise RunDomainError(
+                "RUN_EXECUTION_SECRET_MISSING",
+                "Retry or resume requires the model API key again because secrets are not persisted.",
+                status_code=400,
+                details=[{"field": "execution.model_api_key"}],
+            )
+
+    def _run_requires_model_api_key(self, run_id: str) -> bool:
+        rows = self.database.connection.execute(
+            "SELECT runner_config_json FROM lanes WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                runner_config = json.loads(row["runner_config_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(runner_config, dict)
+                and runner_config.get("model_api_key_configured") is True
+            ):
+                return True
+        return False
 
     def _find_idempotent_run(
         self,
@@ -1878,6 +1926,26 @@ def _execution_secrets_from_overrides(overrides: dict[str, Any]) -> dict[str, st
     if isinstance(model_api_key, str) and model_api_key.strip():
         secrets["model_api_key"] = model_api_key.strip()
     return secrets
+
+
+def _followup_execution_secrets_from_overrides(
+    overrides: dict[str, Any] | None,
+) -> dict[str, str]:
+    if not isinstance(overrides, dict):
+        return {}
+    unsupported = sorted(
+        key
+        for key, value in overrides.items()
+        if key != "model_api_key" and value not in (None, "")
+    )
+    if unsupported:
+        raise RunDomainError(
+            "RUN_FOLLOWUP_CONFIG_INVALID",
+            "Retry and resume can only re-inject model_api_key; frozen run configuration cannot change.",
+            status_code=400,
+            details=[{"field": f"execution.{key}"} for key in unsupported],
+        )
+    return _execution_secrets_from_overrides(overrides)
 
 
 def _definition_with_execution_overrides(

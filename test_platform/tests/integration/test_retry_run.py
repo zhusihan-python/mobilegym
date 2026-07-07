@@ -11,7 +11,12 @@ from test_platform.persistence.database import Database
 from test_platform.domain.runs import RunDomainError
 from test_platform.domain.task_catalog import TaskCatalogSnapshot
 from test_platform.services.execution import ParallelRunExecutor
-from test_platform.services.runs import FakeRunSupervisor, RunService
+from test_platform.services.runs import (
+    FakeRunSupervisor,
+    RunService,
+    _RUN_SECRET_STORE,
+    _runner_config_for_lane,
+)
 from test_platform.tests.integration.test_parallel_lane import (
     _CompletingAgent,
     _FakeEnvPool,
@@ -41,8 +46,13 @@ def _settings(tmp_path):
     )
 
 
-def _seed_retryable_single_lane_run(database) -> str:
+def _seed_retryable_single_lane_run(
+    database,
+    *,
+    runner_config: dict[str, object] | None = None,
+) -> str:
     connection = database.connection
+    runner_config = runner_config or {}
     plan = {
         "schema_version": 1,
         "run_id": "run-retry",
@@ -60,7 +70,7 @@ def _seed_retryable_single_lane_run(database) -> str:
                 "target_id": "target-c",
                 "target_revision_id": "trev-c",
                 "target_revision_hash": "sha256:target",
-                "runner_config": {},
+                "runner_config": runner_config,
             }
         ],
         "episodes": [
@@ -127,8 +137,8 @@ def _seed_retryable_single_lane_run(database) -> str:
         "INSERT INTO lanes "
         "(id, run_id, lane_key, role, target_id, target_revision_id, runner_config_json, "
         " reproducibility_fingerprint, created_at) "
-        "VALUES ('lane-c', 'run-retry', 'candidate', 'candidate', 'target-c', 'trev-c', '{}', 'sha256:lane', ?)",
-        (NOW,),
+        "VALUES ('lane-c', 'run-retry', 'candidate', 'candidate', 'target-c', 'trev-c', ?, 'sha256:lane', ?)",
+        (json.dumps(runner_config, sort_keys=True), NOW),
     )
     for index in range(3):
         connection.execute(
@@ -239,6 +249,101 @@ def test_retry_creates_new_attempt_selection_without_mutating_original_results(t
             ("ep1", "lane-c", "retry_failed"),
             ("ep2", "lane-c", "retry_error"),
         ]
+
+
+def test_retry_requires_model_api_key_when_configured_secret_is_missing(tmp_path):
+    app = create_app(_settings(tmp_path), supervisor=FakeRunSupervisor())
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_retryable_single_lane_run(
+            database,
+            runner_config={
+                "agent": "autoglm",
+                "model_name": "glm-5v-turbo",
+                "model_base_url": "https://open.bigmodel.cn/api/paas/v4",
+                "image_url_format": "bare_base64",
+                "model_api_key_configured": True,
+            },
+        )
+        _RUN_SECRET_STORE.discard(run_id)
+
+        response = client.post(f"/api/platform/v1/runs/{run_id}/retry")
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "RUN_EXECUTION_SECRET_MISSING"
+        assert error["details"] == [{"field": "execution.model_api_key"}]
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM run_attempts WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0] == 1
+
+
+def test_retry_accepts_model_api_key_without_persisting_secret(tmp_path):
+    app = create_app(_settings(tmp_path), supervisor=FakeRunSupervisor())
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_retryable_single_lane_run(
+            database,
+            runner_config={
+                "agent": "autoglm",
+                "model_name": "glm-5v-turbo",
+                "model_base_url": "https://open.bigmodel.cn/api/paas/v4",
+                "image_url_format": "bare_base64",
+                "model_api_key_configured": True,
+            },
+        )
+        _RUN_SECRET_STORE.discard(run_id)
+
+        response = client.post(
+            f"/api/platform/v1/runs/{run_id}/retry",
+            json={"execution": {"model_api_key": "sk-retry-secret"}},
+        )
+
+        assert response.status_code == 202
+        assert "sk-retry-secret" not in response.text
+        lane_config = json.loads(
+            database.connection.execute(
+                "SELECT runner_config_json FROM lanes WHERE id = 'lane-c'",
+            ).fetchone()["runner_config_json"]
+        )
+        assert "model_api_key" not in lane_config
+
+        lane = type(
+            "Lane",
+            (),
+            {
+                "run_id": run_id,
+                "runner_config": lane_config,
+            },
+        )()
+        config = _runner_config_for_lane(lane, client.app.state.settings)
+        assert config.model_api_key == "sk-retry-secret"
+        _RUN_SECRET_STORE.discard(run_id)
+
+
+def test_retry_rejects_followup_execution_config_mutation(tmp_path):
+    app = create_app(_settings(tmp_path), supervisor=FakeRunSupervisor())
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_retryable_single_lane_run(database)
+
+        response = client.post(
+            f"/api/platform/v1/runs/{run_id}/retry",
+            json={"execution": {"model_base_url": "https://other.example/v1"}},
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "RUN_FOLLOWUP_CONFIG_INVALID"
+        assert error["details"] == [{"field": "execution.model_base_url"}]
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM run_attempts WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0] == 1
 
 
 def test_resume_creates_new_attempt_for_missing_and_service_restarted_episodes(tmp_path):

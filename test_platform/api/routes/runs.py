@@ -33,6 +33,10 @@ class ImportRunRequest(BaseModel):
     name: str | None = Field(default=None, max_length=100)
 
 
+class FollowupRunRequest(BaseModel):
+    execution: dict[str, object] | None = None
+
+
 @router.post("/runs", status_code=201)
 def create_run(
     request: Request,
@@ -229,25 +233,33 @@ def cancel_run(
 
 
 @router.post("/runs/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
-def retry_run(request: Request, run_id: str) -> dict[str, object]:
+def retry_run(
+    request: Request,
+    run_id: str,
+    body: FollowupRunRequest | None = None,
+) -> dict[str, object]:
     try:
         return RunService(
             get_database(request),
             request.app.state.settings,
             supervisor=request.app.state.supervisor,
-        ).retry_run(run_id)
+        ).retry_run(run_id, execution_overrides=body.execution if body else None)
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 
 
 @router.post("/runs/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
-def resume_run(request: Request, run_id: str) -> dict[str, object]:
+def resume_run(
+    request: Request,
+    run_id: str,
+    body: FollowupRunRequest | None = None,
+) -> dict[str, object]:
     try:
         return RunService(
             get_database(request),
             request.app.state.settings,
             supervisor=request.app.state.supervisor,
-        ).resume_run(run_id)
+        ).resume_run(run_id, execution_overrides=body.execution if body else None)
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 

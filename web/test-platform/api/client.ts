@@ -226,15 +226,37 @@ export function cancelRun(runId: string, idempotencyKey?: string): Promise<Cance
   });
 }
 
-export function retryRun(runId: string): Promise<FollowupRunAttempt> {
-  return apiFetch<FollowupRunAttempt>(`/runs/${encodeURIComponent(runId)}/retry`, {
-    method: 'POST',
+type FollowupRunInput = {
+  execution?: {
+    modelApiKey?: string;
+  };
+};
+
+function followupRunBody(input?: FollowupRunInput): BodyInit | undefined {
+  const modelApiKey = input?.execution?.modelApiKey?.trim();
+  if (!modelApiKey) {
+    return undefined;
+  }
+  return JSON.stringify({
+    execution: {
+      model_api_key: modelApiKey,
+    },
   });
 }
 
-export function resumeRun(runId: string): Promise<FollowupRunAttempt> {
+export function retryRun(runId: string, input?: FollowupRunInput): Promise<FollowupRunAttempt> {
+  const body = followupRunBody(input);
+  return apiFetch<FollowupRunAttempt>(`/runs/${encodeURIComponent(runId)}/retry`, {
+    method: 'POST',
+    body,
+  });
+}
+
+export function resumeRun(runId: string, input?: FollowupRunInput): Promise<FollowupRunAttempt> {
+  const body = followupRunBody(input);
   return apiFetch<FollowupRunAttempt>(`/runs/${encodeURIComponent(runId)}/resume`, {
     method: 'POST',
+    body,
   });
 }
 

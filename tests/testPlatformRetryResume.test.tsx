@@ -94,6 +94,24 @@ const run: RunDetail = {
   ended_at: '2026-07-06T00:01:02.000Z',
 };
 
+const runWithOnlineModelKey: RunDetail = {
+  ...run,
+  run_plan: {
+    lanes: [
+      {
+        lane_key: 'candidate',
+        runner_config: {
+          agent: 'autoglm',
+          model_name: 'glm-5v-turbo',
+          model_base_url: 'https://open.bigmodel.cn/api/paas/v4',
+          image_url_format: 'bare_base64',
+          model_api_key_configured: true,
+        },
+      },
+    ],
+  },
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -186,5 +204,65 @@ describe('Test Platform retry/resume controls', () => {
     expect(message.textContent).toContain('RUN_RESUME_INCOMPATIBLE_REVISION');
     expect(message.textContent).toContain('revision-1');
     expect(message.textContent).toContain('revision-2');
+  });
+
+  it('requires a follow-up model API key and sends it only in the retry body', async () => {
+    let retryBody: unknown = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'ok' },
+            migrations: { ready: true, message: 'ok' },
+            runs_dir: { ready: true, message: 'ok' },
+          },
+        });
+      }
+      if (path === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}`) {
+        return jsonResponse(runWithOnlineModelKey);
+      }
+      if (path === `/api/platform/v1/runs/${run.id}/retry`) {
+        retryBody = JSON.parse(String(init?.body ?? '{}'));
+        return jsonResponse({
+          run_id: run.id,
+          run_attempt_id: 'attempt-3',
+          attempt_no: 3,
+          reason: 'retry',
+          selected_lane_episodes: [
+            { episode_key: 'fake.Task::1', lane_key: 'candidate', reason: 'retry_error' },
+          ],
+        }, 202);
+      }
+      return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found', details: [] } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByLabelText('Model API key')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry run' }));
+    expect((await screen.findByTestId('tp-followup-message')).textContent).toContain(
+      'Model API key is required',
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([input]) => requestPath(input as RequestInfo | URL) === `/api/platform/v1/runs/${run.id}/retry`,
+      ),
+    ).toBe(false);
+
+    fireEvent.change(screen.getByLabelText('Model API key'), {
+      target: { value: 'sk-retry-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry run' }));
+
+    await waitFor(() => {
+      expect(retryBody).toEqual({ execution: { model_api_key: 'sk-retry-secret' } });
+    });
+    expect(JSON.stringify(retryBody)).not.toContain('model_base_url');
   });
 });
