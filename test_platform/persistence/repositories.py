@@ -1435,6 +1435,18 @@ class ReplayRepository:
         # ``attempt_no`` may be ``"latest"`` or a numeric string. We always
         # order by attempt_no desc so the latest terminal attempt wins when
         # ``"latest"`` is requested.
+        #
+        # P2 fix: when lane_key is omitted on a multi-lane (paired) run, default
+        # to "candidate" rather than mixing baseline/candidate attempts. This
+        # prevents the default replay from landing on an arbitrary lane or
+        # jumping lanes after a retry on the other side.
+        if lane_key is None:
+            lane_count = self.database.connection.execute(
+                "SELECT COUNT(*) AS n FROM lanes WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if int(lane_count["n"]) > 1:
+                lane_key = "candidate"  # safe default for paired runs
         rows = self.database.connection.execute(
             """
             SELECT ea.id, ea.attempt_no, ea.state, ea.outcome, ea.error_code,

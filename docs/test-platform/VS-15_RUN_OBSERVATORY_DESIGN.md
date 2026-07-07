@@ -153,10 +153,6 @@ type EpisodeReplay = {
   error_code: string | null;
   result: Record<string, unknown> | null;
   steps: EpisodeReplayStep[];
-  artifacts: {
-    trajectory_artifact_id: string | null;
-    root_artifact_ids: string[];
-  };
 };
 
 type EpisodeReplayStep = {

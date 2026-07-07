@@ -373,3 +373,84 @@ def test_replay_path_traversal_is_impossible(tmp_path):
             f"/api/platform/v1/runs/{run_id}/episodes/..%2F..%2Fetc%2Fpasswd/replay"
         )
         assert bad_episode_response.status_code == 404
+
+
+def test_replay_paired_run_defaults_to_candidate_lane(tmp_path):
+    """P2: when lane_key is omitted on a paired run (2+ lanes), the default
+    must be 'candidate' — not an arbitrary mix of baseline/candidate attempts."""
+    settings = _settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        database: Database = client.app.state.database
+        run_id = _seed_replay_run(database)
+        _write_trajectory(settings, run_id)  # candidate lane trajectory
+
+        # Add a second lane (baseline) with its own episode_attempt for the
+        # same episode_key, so this becomes a "paired" run.
+        import sqlite3 as _sql
+        with database._lock:  # noqa: SLF100
+            conn = database.connection
+            # Add a baseline lane
+            conn.execute(
+                "INSERT INTO lanes (id, run_id, lane_key, role, target_id, "
+                "target_revision_id, runner_config_json, reproducibility_fingerprint, created_at) "
+                "VALUES ('lane_bl', ?, 'baseline', 'baseline', "
+                "(SELECT target_id FROM lanes WHERE run_id=? LIMIT 1), "
+                "(SELECT target_revision_id FROM lanes WHERE run_id=? LIMIT 1), "
+                "'{}', 'fp_bl', ?)",
+                (run_id, run_id, run_id, NOW),
+            )
+            # Add a lane_attempt for the baseline lane
+            ra_id = conn.execute(
+                "INSERT INTO run_attempts (id, run_id, attempt_no, reason, state, created_at) "
+                "VALUES ('ra2', ?, 2, 'retry', 'completed', ?)",
+                (run_id, NOW),
+            )
+            conn.execute(
+                "INSERT INTO lane_attempts (id, lane_id, run_attempt_id, state, artifact_root, created_at) "
+                "VALUES ('la_bl', 'lane_bl', 'ra2', 'completed', 'lanes/baseline', ?)",
+                (NOW,),
+            )
+            # Get the episode id
+            ep_row = conn.execute(
+                "SELECT id FROM episodes WHERE run_id = ? AND episode_key = ?",
+                (run_id, "alipay.CheckBalance::0"),
+            ).fetchone()
+            if ep_row:
+                conn.execute(
+                    "INSERT INTO episode_attempts "
+                    "(id, episode_id, lane_attempt_id, attempt_no, state, outcome, "
+                    "error_code, result_json, artifact_root, started_at, ended_at, created_at) "
+                    "VALUES ('ea_bl', ?, 'la_bl', 1, 'completed', 'PASS', NULL, "
+                    "'{\"is_success\": true}', 'lanes/baseline/trajectory/alipay_CheckBalance', "
+                    "?, ?, ?)",
+                    (str(ep_row["id"]), NOW, NOW, NOW),
+                )
+            conn.commit()
+
+        # Write trajectory for baseline lane too
+        baseline_traj_dir = settings.runs_dir / run_id / "lanes/baseline/trajectory/alipay_CheckBalance"
+        baseline_traj_dir.mkdir(parents=True, exist_ok=True)
+        (baseline_traj_dir / "trajectory.json").write_text(
+            json.dumps([{"step": 1, "action_type": "COMPLETE", "action_data": {},
+                         "thought": "", "explain": "", "summary": "",
+                         "route": {}, "screenshot": None, "screenshot_annotated": None,
+                         "model_response_path": None, "model_prompt_path": None}])
+        )
+
+        # Without lane_key → should default to candidate, NOT baseline
+        response = client.get(
+            f"/api/platform/v1/runs/{run_id}/episodes/alipay.CheckBalance::0/replay"
+        )
+        assert response.status_code == 200
+        replay = response.json()
+        assert replay["lane_key"] == "candidate", (
+            f"paired run default lane should be 'candidate', got '{replay['lane_key']}'"
+        )
+
+        # Explicit baseline works
+        response_bl = client.get(
+            f"/api/platform/v1/runs/{run_id}/episodes/alipay.CheckBalance::0/replay?lane_key=baseline"
+        )
+        assert response_bl.status_code == 200
+        assert response_bl.json()["lane_key"] == "baseline"
