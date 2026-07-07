@@ -18,6 +18,7 @@ const AGENT_OPTIONS = [
 const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
 const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
 const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
+const IMAGE_URL_FORMAT_STORAGE_KEY = 'test-platform.launch.image-url-format';
 
 type RunsState =
   | { status: 'loading' }
@@ -48,6 +49,9 @@ export function RunsPage() {
     () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
   );
   const [modelApiKey, setModelApiKey] = useState('');
+  const [imageUrlFormat, setImageUrlFormat] = useState(
+    () => window.localStorage.getItem(IMAGE_URL_FORMAT_STORAGE_KEY) ?? 'data_url',
+  );
   const [launchState, setLaunchState] = useState<
     { status: 'idle' } | { status: 'submitting' } | { status: 'error'; message: string }
   >({ status: 'idle' });
@@ -170,10 +174,12 @@ export function RunsPage() {
     const trimmedModelBaseUrl = modelBaseUrl.trim();
     const trimmedModelName = modelName.trim();
     const trimmedModelApiKey = modelApiKey.trim();
+    const trimmedImageUrlFormat = imageUrlFormat.trim() || 'data_url';
     if (!selectedVersionId || !trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
     window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
     window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
     window.localStorage.setItem(MODEL_NAME_STORAGE_KEY, trimmedModelName);
+    window.localStorage.setItem(IMAGE_URL_FORMAT_STORAGE_KEY, trimmedImageUrlFormat);
     setLaunchState({ status: 'submitting' });
     createRun({
       workflowVersionId: selectedVersionId,
@@ -185,6 +191,7 @@ export function RunsPage() {
         modelBaseUrl: trimmedModelBaseUrl,
         modelName: trimmedModelName,
         modelApiKey: trimmedModelApiKey || undefined,
+        imageUrlFormat: trimmedImageUrlFormat,
       },
     })
       .then((run) => navigate(`/runs/${run.id}`))
@@ -258,6 +265,13 @@ export function RunsPage() {
                 placeholder="Optional for local models"
                 autoComplete="off"
               />
+            </label>
+            <label>
+              <span>Image URL format</span>
+              <select value={imageUrlFormat} onChange={(event) => setImageUrlFormat(event.target.value)}>
+                <option value="data_url">OpenAI data URL</option>
+                <option value="bare_base64">BigModel bare base64</option>
+              </select>
             </label>
             <button
               type="submit"

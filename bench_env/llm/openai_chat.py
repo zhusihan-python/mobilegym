@@ -10,6 +10,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from copy import deepcopy
 from typing import Any, Optional
 
 import openai
@@ -51,6 +52,7 @@ class LLMClient:
         api_key: Optional[str] = None,
         model: str,
         default_args: Optional[dict[str, Any]] = None,
+        image_url_format: str = "data_url",
         timeout_s: float = 600.0,
         total_timeout_s: float = 300.0,
     ):
@@ -62,6 +64,10 @@ class LLMClient:
             api_key: API key (can be empty for local endpoints)
             model: Model name
             default_args: Default generation arguments
+            image_url_format: Base64 image transport format:
+                "data_url" keeps OpenAI-style data URLs;
+                "bare_base64" strips data:image/...;base64, prefixes for
+                providers such as BigModel GLM-5V-Turbo.
             timeout_s: Per-chunk read timeout in seconds (httpx level)
             total_timeout_s: Absolute wall-clock timeout per chat() call.
                 Prevents a single request from blocking a worker indefinitely
@@ -72,6 +78,7 @@ class LLMClient:
         self.api_key = api_key or ""
         self.model = model
         self.default_args = dict(default_args or {})
+        self.image_url_format = _normalize_image_url_format(image_url_format)
         self.timeout_s = float(timeout_s)
         self.total_timeout_s = float(total_timeout_s)
         try:
@@ -108,6 +115,7 @@ class LLMClient:
         payload_args = dict(self.default_args)
         if args:
             payload_args.update(args)
+        request_messages = _format_image_url_messages(messages, self.image_url_format)
 
         from bench_env.env.stopwatch import current_stopwatch
         start = time.time()
@@ -121,7 +129,7 @@ class LLMClient:
             create_t0 = time.monotonic()
             completion_stream = self._client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=request_messages,
                 stream=True,
                 **payload_args,
             )
@@ -184,7 +192,7 @@ class LLMClient:
                 )
                 completion = self._client.chat.completions.create(
                     model=self.model,
-                    messages=messages,
+                    messages=request_messages,
                     **payload_args,
                 )
                 # Handle different response formats
@@ -217,7 +225,7 @@ class LLMClient:
                 req_start = time.time()
                 completion = self._client.chat.completions.create(
                     model=self.model,
-                    messages=messages,
+                    messages=request_messages,
                     **payload_args,
                 )
                 break
@@ -250,6 +258,55 @@ class LLMClient:
             content = _merge_reasoning_into_content(content, reasoning)
             reasoning = None
         return ChatResult(content=content, reasoning=reasoning, latency_s=latency, raw=raw)
+
+
+_IMAGE_DATA_URL_RE = re.compile(r"^data:[^;,]+;base64,(.*)$", re.DOTALL)
+
+
+def _normalize_image_url_format(image_url_format: str) -> str:
+    normalized = str(image_url_format or "data_url").strip().lower()
+    if normalized not in {"data_url", "bare_base64"}:
+        raise ValueError(
+            "image_url_format must be 'data_url' or 'bare_base64'; "
+            f"got {image_url_format!r}"
+        )
+    return normalized
+
+
+def _format_image_url_messages(
+    messages: list[dict[str, Any]],
+    image_url_format: str,
+) -> list[dict[str, Any]]:
+    """Return messages with image_url URLs adapted for provider quirks.
+
+    The benchmark agents keep screenshots as OpenAI-style data URLs. BigModel's
+    GLM-5V-Turbo Base64 example expects the raw Base64 payload in
+    ``image_url.url`` instead. This helper strips only data URL prefixes and
+    leaves http(s) URLs, file IDs, text parts, and the original message objects
+    untouched.
+    """
+    normalized = _normalize_image_url_format(image_url_format)
+    if normalized == "data_url":
+        return messages
+
+    formatted = deepcopy(messages)
+    for message in formatted:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            image_url = part.get("image_url")
+            if not isinstance(image_url, dict):
+                continue
+            url = image_url.get("url")
+            if not isinstance(url, str):
+                continue
+            match = _IMAGE_DATA_URL_RE.match(url)
+            if match:
+                image_url["url"] = match.group(1)
+    return formatted
 
 
 def _extract_content_and_reasoning(raw: dict[str, Any]) -> tuple[str, Optional[str]]:

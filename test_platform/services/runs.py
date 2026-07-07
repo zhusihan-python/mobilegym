@@ -1844,6 +1844,7 @@ _ALLOWED_EXECUTION_OVERRIDE_KEYS = frozenset(
         "model_name",
         "model_base_url",
         "model_api_key",
+        "image_url_format",
         "temperature",
         "top_p",
         "max_tokens",
@@ -1923,6 +1924,13 @@ def _require_launch_execution_config(definition: WorkflowDefinition) -> None:
             "RUN_EXECUTION_CONFIG_MISSING",
             "AI agent runs require a model base URL and model name.",
             details=[{"field": f"overrides.execution.{field}"} for field in missing],
+        )
+    image_url_format = config.get("image_url_format", "data_url")
+    if image_url_format not in {"data_url", "bare_base64"}:
+        raise RunDomainError(
+            "RUN_EXECUTION_CONFIG_INVALID",
+            "Image URL format must be data_url or bare_base64.",
+            details=[{"field": "overrides.execution.image_url_format"}],
         )
 
 

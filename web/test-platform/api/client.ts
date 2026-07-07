@@ -103,6 +103,7 @@ export function createRun(input: {
     modelName: string;
     modelBaseUrl: string;
     modelApiKey?: string;
+    imageUrlFormat?: string;
   };
 }): Promise<RunDetail> {
   return apiFetch<RunDetail>('/runs', {
@@ -119,6 +120,7 @@ export function createRun(input: {
               model_name: input.execution.modelName,
               model_base_url: input.execution.modelBaseUrl,
               model_api_key: input.execution.modelApiKey || undefined,
+              image_url_format: input.execution.imageUrlFormat || undefined,
             }
           : undefined,
       },

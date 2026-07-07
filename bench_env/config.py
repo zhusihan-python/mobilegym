@@ -33,6 +33,7 @@ class RunnerConfig:
     max_tokens: int = 4096
     no_stream: bool = False
     infer_timeout: float = 300.0  # Total wall-clock timeout per LLM call (0=disable)
+    image_url_format: str = "data_url"  # "data_url" | "bare_base64" (BigModel)
     
     # Environment
     device: str = "sim"  # "sim" or "real"
@@ -128,6 +129,12 @@ class RunnerConfig:
 
     def __post_init__(self) -> None:
         """Keep split_task_ids as a pure cache derived from split."""
+        self.image_url_format = str(self.image_url_format or "data_url").strip().lower()
+        if self.image_url_format not in {"data_url", "bare_base64"}:
+            raise ValueError(
+                "image_url_format must be 'data_url' or 'bare_base64'; "
+                f"got {self.image_url_format!r}"
+            )
         if self.split:
             self.split = normalize_spec(self.split)
             self.split_task_ids = frozenset(resolve_split(self.split))
@@ -229,6 +236,7 @@ class RunnerConfig:
             max_tokens=get("max_tokens", 4096),
             no_stream=get("no_stream", False),
             infer_timeout=get("infer_timeout", 300.0),
+            image_url_format=get("image_url_format", "data_url"),
             
             device=get("device", "sim"),
             env_url=get("env_url"),

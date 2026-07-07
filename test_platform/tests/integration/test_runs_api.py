@@ -21,6 +21,7 @@ def _execution_overrides():
         "agent": "generic_v2",
         "model_base_url": "http://127.0.0.1:1234/v1",
         "model_name": "dogfood-model",
+        "image_url_format": "data_url",
     }
 
 
@@ -182,6 +183,7 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
         assert body["run_plan"]["lanes"][0]["runner_config"]["agent"] == "generic_v2"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_base_url"] == "http://127.0.0.1:1234/v1"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_name"] == "dogfood-model"
+        assert body["run_plan"]["lanes"][0]["runner_config"]["image_url_format"] == "data_url"
 
 
 def test_runs_api_accepts_online_model_key_without_persisting_secret(tmp_path):
@@ -252,6 +254,37 @@ def test_runs_api_rejects_launch_without_execution_config(tmp_path):
         error = response.json()["error"]
         assert error["code"] == "RUN_EXECUTION_CONFIG_MISSING"
         assert error["details"][0]["field"] == "overrides.execution.agent"
+
+
+def test_runs_api_rejects_invalid_image_url_format(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=FakeRunSupervisor(),
+    )
+
+    with TestClient(app) as client:
+        _project, _revision, version = _published_version(client)
+        response = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version["id"],
+                "name": "invalid image format",
+                "overrides": {
+                    "seed": 321,
+                    "execution": {
+                        **_execution_overrides(),
+                        "image_url_format": "file_path",
+                    },
+                },
+            },
+            headers={"Idempotency-Key": "ci-launch-invalid-image-url-format"},
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "RUN_EXECUTION_CONFIG_INVALID"
+        assert error["details"][0]["field"] == "overrides.execution.image_url_format"
 
 
 # ---------------------------------------------------------------------------

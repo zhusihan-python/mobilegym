@@ -103,7 +103,15 @@ class RunPlanCompiler:
         gates = _gate_thresholds(definition)
         agent = _pick_config(
             execute_node.config,
-            ("agent", "model_name", "model_base_url", "temperature", "top_p", "max_tokens"),
+            (
+                "agent",
+                "model_name",
+                "model_base_url",
+                "image_url_format",
+                "temperature",
+                "top_p",
+                "max_tokens",
+            ),
         )
         judge = _pick_config(
             execute_node.config,

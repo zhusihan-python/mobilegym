@@ -36,6 +36,7 @@ const AGENT_OPTIONS = [
 const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
 const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
 const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
+const IMAGE_URL_FORMAT_STORAGE_KEY = 'test-platform.launch.image-url-format';
 
 type LoadState =
   | { status: 'loading' }
@@ -83,6 +84,9 @@ export function WorkflowsPage() {
     () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
   );
   const [runModelApiKey, setRunModelApiKey] = useState('');
+  const [runImageUrlFormat, setRunImageUrlFormat] = useState(
+    () => window.localStorage.getItem(IMAGE_URL_FORMAT_STORAGE_KEY) ?? 'data_url',
+  );
   const [error, setError] = useState<string | null>(null);
   // VS-10 Contract 3: create-run is the authoritative gate (409). When a paired
   // run is rejected for constraint violations, surface the structured list.
@@ -235,10 +239,12 @@ export function WorkflowsPage() {
     const trimmedModelBaseUrl = runModelBaseUrl.trim();
     const trimmedModelName = runModelName.trim();
     const trimmedModelApiKey = runModelApiKey.trim();
+    const trimmedImageUrlFormat = runImageUrlFormat.trim() || 'data_url';
     if (!trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
     window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
     window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
     window.localStorage.setItem(MODEL_NAME_STORAGE_KEY, trimmedModelName);
+    window.localStorage.setItem(IMAGE_URL_FORMAT_STORAGE_KEY, trimmedImageUrlFormat);
     setBusy(true);
     setError(null);
     setRunViolations([]);
@@ -252,6 +258,7 @@ export function WorkflowsPage() {
         modelBaseUrl: trimmedModelBaseUrl,
         modelName: trimmedModelName,
         modelApiKey: trimmedModelApiKey || undefined,
+        imageUrlFormat: trimmedImageUrlFormat,
       },
     })
       .then((run) => navigate(`/runs/${run.id}`))
@@ -431,6 +438,16 @@ export function WorkflowsPage() {
             placeholder="Optional for local models"
             autoComplete="off"
           />
+
+          <label htmlFor="tp-workflow-image-url-format">Image URL format</label>
+          <select
+            id="tp-workflow-image-url-format"
+            value={runImageUrlFormat}
+            onChange={(event) => setRunImageUrlFormat(event.target.value)}
+          >
+            <option value="data_url">OpenAI data URL</option>
+            <option value="bare_base64">BigModel bare base64</option>
+          </select>
         </div>
 
         {/* VS-10 Contract 2: paired comparison policy (baseline vs candidate).

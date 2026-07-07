@@ -32,12 +32,14 @@ def create_llm(config: ConfigType) -> Any:
     base_url = getattr(config, "model_base_url", None)
     model = getattr(config, "model_name", None)
     api_key = getattr(config, "model_api_key", None)
+    image_url_format = getattr(config, "image_url_format", "data_url")
     
     if not base_url or not model:
         raise ValueError("--model-base-url and --model-name required")
     infer_timeout = getattr(config, "infer_timeout", 300.0)
     return LLMClient(
         base_url=base_url, api_key=api_key or None, model=model,
+        image_url_format=image_url_format,
         total_timeout_s=infer_timeout,
     )
 

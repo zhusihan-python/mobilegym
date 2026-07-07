@@ -178,6 +178,12 @@ def create_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-stream", action="store_true")
     p.add_argument("--infer-timeout", type=float, default=300.0,
                    help="Total wall-clock timeout per LLM call in seconds (0=disable, default 300)")
+    p.add_argument(
+        "--image-url-format",
+        choices=["data_url", "bare_base64"],
+        default="data_url",
+        help="Image URL transport format for Base64 screenshots (bare_base64 for BigModel GLM-5V).",
+    )
 
     # Environment
     p.add_argument(
