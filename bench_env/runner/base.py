@@ -174,6 +174,45 @@ def _snapshot_stopwatch(sw) -> tuple[float, dict[str, float], list[dict[str, Any
         return 0.0, {}, []
 
 
+_ANSWER_COMPLETION_STOP_REASONS = {"MAX_STEPS", "REPETITIVE_LOOP"}
+
+
+def _task_accepts_answer_completion(task: Any) -> bool:
+    """Return True for task types where a submitted, judged answer is terminal."""
+    if getattr(task, "answer_fields", None):
+        return True
+
+    try:
+        from bench_env.task.common_tasks import AnswerTask, CriteriaTask
+    except Exception:  # pragma: no cover - defensive fallback for partial imports
+        return getattr(task, "answer", None) is not None
+
+    if isinstance(task, AnswerTask):
+        return True
+
+    if isinstance(task, CriteriaTask):
+        if getattr(task, "answer", None) is not None:
+            return True
+        return type(task).get_answer is not CriteriaTask.get_answer
+
+    return getattr(task, "answer", None) is not None
+
+
+def _accept_answer_completion(task: Any, exec_result: "ExecutionResult", judge: JudgeResult | None) -> bool:
+    """Accept query-task completion when the agent submitted a correct answer but omitted finish."""
+    if exec_result.error or not exec_result.truncated:
+        return False
+    if exec_result.stop_reason not in _ANSWER_COMPLETION_STOP_REASONS:
+        return False
+    if not judge or not judge.passed:
+        return False
+    if not _task_accepts_answer_completion(task):
+        return False
+    if exec_result.agent_answer is not None:
+        return True
+    return bool(getattr(task, "answer_fields", None))
+
+
 class Controller:
     """Controls the agent-environment interaction loop."""
 
@@ -548,6 +587,7 @@ class EpisodeResult:
     trial_id: int = 0
     apps: list[str] = field(default_factory=list)
     max_steps: int = 0  # actual max_steps used in this episode
+    answer_completion_accepted: bool = False
 
     # VS-07: stable episode identity for parallel/repeat attribution. None for
     # CLI runs (which don't carry an episode_key); the platform sets it on the
@@ -577,7 +617,10 @@ class EpisodeResult:
     @property
     def success(self) -> bool:
         return (
-            self.execution.stop_reason == ActionType.COMPLETE
+            (
+                self.execution.stop_reason == ActionType.COMPLETE
+                or self.answer_completion_accepted
+            )
             and (self.judge.passed if self.judge else False)
         )
         
@@ -627,7 +670,7 @@ class EpisodeResult:
     @property
     def overdue_termination(self) -> bool:
         """Agent achieved the goal but never declared FINISH (truncated by step limit or loop detection)."""
-        return self.execution.truncated and self.goal_success and not self.error
+        return self.execution.truncated and self.goal_success and not self.success and not self.error
 
     def to_dict(self) -> dict[str, Any]:
         exec_d = {
@@ -658,6 +701,8 @@ class EpisodeResult:
             "false_complete": self.false_complete,
             "overdue_termination": self.overdue_termination,
         }
+        if self.answer_completion_accepted:
+            d["answer_completion_accepted"] = True
         # VS-08: include episode_key so multi-process result reconciliation
         # (which joins by episode_key) works from result dicts, not just live
         # EpisodeResult objects. Omitted when None (CLI runs without keys).
@@ -765,6 +810,7 @@ class BaseRunner(ABC):
                 trial_id=trial_id,
                 apps=list(task.apps),
                 max_steps=max_steps,
+                answer_completion_accepted=_accept_answer_completion(task, exec_result, judge),
                 episode_key=episode_key,
                 **EpisodeResult._task_taxonomy(task),
             )

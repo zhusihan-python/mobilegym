@@ -11,8 +11,9 @@ from bench_env.env.base import Action, ActionType, Observation, StepResult
 from bench_env.env.stopwatch import StopWatch
 from bench_env.env.mobile_gym import MobileGymEnv
 from bench_env.env.real_device import RealDeviceEnv
-from bench_env.runner.base import Controller, EpisodeResult, Evaluator, ExecutionResult
+from bench_env.runner.base import BaseRunner, Controller, EpisodeResult, Evaluator, ExecutionResult
 from bench_env.task.judge import JudgeResult
+from bench_env.task.common_tasks import AnswerTask
 from bench_env.task.vlm_judge import VLMJudgeOutput
 
 
@@ -203,12 +204,22 @@ class _AnswerOnlyAgent:
     def act(self, obs: Observation) -> Action:
         return self._action
 
+    def reset_history(self) -> None:
+        self.history.clear()
+
 
 class _AnswerTrackingEnv:
     def __init__(self) -> None:
         self._agent_answer: str | None = None
         self._agent_message: str | None = None
         self.stopwatch = StopWatch()
+        self.supports_state_injection = True
+
+    async def reset(self, *, app_ids: list[str] | None = None) -> None:
+        return None
+
+    async def get_observation(self) -> Observation:
+        return _make_obs(0)
 
     async def get_state(self, *, required_apps: list[str] | None = None) -> dict:
         return {}
@@ -233,6 +244,16 @@ class _TaskForController:
     description = "提交一个答案"
     suite = "demo"
     apps: list[str] = []
+
+    def teardown(self, env) -> None:
+        return None
+
+
+class _NoFinishAnswerTask(AnswerTask):
+    _suite = "demo"
+    templates = ["提交一个答案"]
+    apps: list[str] = []
+    answer = "最后答案"
 
     def teardown(self, env) -> None:
         return None
@@ -279,6 +300,50 @@ def test_episode_result_abort_forces_failure_even_if_judge_passes() -> None:
 
     assert result.goal_success is True
     assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_run_episode_accepts_successful_answer_task_without_explicit_finish() -> None:
+    env = _AnswerTrackingEnv()
+    agent = _AnswerOnlyAgent(Action.answer("最后答案"))
+    task = _NoFinishAnswerTask()
+
+    result = await BaseRunner.run_episode(
+        env,
+        agent,
+        task,
+        max_steps=1,
+        recorder=None,
+    )
+
+    assert result.execution.truncated is True
+    assert result.execution.stop_reason == "MAX_STEPS"
+    assert result.answer_completion_accepted is True
+    assert result.success is True
+    assert result.overdue_termination is False
+    assert result.to_dict()["is_success"] is True
+
+
+def test_episode_result_still_rejects_non_answer_max_steps_completion() -> None:
+    result = EpisodeResult(
+        task_id="demo.StateTask",
+        task_name="demo",
+        suite="demo",
+        execution=ExecutionResult(
+            steps=1,
+            trace=[],
+            runtime_s=0.1,
+            finished=False,
+            truncated=True,
+            stop_reason="MAX_STEPS",
+            agent_answer="正确答案",
+        ),
+        judge=JudgeResult(success=True, clean=True, progress=1.0),
+    )
+
+    assert result.goal_success is True
+    assert result.success is False
+    assert result.overdue_termination is True
 
 
 def test_generic_v2_parse_answer_action() -> None:
