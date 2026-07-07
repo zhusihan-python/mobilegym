@@ -15,6 +15,7 @@ from test_platform.api.routes.artifacts import router as artifacts_router
 from test_platform.api.routes.health import router as health_router
 from test_platform.api.routes.diagnostics import router as diagnostics_router
 from test_platform.api.routes.projects import router as projects_router
+from test_platform.api.routes.replay import router as replay_router
 from test_platform.api.routes.reports import router as reports_router
 from test_platform.api.routes.runs import router as runs_router
 from test_platform.api.routes.tasks import router as tasks_router
@@ -91,6 +92,7 @@ def create_app(
     app.include_router(diagnostics_router)
     app.include_router(health_router)
     app.include_router(projects_router)
+    app.include_router(replay_router)
     app.include_router(reports_router)
     app.include_router(runs_router)
     app.include_router(tasks_router)

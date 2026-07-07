@@ -488,3 +488,35 @@ export type WorkflowPublishResponse = {
   workflow_version_id: string;
   version: WorkflowVersion;
 };
+
+/**
+ * VS-15A: replay DTO for one episode attempt. The backend loads
+ * trajectory.json and maps each step's screenshot/prompt/response references
+ * to registered artifact ids so the frontend never infers filesystem layout.
+ */
+export type EpisodeReplayStep = {
+  step: number | null;
+  route: Record<string, unknown>;
+  action_type: string;
+  action_data: Record<string, unknown>;
+  thought: string;
+  explain: string;
+  summary: string;
+  screenshot_artifact_id: string | null;
+  screenshot_annotated_artifact_id: string | null;
+  model_response_artifact_id: string | null;
+  model_prompt_artifact_id: string | null;
+};
+
+export type EpisodeReplay = {
+  run_id: string;
+  episode_key: string;
+  lane_key: string;
+  attempt_no: number;
+  episode_attempt_id: string;
+  artifact_root: string;
+  outcome: string | null;
+  error_code: string | null;
+  result: Record<string, unknown> | null;
+  steps: EpisodeReplayStep[];
+};

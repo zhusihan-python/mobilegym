@@ -1286,6 +1286,258 @@ class ArtifactRepository:
                 raise
 
 
+class ReplayRepository:
+    """Build the VS-15 ``EpisodeReplay`` DTO for one episode attempt.
+
+    Loads ``trajectory.json`` from the attempt's ``artifact_root`` and maps each
+    step's screenshot/prompt/response references to registered artifact ids.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get_episode_replay(
+        self,
+        run_id: str,
+        episode_key: str,
+        *,
+        lane_key: str | None = None,
+        attempt_no: str = "latest",
+    ) -> dict[str, Any]:
+        self._ensure_run_exists(run_id)
+        attempt = self._resolve_episode_attempt(
+            run_id,
+            episode_key,
+            lane_key=lane_key,
+            attempt_no=attempt_no,
+        )
+        artifact_root = str(attempt["artifact_root"])
+        run_root = self.database.settings.runs_dir / run_id
+
+        # The episode_attempt.artifact_root is the full trajectory directory
+        # (e.g. ``lanes/candidate/trajectory/<name>`` for new runs or
+        # ``trajectory/<name>`` for legacy imports). trajectory.json lives at
+        # its root. resolve_artifact_directory enforces containment.
+        try:
+            episode_dir = resolve_artifact_directory(run_root, artifact_root)
+        except ArtifactPathError as exc:
+            raise RunDomainError(
+                "REPLAY_ARTIFACT_MISSING",
+                "The replay trajectory directory is not available.",
+                status_code=404,
+                details=[{"run_id": run_id, "artifact_root": artifact_root}],
+            ) from exc
+
+        trajectory_path = episode_dir / "trajectory.json"
+        if not trajectory_path.is_file():
+            raise RunDomainError(
+                "REPLAY_ARTIFACT_MISSING",
+                "The replay trajectory.json is not available for this episode attempt.",
+                status_code=404,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "episode_key": episode_key,
+                        "artifact_root": artifact_root,
+                    }
+                ],
+            )
+        try:
+            raw = trajectory_path.read_text(encoding="utf-8")
+            payload = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RunDomainError(
+                "REPLAY_ARTIFACT_INVALID",
+                "The replay trajectory.json could not be parsed.",
+                status_code=422,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "episode_key": episode_key,
+                        "artifact_root": artifact_root,
+                    }
+                ],
+            ) from exc
+        if not isinstance(payload, list):
+            raise RunDomainError(
+                "REPLAY_ARTIFACT_INVALID",
+                "The replay trajectory.json is not a list of steps.",
+                status_code=422,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "episode_key": episode_key,
+                        "artifact_root": artifact_root,
+                    }
+                ],
+            )
+
+        # Index artifacts (idempotent) and build a relative-path → id map for
+        # this run. Indexing is scoped to episode_attempts, so it covers the
+        # files referenced by this trajectory.
+        ArtifactRepository(self.database)._index_run(run_id)
+        artifact_id_by_path = self._artifact_id_by_relative_path(run_id)
+
+        steps = [
+            self._map_step(step, artifact_root, artifact_id_by_path)
+            for step in payload
+            if isinstance(step, dict)
+        ]
+
+        return {
+            "run_id": run_id,
+            "episode_key": episode_key,
+            "lane_key": str(attempt["lane_key"]),
+            "attempt_no": int(attempt["attempt_no"]),
+            "episode_attempt_id": str(attempt["id"]),
+            "artifact_root": artifact_root,
+            "outcome": (
+                str(attempt["outcome"]) if attempt["outcome"] is not None else None
+            ),
+            "error_code": (
+                str(attempt["error_code"])
+                if attempt["error_code"] is not None
+                else None
+            ),
+            "result": _json_or_none(attempt["result_json"]),
+            "steps": steps,
+        }
+
+    def _ensure_run_exists(self, run_id: str) -> None:
+        row = self.database.connection.execute(
+            "SELECT id FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunNotFound(run_id)
+
+    def _resolve_episode_attempt(
+        self,
+        run_id: str,
+        episode_key: str,
+        *,
+        lane_key: str | None,
+        attempt_no: str,
+    ) -> dict[str, Any]:
+        episode_row = self.database.connection.execute(
+            "SELECT id FROM episodes WHERE run_id = ? AND episode_key = ?",
+            (run_id, episode_key),
+        ).fetchone()
+        if episode_row is None:
+            raise RunDomainError(
+                "EPISODE_NOT_FOUND",
+                "No episode with that key exists for this run.",
+                status_code=404,
+                details=[{"run_id": run_id, "episode_key": episode_key}],
+            )
+        episode_id = str(episode_row["id"])
+
+        # ``attempt_no`` may be ``"latest"`` or a numeric string. We always
+        # order by attempt_no desc so the latest terminal attempt wins when
+        # ``"latest"`` is requested.
+        rows = self.database.connection.execute(
+            """
+            SELECT ea.id, ea.attempt_no, ea.state, ea.outcome, ea.error_code,
+                   ea.result_json, ea.artifact_root, l.lane_key
+            FROM episode_attempts AS ea
+            JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE ea.episode_id = ?
+            ORDER BY ea.attempt_no DESC, ea.created_at DESC, ea.id DESC
+            """,
+            (episode_id,),
+        ).fetchall()
+        candidates: list[sqlite3.Row] = []
+        for row in rows:
+            if lane_key is not None and str(row["lane_key"]) != lane_key:
+                continue
+            candidates.append(row)
+        if not candidates:
+            raise RunDomainError(
+                "EPISODE_ATTEMPT_NOT_FOUND",
+                "No episode attempt matches the requested lane and episode.",
+                status_code=404,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "episode_key": episode_key,
+                        "lane_key": lane_key,
+                    }
+                ],
+            )
+
+        if attempt_no == "latest":
+            chosen = candidates[0]
+        else:
+            try:
+                requested_no = int(attempt_no)
+            except ValueError as exc:
+                raise RunDomainError(
+                    "EPISODE_ATTEMPT_NOT_FOUND",
+                    "attempt_no must be 'latest' or an integer.",
+                    status_code=404,
+                    details=[
+                        {
+                            "run_id": run_id,
+                            "episode_key": episode_key,
+                            "attempt_no": attempt_no,
+                        }
+                    ],
+                ) from exc
+            chosen = next(
+                (row for row in candidates if int(row["attempt_no"]) == requested_no),
+                None,
+            )
+            if chosen is None:
+                raise RunDomainError(
+                    "EPISODE_ATTEMPT_NOT_FOUND",
+                    "No episode attempt matches the requested attempt number.",
+                    status_code=404,
+                    details=[
+                        {
+                            "run_id": run_id,
+                            "episode_key": episode_key,
+                            "attempt_no": attempt_no,
+                        }
+                    ],
+                )
+        return dict(chosen)
+
+    def _artifact_id_by_relative_path(self, run_id: str) -> dict[str, str]:
+        rows = self.database.connection.execute(
+            "SELECT id, relative_path FROM artifacts WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        return {str(row["relative_path"]): str(row["id"]) for row in rows}
+
+    def _map_step(
+        self,
+        step: dict[str, Any],
+        artifact_root: str,
+        artifact_id_by_path: dict[str, str],
+    ) -> dict[str, Any]:
+        def _artifact_id(field: str) -> str | None:
+            relative = step.get(field)
+            if not isinstance(relative, str) or not relative:
+                return None
+            full_path = f"{artifact_root}/{relative}"
+            return artifact_id_by_path.get(full_path)
+
+        return {
+            "step": step.get("step"),
+            "route": step.get("route") or {},
+            "action_type": step.get("action_type") or "",
+            "action_data": step.get("action_data") or {},
+            "thought": step.get("thought") or "",
+            "explain": step.get("explain") or "",
+            "summary": step.get("summary") or "",
+            "screenshot_artifact_id": _artifact_id("screenshot"),
+            "screenshot_annotated_artifact_id": _artifact_id("screenshot_annotated"),
+            "model_response_artifact_id": _artifact_id("model_response_path"),
+            "model_prompt_artifact_id": _artifact_id("model_prompt_path"),
+        }
+
+
 class BaselineRepository:
     def __init__(self, database: Database) -> None:
         self.database = database

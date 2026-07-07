@@ -6,6 +6,7 @@ import type {
   CancelRunResponse,
   CollectionResponse,
   Comparison,
+  EpisodeReplay,
   FollowupRunAttempt,
   Project,
   ReadinessResponse,
@@ -145,6 +146,32 @@ export function importLegacyRun(input: {
 
 export function getRun(runId: string): Promise<RunDetail> {
   return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+/**
+ * VS-15A: fetch the replay DTO (trajectory steps + artifact ids) for one
+ * episode attempt. Defaults to the latest terminal attempt; pass a specific
+ * attemptNo to scrub an older attempt.
+ */
+export function getEpisodeReplay(input: {
+  runId: string;
+  episodeKey: string;
+  laneKey?: string;
+  attemptNo?: number | 'latest';
+}): Promise<EpisodeReplay> {
+  const params = new URLSearchParams();
+  if (input.laneKey) {
+    params.set('lane_key', input.laneKey);
+  }
+  if (input.attemptNo !== undefined) {
+    params.set('attempt_no', String(input.attemptNo));
+  }
+  const query = params.toString();
+  return apiFetch<EpisodeReplay>(
+    `/runs/${encodeURIComponent(input.runId)}/episodes/${encodeURIComponent(
+      input.episodeKey,
+    )}/replay${query ? `?${query}` : ''}`,
+  );
 }
 
 /**
