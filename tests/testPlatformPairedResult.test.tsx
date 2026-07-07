@@ -46,6 +46,11 @@ function pairedState(): RunLiveState {
     completedEpisodeKeys: new Set<string>(),
     activeWorkers: new Set<string>(),
     activeShards: new Map<string, ShardHealth>(),
+    liveEpisodes: new Map(),
+    activeLiveEpisodeKeys: new Set<string>(),
+    activeLiveEpisodeKey: null,
+    latestLiveEpisodeKey: null,
+    coalescedEventCount: 0,
   };
 }
 

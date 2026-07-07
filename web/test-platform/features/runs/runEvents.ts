@@ -23,6 +23,21 @@ export type ShardHealth = {
   exitcode: number | null;
 };
 
+export type LiveEpisodeProgress = {
+  key: string;
+  episodeKey: string;
+  laneAttemptId: string | null;
+  workerId: string | null;
+  taskId: string | null;
+  maxSteps: number | null;
+  stepCount: number;
+  lastActionType: string | null;
+  outcome: string | null;
+  terminalType: 'completed' | 'error' | 'cancelled' | null;
+  stopReason: string | null;
+  errorCode: string | null;
+};
+
 export type RunLiveState = {
   snapshot: RunDetail;
   lastSequence: number;
@@ -31,6 +46,11 @@ export type RunLiveState = {
   completedEpisodeKeys: Set<string>;
   activeWorkers: Set<string>;
   activeShards: Map<string, ShardHealth>;
+  liveEpisodes: Map<string, LiveEpisodeProgress>;
+  activeLiveEpisodeKeys: Set<string>;
+  activeLiveEpisodeKey: string | null;
+  latestLiveEpisodeKey: string | null;
+  coalescedEventCount: number;
 };
 
 /**
@@ -61,6 +81,8 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
   let completedEpisodeKeys = state.completedEpisodeKeys;
   let activeWorkers = state.activeWorkers;
   let activeShards = state.activeShards;
+  let liveEpisodes = state.liveEpisodes;
+  let activeLiveEpisodeKeys = state.activeLiveEpisodeKeys;
 
   const next: RunLiveState = {
     ...state,
@@ -85,6 +107,46 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
     case 'run.failed':
       next.snapshot = { ...state.snapshot, state: 'failed' };
       break;
+    case 'episode.started': {
+      const progress = liveEpisodeProgressFromEvent(event);
+      if (progress) {
+        liveEpisodes = new Map(liveEpisodes);
+        activeLiveEpisodeKeys = new Set(activeLiveEpisodeKeys);
+        liveEpisodes.set(progress.key, {
+          ...progress,
+          stepCount: existingLiveStepCount(liveEpisodes, progress.key),
+        });
+        activeLiveEpisodeKeys.add(progress.key);
+        next.liveEpisodes = liveEpisodes;
+        next.activeLiveEpisodeKeys = activeLiveEpisodeKeys;
+        next.activeLiveEpisodeKey = progress.key;
+        next.latestLiveEpisodeKey = progress.key;
+      }
+      break;
+    }
+    case 'episode.step_recorded': {
+      const progress = liveEpisodeProgressFromEvent(event);
+      if (progress) {
+        const previous = liveEpisodes.get(progress.key);
+        const step = numericPayload(event, 'step');
+        liveEpisodes = new Map(liveEpisodes);
+        activeLiveEpisodeKeys = new Set(activeLiveEpisodeKeys);
+        liveEpisodes.set(progress.key, {
+          ...progress,
+          workerId: previous?.workerId ?? progress.workerId,
+          taskId: previous?.taskId ?? progress.taskId,
+          maxSteps: previous?.maxSteps ?? progress.maxSteps,
+          stepCount: Math.max(previous?.stepCount ?? 0, step ?? 0),
+          lastActionType: stringPayload(event, 'action_type') ?? previous?.lastActionType ?? null,
+        });
+        activeLiveEpisodeKeys.add(progress.key);
+        next.liveEpisodes = liveEpisodes;
+        next.activeLiveEpisodeKeys = activeLiveEpisodeKeys;
+        next.activeLiveEpisodeKey = progress.key;
+        next.latestLiveEpisodeKey = progress.key;
+      }
+      break;
+    }
     case 'episode.completed':
     case 'episode.error':
     case 'episode.cancelled': {
@@ -102,6 +164,34 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
         }
       }
       next.completedEpisodeKeys = completedEpisodeKeys;
+
+      const progress = liveEpisodeProgressFromEvent(event);
+      if (progress) {
+        const previous = liveEpisodes.get(progress.key);
+        const steps = numericPayload(event, 'steps');
+        liveEpisodes = new Map(liveEpisodes);
+        activeLiveEpisodeKeys = new Set(activeLiveEpisodeKeys);
+        activeLiveEpisodeKeys.delete(progress.key);
+        liveEpisodes.set(progress.key, {
+          ...progress,
+          workerId: previous?.workerId ?? progress.workerId,
+          taskId: previous?.taskId ?? progress.taskId,
+          maxSteps: previous?.maxSteps ?? progress.maxSteps,
+          stepCount: Math.max(previous?.stepCount ?? 0, steps ?? 0),
+          lastActionType: previous?.lastActionType ?? null,
+          outcome: stringPayload(event, 'outcome'),
+          terminalType: terminalTypeOf(event.type),
+          stopReason: stringPayload(event, 'stop_reason'),
+          errorCode: stringPayload(event, 'error_code'),
+        });
+        next.liveEpisodes = liveEpisodes;
+        next.activeLiveEpisodeKeys = activeLiveEpisodeKeys;
+        next.activeLiveEpisodeKey =
+          state.activeLiveEpisodeKey === progress.key
+            ? newestActiveLiveEpisodeKey(activeLiveEpisodeKeys)
+            : state.activeLiveEpisodeKey;
+        next.latestLiveEpisodeKey = progress.key;
+      }
       break;
     }
     case 'worker.started': {
@@ -153,7 +243,8 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
     case 'stream.events_coalesced':
       // VS-08: a coalesced event acknowledges dropped step/metric events. It
       // must advance lastSequence (set above) so the server sees it consumed;
-      // no other state change is required.
+      // the observatory surfaces this as a live evidence warning.
+      next.coalescedEventCount = state.coalescedEventCount + 1;
       break;
     default:
       // Unknown / step / metric events: only advance lastSequence (already set).
@@ -200,12 +291,61 @@ function episodeDedupeKeyOf(event: RunEvent): string | null {
   return episodeKey;
 }
 
-/**
- * Extract the shard rank (0-indexed integer) from a shard.* event's payload.
- * Returns null when absent (the caller leaves the shard untracked).
- */
-function shardRankOf(event: RunEvent): number | null {
-  const raw = event.payload?.shard_rank;
+function liveEpisodeProgressFromEvent(event: RunEvent): LiveEpisodeProgress | null {
+  const episodeKey = episodeKeyOf(event);
+  if (episodeKey === null) {
+    return null;
+  }
+  const laneAttemptId =
+    typeof event.lane_attempt_id === 'string' && event.lane_attempt_id.length > 0
+      ? event.lane_attempt_id
+      : null;
+  const key = laneAttemptId ? `${laneAttemptId}|${episodeKey}` : episodeKey;
+  return {
+    key,
+    episodeKey,
+    laneAttemptId,
+    workerId: event.worker_id,
+    taskId: stringPayload(event, 'task_id'),
+    maxSteps: numericPayload(event, 'max_steps'),
+    stepCount: 0,
+    lastActionType: null,
+    outcome: null,
+    terminalType: null,
+    stopReason: null,
+    errorCode: null,
+  };
+}
+
+function existingLiveStepCount(
+  liveEpisodes: Map<string, LiveEpisodeProgress>,
+  key: string,
+) {
+  return liveEpisodes.get(key)?.stepCount ?? 0;
+}
+
+function newestActiveLiveEpisodeKey(activeKeys: Set<string>) {
+  let latest: string | null = null;
+  for (const key of activeKeys) {
+    latest = key;
+  }
+  return latest;
+}
+
+function terminalTypeOf(type: string): LiveEpisodeProgress['terminalType'] {
+  if (type === 'episode.completed') return 'completed';
+  if (type === 'episode.error') return 'error';
+  if (type === 'episode.cancelled') return 'cancelled';
+  return null;
+}
+
+function stringPayload(event: RunEvent, key: string): string | null {
+  const raw = event.payload?.[key];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+function numericPayload(event: RunEvent, key: string): number | null {
+  const raw = event.payload?.[key];
   if (typeof raw === 'number' && Number.isFinite(raw)) {
     return Math.floor(raw);
   }
@@ -213,15 +353,19 @@ function shardRankOf(event: RunEvent): number | null {
 }
 
 /**
+ * Extract the shard rank (0-indexed integer) from a shard.* event's payload.
+ * Returns null when absent (the caller leaves the shard untracked).
+ */
+function shardRankOf(event: RunEvent): number | null {
+  return numericPayload(event, 'shard_rank');
+}
+
+/**
  * Extract the exitcode from a shard.fatal / shard.stopped payload.
  * Returns null when absent.
  */
 function shardExitcodeOf(event: RunEvent): number | null {
-  const raw = event.payload?.exitcode;
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    return Math.floor(raw);
-  }
-  return null;
+  return numericPayload(event, 'exitcode');
 }
 
 /**

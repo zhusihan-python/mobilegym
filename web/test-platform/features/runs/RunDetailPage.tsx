@@ -80,6 +80,11 @@ export function RunDetailPage() {
           completedEpisodeKeys: new Set<string>(),
           activeWorkers: new Set<string>(),
           activeShards: new Map<string, ShardHealth>(),
+          liveEpisodes: new Map(),
+          activeLiveEpisodeKeys: new Set<string>(),
+          activeLiveEpisodeKey: null,
+          latestLiveEpisodeKey: null,
+          coalescedEventCount: 0,
         };
         dispose = streamRunEvents(
           runId,
@@ -381,7 +386,7 @@ export function RunDetailPage() {
         </section>
       ) : null}
 
-      <RunObservatory run={run} live={liveRef.current} />
+      <RunObservatory run={run} live={liveRef.current} diagnostics={diagnostics} />
 
       <ReportPanel run={run} report={report} />
       <DiagnosticsPanel run={run} diagnostics={diagnostics} />

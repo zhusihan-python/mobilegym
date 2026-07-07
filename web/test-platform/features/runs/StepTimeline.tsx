@@ -5,24 +5,36 @@ import {
   terminalMarkerForReplay,
   type ReplayLoadState,
 } from './episodeReplay';
+import type { LiveEpisodeProgress } from './runEvents';
 
 export function StepTimeline({
   replayState,
   selectedStepIndex,
   onSelectStep,
+  liveProgress,
+  coalescedEventCount,
 }: {
   replayState: ReplayLoadState;
   selectedStepIndex: number;
   onSelectStep: (index: number) => void;
+  liveProgress: LiveEpisodeProgress | null;
+  coalescedEventCount: number;
 }) {
   const replay = replayFromState(replayState);
   const steps = replay?.steps ?? [];
+  const liveStepCount = liveProgress?.stepCount ?? 0;
 
   return (
     <aside className="tp-step-timeline" aria-label="Step timeline">
       <div className="tp-dock-header">
         <span className="tp-kicker">Steps</span>
-        <strong>{steps.length > 0 ? `${steps.length} recorded` : 'No steps yet'}</strong>
+        <strong>
+          {steps.length > 0
+            ? `${steps.length} recorded`
+            : liveStepCount > 0
+              ? `${liveStepCount} live`
+              : 'No steps yet'}
+        </strong>
       </div>
       {replay && steps.length > 0 ? (
         <ol>
@@ -38,9 +50,22 @@ export function StepTimeline({
             />
           ))}
         </ol>
+      ) : liveProgress ? (
+        <div className="tp-live-step-card" aria-live="polite">
+          <span className="tp-step-index">{liveStepCount || 0}</span>
+          <span className="tp-step-copy">
+            <strong>{liveStepCount > 0 ? `Live step ${liveStepCount}` : 'Episode started'}</strong>
+            <small>{liveProgress.lastActionType ?? 'Waiting for first recorded step'}</small>
+          </span>
+        </div>
       ) : (
         <p className="tp-dock-empty">{emptyTimelineMessage(replayState)}</p>
       )}
+      {coalescedEventCount > 0 ? (
+        <p className="tp-live-warning">
+          {coalescedEventCount} live event batch was coalesced; replay artifacts remain authoritative.
+        </p>
+      ) : null}
     </aside>
   );
 }

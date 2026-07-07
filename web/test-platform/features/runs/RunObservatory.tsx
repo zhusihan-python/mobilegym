@@ -4,29 +4,35 @@ import { getEpisodeReplay } from '../../api/client';
 import type { RunDetail } from '../../api/types';
 import { AgentConsole } from './AgentConsole';
 import { EpisodePicker } from './EpisodePicker';
-import { EvidenceDock } from './EvidenceDock';
+import { EvidenceDock, type EvidenceDiagnosticsState } from './EvidenceDock';
 import { PhoneReplayStage } from './PhoneReplayStage';
+import { RunSettingsDrawer } from './RunSettingsDrawer';
 import { StepTimeline } from './StepTimeline';
 import {
   buildReplayOptions,
   chooseDefaultReplayOption,
   type ReplayLoadState,
+  type ReplayOption,
 } from './episodeReplay';
-import type { RunLiveState } from './runEvents';
+import type { LiveEpisodeProgress, RunLiveState } from './runEvents';
 
 export function RunObservatory({
   run,
   live,
+  diagnostics,
 }: {
   run: RunDetail;
   live: RunLiveState | null;
+  diagnostics: EvidenceDiagnosticsState;
 }) {
   const options = useMemo(() => buildReplayOptions(run), [run]);
   const defaultOption = useMemo(() => chooseDefaultReplayOption(options), [options]);
   const [selectedId, setSelectedId] = useState<string | null>(defaultOption?.id ?? null);
+  const [selectionTouched, setSelectionTouched] = useState(false);
   const [replayState, setReplayState] = useState<ReplayLoadState>({ status: 'idle' });
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [screenshotMode, setScreenshotMode] = useState<'annotated' | 'raw'>('annotated');
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     setSelectedId((current) => {
@@ -37,7 +43,19 @@ export function RunObservatory({
     });
   }, [defaultOption?.id, options]);
 
+  const activeLiveProgress = liveProgressByKey(live, live?.activeLiveEpisodeKey)
+    ?? liveProgressByKey(live, live?.latestLiveEpisodeKey);
+  const activeLiveOption = liveOptionForProgress(options, activeLiveProgress);
+  useEffect(() => {
+    if (!selectionTouched && activeLiveOption) {
+      setSelectedId(activeLiveOption.id);
+    }
+  }, [activeLiveOption?.id, selectionTouched]);
+
   const selectedOption = options.find((option) => option.id === selectedId) ?? defaultOption;
+  const selectedLiveProgress = selectedOption
+    ? liveProgressForOption(live, selectedOption)
+    : activeLiveProgress;
 
   useEffect(() => {
     if (!selectedOption) {
@@ -74,7 +92,19 @@ export function RunObservatory({
     return () => {
       active = false;
     };
-  }, [run.id, run.state, selectedOption?.attemptNo, selectedOption?.episodeKey, selectedOption?.laneKey]);
+  }, [
+    run.id,
+    run.state,
+    selectedLiveProgress?.terminalType,
+    selectedOption?.attemptNo,
+    selectedOption?.episodeKey,
+    selectedOption?.laneKey,
+  ]);
+
+  const selectEpisode = (id: string) => {
+    setSelectionTouched(true);
+    setSelectedId(id);
+  };
 
   return (
     <section className="tp-observatory" data-testid="tp-run-observatory">
@@ -83,18 +113,28 @@ export function RunObservatory({
           <span className="tp-kicker">Run Observatory</span>
           <h2>Simulator replay</h2>
         </div>
-        <EpisodePicker
-          options={options}
-          selectedId={selectedOption?.id ?? null}
-          onSelect={setSelectedId}
-        />
+        <div className="tp-observatory-actions">
+          <EpisodePicker
+            options={options}
+            selectedId={selectedOption?.id ?? null}
+            onSelect={selectEpisode}
+          />
+          <button type="button" onClick={() => setSettingsOpen((open) => !open)}>
+            Settings
+          </button>
+        </div>
       </div>
+      {settingsOpen ? (
+        <RunSettingsDrawer run={run} onClose={() => setSettingsOpen(false)} />
+      ) : null}
 
       <div className="tp-observatory-grid">
         <StepTimeline
           replayState={replayState}
           selectedStepIndex={selectedStepIndex}
           onSelectStep={setSelectedStepIndex}
+          liveProgress={selectedLiveProgress}
+          coalescedEventCount={live?.coalescedEventCount ?? 0}
         />
         <PhoneReplayStage
           runId={run.id}
@@ -103,6 +143,7 @@ export function RunObservatory({
           screenshotMode={screenshotMode}
           onSelectStep={setSelectedStepIndex}
           onScreenshotModeChange={setScreenshotMode}
+          liveProgress={selectedLiveProgress}
         />
         <div className="tp-observatory-side">
           <AgentConsole
@@ -111,14 +152,45 @@ export function RunObservatory({
             selectedOption={selectedOption ?? null}
             replayState={replayState}
             selectedStepIndex={selectedStepIndex}
+            liveProgress={selectedLiveProgress}
           />
           <EvidenceDock
             runId={run.id}
             replayState={replayState}
             selectedStepIndex={selectedStepIndex}
+            diagnostics={diagnostics}
           />
         </div>
       </div>
     </section>
   );
+}
+
+function liveProgressByKey(live: RunLiveState | null, key: string | null | undefined) {
+  return key ? live?.liveEpisodes.get(key) ?? null : null;
+}
+
+function liveProgressForOption(
+  live: RunLiveState | null,
+  option: ReplayOption | null,
+): LiveEpisodeProgress | null {
+  if (!live || !option) {
+    return null;
+  }
+  for (const progress of live.liveEpisodes.values()) {
+    if (progress.episodeKey === option.episodeKey) {
+      return progress;
+    }
+  }
+  return null;
+}
+
+function liveOptionForProgress(
+  options: ReplayOption[],
+  progress: LiveEpisodeProgress | null,
+) {
+  if (!progress) {
+    return null;
+  }
+  return options.find((option) => option.episodeKey === progress.episodeKey) ?? null;
 }

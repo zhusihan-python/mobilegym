@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { EpisodeReplay, EpisodeReplayStep } from '../../api/types';
 import type { ReplayLoadState } from './episodeReplay';
 import { artifactContentHref, stepImageArtifactId } from './episodeReplay';
+import type { LiveEpisodeProgress } from './runEvents';
 
 export function PhoneReplayStage({
   runId,
@@ -11,6 +12,7 @@ export function PhoneReplayStage({
   screenshotMode,
   onSelectStep,
   onScreenshotModeChange,
+  liveProgress,
 }: {
   runId: string;
   replayState: ReplayLoadState;
@@ -18,6 +20,7 @@ export function PhoneReplayStage({
   screenshotMode: 'annotated' | 'raw';
   onSelectStep: (index: number) => void;
   onScreenshotModeChange: (mode: 'annotated' | 'raw') => void;
+  liveProgress: LiveEpisodeProgress | null;
 }) {
   const replay = replayState.status === 'loaded' ? replayState.replay : null;
   const steps = replay?.steps ?? [];
@@ -30,7 +33,7 @@ export function PhoneReplayStage({
       <div className="tp-phone-stage-toolbar">
         <div>
           <span className="tp-kicker">Replay</span>
-          <strong>{stageTitle(replayState, replay)}</strong>
+          <strong>{stageTitle(replayState, replay, liveProgress)}</strong>
         </div>
         <div className="tp-stage-controls" role="group" aria-label="Replay controls">
           <button
@@ -64,7 +67,11 @@ export function PhoneReplayStage({
               data-testid="tp-replay-screenshot"
             />
           ) : (
-            <StagePlaceholder replayState={replayState} selectedStep={selectedStep} />
+            <StagePlaceholder
+              replayState={replayState}
+              selectedStep={selectedStep}
+              liveProgress={liveProgress}
+            />
           )}
         </div>
       </div>
@@ -94,12 +101,18 @@ export function PhoneReplayStage({
 function StagePlaceholder({
   replayState,
   selectedStep,
+  liveProgress,
 }: {
   replayState: ReplayLoadState;
   selectedStep: EpisodeReplayStep | null;
+  liveProgress: LiveEpisodeProgress | null;
 }) {
   let message = 'Replay screenshot will appear here.';
-  if (replayState.status === 'loading') {
+  if (liveProgress && replayState.status !== 'loaded') {
+    message = liveProgress.stepCount > 0
+      ? `Live run is recording step ${liveProgress.stepCount}; screenshots will appear after replay artifacts are available.`
+      : 'Live episode has started; waiting for the first recorded step.';
+  } else if (replayState.status === 'loading') {
     message = 'Loading replay...';
   } else if (replayState.status === 'empty' || replayState.status === 'error') {
     message = replayState.message;
@@ -113,8 +126,13 @@ function StagePlaceholder({
   );
 }
 
-function stageTitle(replayState: ReplayLoadState, replay: EpisodeReplay | null) {
+function stageTitle(
+  replayState: ReplayLoadState,
+  replay: EpisodeReplay | null,
+  liveProgress: LiveEpisodeProgress | null,
+) {
   if (replayState.status === 'loading') return 'Loading trajectory';
+  if (!replay && liveProgress) return 'Live episode';
   if (!replay) return 'No trajectory loaded';
   return `${replay.lane_key} / attempt ${replay.attempt_no}`;
 }

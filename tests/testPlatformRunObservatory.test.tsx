@@ -95,6 +95,47 @@ const run = {
   ended_at: null,
 };
 
+const liveRun = {
+  ...run,
+  state: 'running',
+  episode_attempts: [],
+  run_plan: {
+    execution: {
+      model: 'dogfood-model',
+      api_key: 'sk-live-secret',
+      nested: { bearer_token: 'token-secret' },
+    },
+  },
+};
+
+class FakeEventSource {
+  static lastInstance: FakeEventSource | null = null;
+  listeners: Record<string, Set<(ev: MessageEvent) => void>> = {};
+  url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.lastInstance = this;
+  }
+
+  addEventListener(type: string, listener: (ev: MessageEvent) => void) {
+    (this.listeners[type] ??= new Set()).add(listener);
+  }
+
+  removeEventListener(type: string, listener: (ev: MessageEvent) => void) {
+    this.listeners[type]?.delete(listener);
+  }
+
+  close() {
+    this.listeners = {};
+  }
+
+  dispatch(type: string, data: unknown) {
+    const ev = { data: JSON.stringify(data) } as MessageEvent;
+    this.listeners[type]?.forEach((listener) => listener(ev));
+  }
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -161,6 +202,7 @@ describe('Run Observatory', () => {
   beforeEach(() => {
     window.history.pushState({}, '', '/test-platform/runs/run-observatory');
     window.localStorage.clear();
+    FakeEventSource.lastInstance = null;
   });
 
   afterEach(() => {
@@ -251,5 +293,114 @@ describe('Run Observatory', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Judge' }));
     expect(screen.getByTestId('tp-answer-completion-badge').textContent)
       .toBe('answer_completion_accepted');
+  });
+
+  it('follows the active live episode and shows waiting state before replay artifacts exist', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const decodedPath = decodeURIComponent(url.pathname);
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/runs/run-observatory') {
+        return jsonResponse(liveRun);
+      }
+      if (decodedPath.includes('/episodes/fake.Pass|i0|s1|r1|t0/replay')) {
+        return jsonResponse({
+          error: {
+            code: 'REPLAY_ARTIFACT_MISSING',
+            message: 'Replay artifacts are not available yet.',
+            details: [],
+          },
+        }, 404);
+      }
+      if (decodedPath.includes('/episodes/fake.Fail|i0|s1|r1|t0/replay')) {
+        return jsonResponse({
+          error: {
+            code: 'REPLAY_ARTIFACT_MISSING',
+            message: 'Replay artifacts are not available yet.',
+            details: [],
+          },
+        }, 404);
+      }
+
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByTestId('tp-run-observatory')).toBeTruthy();
+    await waitFor(() => {
+      expect(FakeEventSource.lastInstance).not.toBeNull();
+    });
+
+    FakeEventSource.lastInstance!.dispatch('episode.started', {
+      id: 'evt-1',
+      run_id: liveRun.id,
+      sequence: 1,
+      type: 'episode.started',
+      occurred_at: '2026-07-03T00:00:05.000Z',
+      payload: {
+        episode_key: 'fake.Pass|i0|s1|r1|t0',
+        task_id: 'fake.Pass',
+        max_steps: 15,
+      },
+      payload_version: 1,
+      run_attempt_id: null,
+      lane_id: null,
+      lane_attempt_id: null,
+      episode_id: null,
+      episode_attempt_id: null,
+      worker_id: 'W0',
+    });
+    FakeEventSource.lastInstance!.dispatch('episode.step_recorded', {
+      id: 'evt-2',
+      run_id: liveRun.id,
+      sequence: 2,
+      type: 'episode.step_recorded',
+      occurred_at: '2026-07-03T00:00:06.000Z',
+      payload: {
+        episode_key: 'fake.Pass|i0|s1|r1|t0',
+        step: 2,
+        action_type: 'CLICK',
+      },
+      payload_version: 1,
+      run_attempt_id: null,
+      lane_id: null,
+      lane_attempt_id: null,
+      episode_id: null,
+      episode_attempt_id: null,
+      worker_id: 'W0',
+    });
+
+    await waitFor(() => {
+      const picker = screen.getByLabelText('Replay episode') as HTMLSelectElement;
+      expect(picker.selectedOptions[0]?.textContent).toContain('fake.Pass');
+    });
+    expect(screen.getByText('Live step 2')).toBeTruthy();
+    expect(screen.getByText('Live run is recording step 2; screenshots will appear after replay artifacts are available.'))
+      .toBeTruthy();
+    expect(screen.getByText('live 2 / 15')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }));
+    expect(screen.getByText('Diagnostics are available after the run reaches a reportable state.'))
+      .toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const settingsJson = screen.getByTestId('tp-run-settings-json').textContent ?? '';
+    expect(settingsJson).toContain('[redacted]');
+    expect(settingsJson).not.toContain('sk-live-secret');
+    expect(settingsJson).not.toContain('token-secret');
   });
 });

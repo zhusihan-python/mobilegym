@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import type { EpisodeReplay, EpisodeReplayStep } from '../../api/types';
+import type { ArtifactItem, EpisodeReplay, EpisodeReplayStep, RunDiagnostics } from '../../api/types';
 import {
   artifactContentHref,
   formatPrettyJson,
@@ -11,13 +11,20 @@ import {
   type ReplayLoadState,
 } from './episodeReplay';
 
-type EvidenceTab = 'judge' | 'prompt' | 'response' | 'state' | 'artifacts';
+export type EvidenceDiagnosticsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'loaded'; diagnostics: RunDiagnostics; artifacts: ArtifactItem[] }
+  | { status: 'error'; message: string };
+
+type EvidenceTab = 'judge' | 'prompt' | 'response' | 'state' | 'diagnostics' | 'artifacts';
 
 const EVIDENCE_TABS: Array<{ id: EvidenceTab; label: string }> = [
   { id: 'judge', label: 'Judge' },
   { id: 'prompt', label: 'Prompt' },
   { id: 'response', label: 'Response' },
   { id: 'state', label: 'State/route' },
+  { id: 'diagnostics', label: 'Diagnostics' },
   { id: 'artifacts', label: 'Artifacts' },
 ];
 
@@ -25,10 +32,12 @@ export function EvidenceDock({
   runId,
   replayState,
   selectedStepIndex,
+  diagnostics,
 }: {
   runId: string;
   replayState: ReplayLoadState;
   selectedStepIndex: number;
+  diagnostics: EvidenceDiagnosticsState;
 }) {
   const [activeTab, setActiveTab] = useState<EvidenceTab>('judge');
   const replay = replayFromState(replayState);
@@ -54,12 +63,15 @@ export function EvidenceDock({
         ))}
       </div>
       <div className="tp-evidence-body" role="tabpanel">
-        {replay ? (
+        {activeTab === 'diagnostics' ? (
+          <DiagnosticsEvidence diagnostics={diagnostics} />
+        ) : replay ? (
           <EvidencePanel
             activeTab={activeTab}
             runId={runId}
             replay={replay}
             selectedStep={selectedStep}
+            diagnostics={diagnostics}
           />
         ) : (
           <p className="tp-dock-empty">{emptyEvidenceMessage(replayState)}</p>
@@ -74,11 +86,13 @@ function EvidencePanel({
   runId,
   replay,
   selectedStep,
+  diagnostics,
 }: {
   activeTab: EvidenceTab;
   runId: string;
   replay: EpisodeReplay;
   selectedStep: EpisodeReplayStep | null;
+  diagnostics: EvidenceDiagnosticsState;
 }) {
   if (activeTab === 'judge') {
     return <JudgeEvidence replay={replay} />;
@@ -105,6 +119,9 @@ function EvidencePanel({
   }
   if (activeTab === 'state') {
     return <StateEvidence selectedStep={selectedStep} />;
+  }
+  if (activeTab === 'diagnostics') {
+    return <DiagnosticsEvidence diagnostics={diagnostics} />;
   }
   return <ArtifactList runId={runId} selectedStep={selectedStep} />;
 }
@@ -222,6 +239,46 @@ function ArtifactList({
         </li>
       ))}
     </ul>
+  );
+}
+
+function DiagnosticsEvidence({ diagnostics }: { diagnostics: EvidenceDiagnosticsState }) {
+  if (diagnostics.status === 'idle') {
+    return <p className="tp-dock-empty">Diagnostics are available after the run reaches a reportable state.</p>;
+  }
+  if (diagnostics.status === 'loading') {
+    return <p className="tp-dock-empty">Loading diagnostics...</p>;
+  }
+  if (diagnostics.status === 'error') {
+    return <p className="tp-dock-empty">{diagnostics.message}</p>;
+  }
+
+  return (
+    <div className="tp-evidence-section">
+      <dl className="tp-evidence-facts">
+        <div>
+          <dt>Total</dt>
+          <dd>{diagnostics.diagnostics.summary.total}</dd>
+        </div>
+        <div>
+          <dt>Severity</dt>
+          <dd>{formatPrettyJson(diagnostics.diagnostics.summary.by_severity)}</dd>
+        </div>
+      </dl>
+      {diagnostics.diagnostics.items.length > 0 ? (
+        <ul className="tp-diagnostics-mini-list">
+          {diagnostics.diagnostics.items.slice(0, 5).map((item) => (
+            <li key={item.id}>
+              <strong>{item.code}</strong>
+              <span>{item.message}</span>
+              {item.recommended_action ? <em>{item.recommended_action}</em> : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="tp-dock-empty">No diagnostics recorded.</p>
+      )}
+    </div>
   );
 }
 

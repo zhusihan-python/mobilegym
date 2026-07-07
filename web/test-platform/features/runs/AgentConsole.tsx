@@ -6,7 +6,7 @@ import {
   type ReplayLoadState,
   type ReplayOption,
 } from './episodeReplay';
-import type { RunLiveState } from './runEvents';
+import type { LiveEpisodeProgress, RunLiveState } from './runEvents';
 
 export function AgentConsole({
   run,
@@ -14,16 +14,26 @@ export function AgentConsole({
   selectedOption,
   replayState,
   selectedStepIndex,
+  liveProgress,
 }: {
   run: RunDetail;
   live: RunLiveState | null;
   selectedOption: ReplayOption | null;
   replayState: ReplayLoadState;
   selectedStepIndex: number;
+  liveProgress: LiveEpisodeProgress | null;
 }) {
   const replay = replayFromState(replayState);
   const selectedStep = stepFromReplayState(replayState, selectedStepIndex);
   const totalSteps = replay?.steps.length ?? 0;
+  const stepLabel = selectedStep
+    ? `${selectedStep.step ?? selectedStepIndex + 1} / ${totalSteps}`
+    : liveProgress && liveProgress.stepCount > 0
+      ? `live ${liveProgress.stepCount}${liveProgress.maxSteps ? ` / ${liveProgress.maxSteps}` : ''}`
+      : 'n/a';
+  const action = selectedStep
+    ? actionLabel(selectedStep)
+    : liveProgress?.lastActionType ?? 'n/a';
 
   return (
     <aside className="tp-agent-console" aria-label="Replay console">
@@ -47,13 +57,11 @@ export function AgentConsole({
         </div>
         <div>
           <dt>Current step</dt>
-          <dd>
-            {selectedStep ? `${selectedStep.step ?? selectedStepIndex + 1} / ${totalSteps}` : 'n/a'}
-          </dd>
+          <dd>{stepLabel}</dd>
         </div>
         <div>
           <dt>Action</dt>
-          <dd>{selectedStep ? actionLabel(selectedStep) : 'n/a'}</dd>
+          <dd>{action}</dd>
         </div>
         <div>
           <dt>Thought</dt>
