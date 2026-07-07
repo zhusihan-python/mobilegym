@@ -7,9 +7,10 @@ import pytest
 
 from bench_env.env.base import Action, ActionType, Observation, StepResult
 from bench_env.task.judge import JudgeResult
+from test_platform.persistence.database import Database
+from test_platform.persistence.repositories import ReplayRepository
 from test_platform.services.execution import SerialRunExecutor
 from test_platform.tests.integration.test_single_lane_materialization import _create_run, _settings
-from test_platform.persistence.database import Database
 
 
 class _Phase:
@@ -182,11 +183,26 @@ async def test_serial_run_execution_materializes_executes_ingests_and_writes_lan
         assert agent.act_count == 1
 
         episode_attempt = database.connection.execute(
-            "SELECT state, outcome, result_json FROM episode_attempts"
+            """
+            SELECT ea.state, ea.outcome, ea.result_json, ea.artifact_root, e.episode_key
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            """
         ).fetchone()
         assert episode_attempt["state"] == "completed"
         assert episode_attempt["outcome"] == "PASS"
         assert json.loads(episode_attempt["result_json"])["is_success"] is True
+        episode_dir = settings.runs_dir / run.id / episode_attempt["artifact_root"]
+        assert episode_dir.exists()
+        assert (episode_dir / "trajectory.json").exists()
+        replay = ReplayRepository(database).get_episode_replay(
+            run.id,
+            episode_attempt["episode_key"],
+            lane_key="candidate",
+            attempt_no="1",
+        )
+        assert replay["artifact_root"] == episode_attempt["artifact_root"]
+        assert replay["steps"]
 
         lane_root = settings.runs_dir / run.id / "lanes" / "candidate"
         assert (lane_root / "meta.json").exists()

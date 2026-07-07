@@ -14,7 +14,7 @@ from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
 from bench_env.runner.base import Controller
 from bench_env.metrics import result_is_error, result_is_success
 from bench_env.config import RunnerConfig
-from bench_env.env.recorder import RunRecorder
+from bench_env.env.recorder import RunRecorder, episode_key_artifact_name
 from bench_env.runner.parallel import ParallelRunner
 from bench_env.runner.serial import PreparedWorkItem, SerialRunner
 from bench_env.task.registry import TaskRegistry
@@ -3114,12 +3114,7 @@ def _episode_artifact_name(episode_key: str) -> str:
     derived from the ORIGINAL key. The hash guarantees uniqueness even when two
     distinct keys sanitize to the same string (e.g. ``a|b`` and ``a/b`` both
     collapse to ``a_b``)."""
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", episode_key).strip("._")
-    digest = canonical_sha256(episode_key).split(":", 1)[1][:8]
-    # readable prefix (max 64 chars) + hash suffix guarantees uniqueness even
-    # when two keys sanitize to the same string (e.g. "a|b" and "a/b").
-    prefix = cleaned[:64].rstrip("._") or "episode"
-    return f"{prefix}_{digest}"
+    return episode_key_artifact_name(episode_key)
 
 
 def _episode_artifact_root(

@@ -9,10 +9,12 @@ Trajectory recording utilities.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
 import math
+import re
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,6 +49,20 @@ def _artifact_kind(path: Path) -> str:
     if suffix in {".log", ".txt"}:
         return "log"
     return "file"
+
+
+def episode_key_artifact_name(episode_key: str) -> str:
+    """Return the filesystem-safe trajectory directory name for an episode key."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", episode_key).strip("._")
+    payload = json.dumps(
+        episode_key,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()[:8]
+    prefix = cleaned[:64].rstrip("._") or "episode"
+    return f"{prefix}_{digest}"
 
 
 def allocate_run_dir(runs_root: Path, timestamp: str) -> Path:
@@ -726,6 +742,7 @@ class RunRecorder:
         task_name: str,
         extra_meta: Optional[dict[str, Any]] = None,
         trial_id: int = 0,
+        episode_key: str | None = None,
     ) -> EpisodeRecorder:
         """
         开始记录一个 episode，返回独立的 EpisodeRecorder。
@@ -737,23 +754,37 @@ class RunRecorder:
             task_name: Task description
             extra_meta: Additional metadata
             trial_id: Trial index for pass@k evaluation (0-indexed)
+            episode_key: Stable platform episode identity used for artifact
+                isolation
         """
         if self._run_dir is None:
             raise RuntimeError("Must call start_run() before start_episode()")
 
         episode_dir: Optional[Path] = None
         if self.save_trajectory and self._trajectory_dir:
-            task_id_safe = task_id.replace(".", "_").replace("/", "_").replace(" ", "_")
-            # Add trial suffix for pass@k mode (e.g., wechat_EnableDarkMode_t0)
-            # In pass@k mode (repeat_n > 1), all trials get suffix for consistency
-            if self._repeat_n > 1:
-                dir_name = f"{task_id_safe}_t{trial_id}"
+            if episode_key:
+                dir_name = episode_key_artifact_name(episode_key)
             else:
-                dir_name = task_id_safe
+                task_id_safe = task_id.replace(".", "_").replace("/", "_").replace(
+                    " ", "_"
+                )
+                # Add trial suffix for pass@k mode (e.g., wechat_EnableDarkMode_t0)
+                # In pass@k mode (repeat_n > 1), all trials get suffix for consistency
+                if self._repeat_n > 1:
+                    dir_name = f"{task_id_safe}_t{trial_id}"
+                else:
+                    dir_name = task_id_safe
             episode_dir = self._trajectory_dir / dir_name
             episode_dir.mkdir(parents=True, exist_ok=True)
 
-            meta = {"task_id": task_id, "task_name": task_name, "trial_id": trial_id, **(extra_meta or {})}
+            meta = {
+                "task_id": task_id,
+                "task_name": task_name,
+                "trial_id": trial_id,
+                **(extra_meta or {}),
+            }
+            if episode_key:
+                meta["episode_key"] = episode_key
             (episode_dir / "meta.json").write_text(_safe_json_dump(meta), encoding="utf-8")
             self._emit_artifact_created(
                 episode_dir / "meta.json",

@@ -151,7 +151,7 @@ export function getRun(runId: string): Promise<RunDetail> {
 /**
  * VS-15A: fetch the replay DTO (trajectory steps + artifact ids) for one
  * episode attempt. Defaults to the latest terminal attempt; pass a specific
- * attemptNo to scrub an older attempt.
+ * run attempt number to scrub an older attempt.
  */
 export function getEpisodeReplay(input: {
   runId: string;

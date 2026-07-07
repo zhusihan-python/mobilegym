@@ -70,6 +70,8 @@ export function chooseDefaultReplayOption(options: ReplayOption[]): ReplayOption
       if (a.laneKey === 'candidate') return -1;
       if (b.laneKey === 'candidate') return 1;
     }
+    const attemptDelta = attemptRank(b.attemptNo) - attemptRank(a.attemptNo);
+    if (attemptDelta !== 0) return attemptDelta;
     return 0;
   })[0];
 }
@@ -159,6 +161,10 @@ function defaultLaneKey(run: RunDetail) {
 function outcomeRank(outcome: string | null) {
   if (!outcome) return 3;
   return DEBUG_OUTCOME_RANK[outcome.toUpperCase()] ?? 3;
+}
+
+function attemptRank(attemptNo: number | 'latest') {
+  return attemptNo === 'latest' ? Number.MAX_SAFE_INTEGER : attemptNo;
 }
 
 function baseTaskLabel(episodeKey: string) {

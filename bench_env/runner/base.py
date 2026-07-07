@@ -323,6 +323,7 @@ class Controller:
                     task_id=task.id, task_name=task.description,
                     extra_meta={"agent": agent.name, "max_steps": max_steps},
                     trial_id=trial_id,
+                    episode_key=episode_key,
                 )
 
             logger.info(f"Instruction: {task.description}")

@@ -518,14 +518,16 @@ class RunRepository:
         episode_attempts = self.database.connection.execute(
             """
             SELECT e.episode_key, l.lane_key, la.run_attempt_id,
-                   la.id AS lane_attempt_id, ea.attempt_no, ea.state,
-                   ea.outcome, ea.error_code, ea.artifact_root
+                   la.id AS lane_attempt_id, ea.id AS episode_attempt_id,
+                   ra.attempt_no, ea.attempt_no AS episode_attempt_no,
+                   ea.state, ea.outcome, ea.error_code, ea.artifact_root
             FROM episode_attempts AS ea
             JOIN episodes AS e ON e.id = ea.episode_id
             JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
             JOIN lanes AS l ON l.id = la.lane_id
+            JOIN run_attempts AS ra ON ra.id = la.run_attempt_id
             WHERE e.run_id = ?
-            ORDER BY la.run_attempt_id, e.episode_key, l.lane_key, ea.attempt_no
+            ORDER BY ra.attempt_no, e.episode_key, l.lane_key, ea.attempt_no
             """,
             (run_id,),
         ).fetchall()
@@ -1449,13 +1451,15 @@ class ReplayRepository:
                 lane_key = "candidate"  # safe default for paired runs
         rows = self.database.connection.execute(
             """
-            SELECT ea.id, ea.attempt_no, ea.state, ea.outcome, ea.error_code,
-                   ea.result_json, ea.artifact_root, l.lane_key
+            SELECT ea.id, ra.attempt_no, ea.attempt_no AS episode_attempt_no,
+                   ea.state, ea.outcome, ea.error_code, ea.result_json,
+                   ea.artifact_root, l.lane_key
             FROM episode_attempts AS ea
             JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
             JOIN lanes AS l ON l.id = la.lane_id
+            JOIN run_attempts AS ra ON ra.id = la.run_attempt_id
             WHERE ea.episode_id = ?
-            ORDER BY ea.attempt_no DESC, ea.created_at DESC, ea.id DESC
+            ORDER BY ra.attempt_no DESC, ea.attempt_no DESC, ea.created_at DESC, ea.id DESC
             """,
             (episode_id,),
         ).fetchall()

@@ -33,18 +33,24 @@ export function RunObservatory({
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [screenshotMode, setScreenshotMode] = useState<'annotated' | 'raw'>('annotated');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const followsLive = run.state === 'running' || run.state === 'queued';
 
   useEffect(() => {
     setSelectedId((current) => {
+      if (!selectionTouched) {
+        return defaultOption?.id ?? null;
+      }
       if (current && options.some((option) => option.id === current)) {
         return current;
       }
       return defaultOption?.id ?? null;
     });
-  }, [defaultOption?.id, options]);
+  }, [defaultOption?.id, options, selectionTouched]);
 
-  const activeLiveProgress = liveProgressByKey(live, live?.activeLiveEpisodeKey)
-    ?? liveProgressByKey(live, live?.latestLiveEpisodeKey);
+  const activeLiveProgress = followsLive
+    ? liveProgressByKey(live, live?.activeLiveEpisodeKey)
+      ?? liveProgressByKey(live, live?.latestLiveEpisodeKey)
+    : null;
   const activeLiveOption = liveOptionForProgress(options, activeLiveProgress);
   useEffect(() => {
     if (!selectionTouched && activeLiveOption) {

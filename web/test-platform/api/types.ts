@@ -112,7 +112,9 @@ export type RunDetail = RunSummary & {
     lane_key: string;
     run_attempt_id?: string;
     lane_attempt_id?: string;
+    episode_attempt_id?: string;
     attempt_no: number;
+    episode_attempt_no?: number;
     state: string;
     outcome: 'PASS' | 'FAIL' | 'ERROR' | 'CANCELLED' | 'SKIPPED' | string | null;
     error_code: string | null;

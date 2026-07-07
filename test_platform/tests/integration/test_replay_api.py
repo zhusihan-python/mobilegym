@@ -159,6 +159,14 @@ def _write_trajectory(settings: PlatformSettings, run_id: str) -> str:
     Returns the episode artifact_root (the trajectory directory).
     """
     artifact_root = "lanes/candidate/trajectory/alipay_CheckBalance"
+    return _write_trajectory_at(settings, run_id, artifact_root)
+
+
+def _write_trajectory_at(
+    settings: PlatformSettings,
+    run_id: str,
+    artifact_root: str,
+) -> str:
     episode_dir = settings.runs_dir / run_id / artifact_root
     episode_dir.mkdir(parents=True, exist_ok=True)
     trajectory = [
@@ -280,6 +288,62 @@ def test_replay_explicit_attempt_no_and_lane_key(tmp_path):
         body = response.json()
         assert body["attempt_no"] == 1
         assert body["lane_key"] == "candidate"
+
+
+def test_replay_attempt_no_selects_run_attempt_number(tmp_path):
+    settings = _settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        run_id = _seed_replay_run(client.app.state.database)
+        database = client.app.state.database
+        initial_root = _write_trajectory(settings, run_id)
+        retry_root = _write_trajectory_at(
+            settings,
+            run_id,
+            "lanes/candidate/attempts/0002/trajectory/alipay_CheckBalance_retry",
+        )
+        database.connection.execute(
+            "INSERT INTO run_attempts (id, run_id, attempt_no, reason, state, "
+            "started_at, ended_at, created_at) "
+            "VALUES ('attempt2', 'run_replay', 2, 'retry', 'completed', ?, ?, ?)",
+            (NOW, NOW, NOW),
+        )
+        database.connection.execute(
+            "INSERT INTO lane_attempts "
+            "(id, lane_id, run_attempt_id, state, artifact_root, created_at, "
+            "started_at, ended_at) "
+            "VALUES ('attempt2_candidate', 'lane_cand', 'attempt2', 'completed', "
+            "'lanes/candidate/attempts/0002', ?, ?, ?)",
+            (NOW, NOW, NOW),
+        )
+        database.connection.execute(
+            "INSERT INTO episode_attempts "
+            "(id, episode_id, lane_attempt_id, attempt_no, state, outcome, "
+            "error_code, result_json, artifact_root, started_at, ended_at, created_at) "
+            "VALUES ('ea_cand_ep0_retry', 'ep0', 'attempt2_candidate', 1, "
+            "'completed', 'ERROR', 'EXECUTION_ERROR', '{\"is_error\": true}', "
+            "?, ?, ?, ?)",
+            (retry_root, NOW, NOW, NOW),
+        )
+        database.connection.commit()
+
+        initial = client.get(
+            f"/api/platform/v1/runs/{run_id}/episodes/alipay.CheckBalance::0/replay"
+            "?lane_key=candidate&attempt_no=1"
+        )
+        retry = client.get(
+            f"/api/platform/v1/runs/{run_id}/episodes/alipay.CheckBalance::0/replay"
+            "?lane_key=candidate&attempt_no=2"
+        )
+
+        assert initial.status_code == 200
+        assert initial.json()["artifact_root"] == initial_root
+        assert initial.json()["attempt_no"] == 1
+        assert retry.status_code == 200
+        assert retry.json()["episode_attempt_id"] == "ea_cand_ep0_retry"
+        assert retry.json()["artifact_root"] == retry_root
+        assert retry.json()["attempt_no"] == 2
 
 
 def test_replay_missing_run_returns_run_not_found(tmp_path):

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
+import { chooseDefaultReplayOption } from '../web/test-platform/features/runs/episodeReplay';
 
 const project = {
   id: 'project-1',
@@ -106,6 +107,40 @@ const liveRun = {
       nested: { bearer_token: 'token-secret' },
     },
   },
+};
+
+const completedRetryRun = {
+  ...run,
+  state: 'completed',
+  progress: {
+    planned_episodes: 1,
+    planned_lane_episodes: 1,
+    completed_episodes: 1,
+    completed_lane_episodes: 2,
+  },
+  episode_identities: [run.episode_identities[1]],
+  episode_attempts: [
+    {
+      episode_key: 'fake.Fail|i0|s1|r1|t0',
+      lane_key: 'candidate',
+      attempt_no: 1,
+      episode_attempt_no: 1,
+      state: 'completed',
+      outcome: 'FAIL',
+      error_code: 'ASSERTION_FAILURE',
+      artifact_root: 'lanes/candidate/trajectory/fake_Fail',
+    },
+    {
+      episode_key: 'fake.Fail|i0|s1|r1|t0',
+      lane_key: 'candidate',
+      attempt_no: 2,
+      episode_attempt_no: 1,
+      state: 'completed',
+      outcome: 'ERROR',
+      error_code: 'EXECUTION_ERROR',
+      artifact_root: 'lanes/candidate/attempts/0002/trajectory/fake_Fail',
+    },
+  ],
 };
 
 class FakeEventSource {
@@ -402,5 +437,134 @@ describe('Run Observatory', () => {
     expect(settingsJson).toContain('[redacted]');
     expect(settingsJson).not.toContain('sk-live-secret');
     expect(settingsJson).not.toContain('token-secret');
+  });
+
+  it('defaults to the newest attempt when debug outcomes have the same priority', () => {
+    const selected = chooseDefaultReplayOption([
+      {
+        id: 'old-fail',
+        episodeKey: 'fake.Task|old',
+        laneKey: 'candidate',
+        attemptNo: 1,
+        taskId: 'fake.Task',
+        outcome: 'FAIL',
+        errorCode: 'ASSERTION_FAILURE',
+        artifactRoot: 'old',
+      },
+      {
+        id: 'new-error',
+        episodeKey: 'fake.Task|new',
+        laneKey: 'candidate',
+        attemptNo: 2,
+        taskId: 'fake.Task',
+        outcome: 'ERROR',
+        errorCode: 'EXECUTION_ERROR',
+        artifactRoot: 'new',
+      },
+    ]);
+
+    expect(selected?.id).toBe('new-error');
+    expect(chooseDefaultReplayOption([
+      {
+        id: 'old-fail',
+        episodeKey: 'fake.Task|old',
+        laneKey: 'candidate',
+        attemptNo: 1,
+        taskId: 'fake.Task',
+        outcome: 'FAIL',
+        errorCode: 'ASSERTION_FAILURE',
+        artifactRoot: 'old',
+      },
+      {
+        id: 'new-pass',
+        episodeKey: 'fake.Task|new',
+        laneKey: 'candidate',
+        attemptNo: 2,
+        taskId: 'fake.Task',
+        outcome: 'PASS',
+        errorCode: null,
+        artifactRoot: 'new',
+      },
+    ])?.id).toBe('old-fail');
+  });
+
+  it('does not let completed-run event backlog override the default replay attempt', async () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const decodedPath = decodeURIComponent(url.pathname);
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/runs/run-observatory') {
+        return jsonResponse(completedRetryRun);
+      }
+      if (url.pathname.endsWith('/report')) {
+        return jsonResponse({ error: { code: 'NO_REPORT', message: 'No report.', details: [] } }, 404);
+      }
+      if (url.pathname.endsWith('/diagnostics')) {
+        return jsonResponse({
+          summary: { total: 0, by_severity: {}, by_category: {} },
+          items: [],
+        });
+      }
+      if (url.pathname.endsWith('/artifacts')) {
+        return jsonResponse({ items: [] });
+      }
+      if (decodedPath.includes('/episodes/fake.Fail|i0|s1|r1|t0/replay')) {
+        expect(url.searchParams.get('attempt_no')).toBe('2');
+        return jsonResponse({
+          ...replayBody('fake.Fail|i0|s1|r1|t0'),
+          attempt_no: 2,
+          outcome: 'ERROR',
+          error_code: 'EXECUTION_ERROR',
+          steps: [],
+        });
+      }
+
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    const picker = await screen.findByLabelText('Replay episode') as HTMLSelectElement;
+    await waitFor(() => {
+      expect(picker.selectedOptions[0]?.textContent).toContain('attempt 2');
+    });
+
+    FakeEventSource.lastInstance!.dispatch('episode.started', {
+      id: 'evt-completed-1',
+      run_id: completedRetryRun.id,
+      sequence: 1,
+      type: 'episode.started',
+      occurred_at: '2026-07-03T00:00:05.000Z',
+      payload: {
+        episode_key: 'fake.Fail|i0|s1|r1|t0',
+        task_id: 'fake.Fail',
+        max_steps: 15,
+      },
+      payload_version: 1,
+      run_attempt_id: null,
+      lane_id: null,
+      lane_attempt_id: null,
+      episode_id: null,
+      episode_attempt_id: null,
+      worker_id: 'W0',
+    });
+
+    await waitFor(() => {
+      expect(picker.selectedOptions[0]?.textContent).toContain('attempt 2');
+    });
   });
 });
