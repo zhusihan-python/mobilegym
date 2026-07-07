@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { getEpisodeReplay } from '../../api/client';
 import type { RunDetail } from '../../api/types';
+import { AgentConsole } from './AgentConsole';
 import { EpisodePicker } from './EpisodePicker';
+import { EvidenceDock } from './EvidenceDock';
 import { PhoneReplayStage } from './PhoneReplayStage';
+import { StepTimeline } from './StepTimeline';
 import {
   buildReplayOptions,
   chooseDefaultReplayOption,
@@ -88,6 +91,11 @@ export function RunObservatory({
       </div>
 
       <div className="tp-observatory-grid">
+        <StepTimeline
+          replayState={replayState}
+          selectedStepIndex={selectedStepIndex}
+          onSelectStep={setSelectedStepIndex}
+        />
         <PhoneReplayStage
           runId={run.id}
           replayState={replayState}
@@ -96,43 +104,20 @@ export function RunObservatory({
           onSelectStep={setSelectedStepIndex}
           onScreenshotModeChange={setScreenshotMode}
         />
-        <aside className="tp-agent-console" aria-label="Replay console">
-          <span className="tp-kicker">Agent console</span>
-          <dl>
-            <div>
-              <dt>Run state</dt>
-              <dd>{run.state}</dd>
-            </div>
-            <div>
-              <dt>Stream</dt>
-              <dd>{live?.connected ? 'connected' : 'snapshot'}</dd>
-            </div>
-            <div>
-              <dt>Episode</dt>
-              <dd className="tp-mono">{selectedOption?.episodeKey ?? 'n/a'}</dd>
-            </div>
-            <div>
-              <dt>Lane</dt>
-              <dd>{selectedOption?.laneKey ?? 'n/a'}</dd>
-            </div>
-            <div>
-              <dt>Outcome</dt>
-              <dd>
-                {selectedOption?.outcome ? (
-                  <span className={`tp-outcome tp-outcome-${selectedOption.outcome.toLowerCase()}`}>
-                    {selectedOption.outcome}
-                  </span>
-                ) : (
-                  'planned'
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>Error</dt>
-              <dd>{selectedOption?.errorCode ?? 'n/a'}</dd>
-            </div>
-          </dl>
-        </aside>
+        <div className="tp-observatory-side">
+          <AgentConsole
+            run={run}
+            live={live}
+            selectedOption={selectedOption ?? null}
+            replayState={replayState}
+            selectedStepIndex={selectedStepIndex}
+          />
+          <EvidenceDock
+            runId={run.id}
+            replayState={replayState}
+            selectedStepIndex={selectedStepIndex}
+          />
+        </div>
       </div>
     </section>
   );

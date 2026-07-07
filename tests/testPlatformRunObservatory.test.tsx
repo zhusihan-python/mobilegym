@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -124,6 +124,7 @@ function replayBody(episodeKey: string) {
     result: {
       is_success: !isFail,
       execution: { stop_reason: isFail ? 'MAX_STEPS' : 'COMPLETE' },
+      ...(isFail ? {} : { answer_completion_accepted: true }),
     },
     steps: [
       {
@@ -136,8 +137,8 @@ function replayBody(episodeKey: string) {
         summary: '',
         screenshot_artifact_id: isFail ? 'fail-raw-1' : 'pass-raw-1',
         screenshot_annotated_artifact_id: isFail ? 'fail-annot-1' : 'pass-annot-1',
-        model_response_artifact_id: null,
-        model_prompt_artifact_id: null,
+        model_response_artifact_id: isFail ? 'fail-response-1' : 'pass-response-1',
+        model_prompt_artifact_id: isFail ? 'fail-prompt-1' : 'pass-prompt-1',
       },
       {
         step: 2,
@@ -149,8 +150,8 @@ function replayBody(episodeKey: string) {
         summary: '',
         screenshot_artifact_id: isFail ? 'fail-raw-2' : 'pass-raw-2',
         screenshot_annotated_artifact_id: isFail ? 'fail-annot-2' : 'pass-annot-2',
-        model_response_artifact_id: null,
-        model_prompt_artifact_id: null,
+        model_response_artifact_id: isFail ? 'fail-response-2' : 'pass-response-2',
+        model_prompt_artifact_id: isFail ? 'fail-prompt-2' : 'pass-prompt-2',
       },
     ],
   };
@@ -211,12 +212,30 @@ describe('Run Observatory', () => {
     const screenshot = await screen.findByTestId('tp-replay-screenshot') as HTMLImageElement;
     expect(screenshot.getAttribute('src')).toContain('/artifacts/fail-annot-2/content');
     expect(screen.getByText('Step 2: ANSWER')).toBeTruthy();
-    expect(screen.getByText('submit the final answer')).toBeTruthy();
+    expect(within(screen.getByTestId('tp-phone-stage')).getByText('submit the final answer'))
+      .toBeTruthy();
+    expect(screen.getByRole('button', { name: /Step 2 ANSWER/ }).getAttribute('aria-current'))
+      .toBe('step');
+    expect(screen.getByTestId('tp-judge-result-json').textContent).toContain('MAX_STEPS');
+
+    fireEvent.click(screen.getByRole('button', { name: /Step 1 CLICK/ }));
+    expect(screen.getByRole('button', { name: /Step 1 CLICK/ }).getAttribute('aria-current'))
+      .toBe('step');
+    expect(await screen.findByText('Step 1: CLICK')).toBeTruthy();
+    expect(screenshot.getAttribute('src')).toContain('/artifacts/fail-annot-1/content');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompt' }));
+    expect(screen.getByRole('link', { name: 'Open prompt artifact' }).getAttribute('href'))
+      .toContain('/artifacts/fail-prompt-1/content');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Response' }));
+    expect(screen.getByRole('link', { name: 'Open response artifact' }).getAttribute('href'))
+      .toContain('/artifacts/fail-response-1/content');
 
     fireEvent.change(screen.getByLabelText('Replay screenshot mode'), {
       target: { value: 'raw' },
     });
-    expect(screenshot.getAttribute('src')).toContain('/artifacts/fail-raw-2/content');
+    expect(screenshot.getAttribute('src')).toContain('/artifacts/fail-raw-1/content');
 
     const passOption = Array.from(picker.options).find((option) =>
       option.textContent?.includes('fake.Pass'),
@@ -229,5 +248,8 @@ describe('Run Observatory', () => {
     });
     expect((screen.getByTestId('tp-replay-screenshot') as HTMLImageElement).getAttribute('src'))
       .toContain('/artifacts/pass-raw-2/content');
+    fireEvent.click(screen.getByRole('tab', { name: 'Judge' }));
+    expect(screen.getByTestId('tp-answer-completion-badge').textContent)
+      .toBe('answer_completion_accepted');
   });
 });

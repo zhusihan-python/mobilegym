@@ -93,6 +93,54 @@ export function artifactContentHref(runId: string, artifactId: string) {
   )}/content`;
 }
 
+export function replayFromState(state: ReplayLoadState): EpisodeReplay | null {
+  return state.status === 'loaded' ? state.replay : null;
+}
+
+export function stepFromReplayState(
+  state: ReplayLoadState,
+  selectedStepIndex: number,
+): EpisodeReplayStep | null {
+  const replay = replayFromState(state);
+  return replay?.steps[selectedStepIndex] ?? null;
+}
+
+export function formatInlineJson(value: unknown, fallback = 'n/a', maxLength = 90) {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!text || text === '{}' || text === '[]') {
+    return fallback;
+  }
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+export function formatPrettyJson(value: unknown, fallback = 'n/a') {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+export function isAnswerCompletionAccepted(replay: EpisodeReplay | null) {
+  return replay?.result?.answer_completion_accepted === true;
+}
+
+export function terminalMarkerForReplay(replay: EpisodeReplay | null) {
+  if (!replay) {
+    return null;
+  }
+  if (isAnswerCompletionAccepted(replay)) {
+    return 'answer_completion_accepted';
+  }
+  const stopReason = readStringPath(replay.result, ['execution', 'stop_reason']);
+  if (stopReason) {
+    return stopReason;
+  }
+  return replay.error_code ?? replay.outcome;
+}
+
 export function replayOptionId(
   episodeKey: string,
   laneKey: string,
@@ -115,4 +163,15 @@ function outcomeRank(outcome: string | null) {
 
 function baseTaskLabel(episodeKey: string) {
   return episodeKey.split('|')[0] || episodeKey;
+}
+
+function readStringPath(value: unknown, path: string[]) {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!current || typeof current !== 'object' || !(key in current)) {
+      return null;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === 'string' ? current : null;
 }
