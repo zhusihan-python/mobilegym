@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import shutil
 import sqlite3
+import threading
 from typing import Any, Protocol
 
 from test_platform.config import PlatformSettings
@@ -41,6 +42,44 @@ logger = logging.getLogger(__name__)
 _CANCELLABLE_RUN_STATES = frozenset(
     {"queued", "preparing", "running", "evaluating", "reporting"}
 )
+
+
+class _RuntimeRunSecretStore:
+    """Process-local secrets for runs launched through the API.
+
+    Secrets deliberately do not enter run_plan_json, lane runner_config_json, or
+    artifacts. They only survive for the current API process lifetime, which is
+    enough for newly-launched dogfood runs and avoids leaking online model keys.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._by_run_id: dict[str, dict[str, str]] = {}
+
+    def register(self, run_id: str, secrets: dict[str, str]) -> None:
+        cleaned = {
+            key: value.strip()
+            for key, value in secrets.items()
+            if isinstance(value, str) and value.strip()
+        }
+        if not cleaned:
+            return
+        with self._lock:
+            current = self._by_run_id.setdefault(run_id, {})
+            current.update(cleaned)
+
+    def get(self, run_id: str | None) -> dict[str, str]:
+        if not run_id:
+            return {}
+        with self._lock:
+            return dict(self._by_run_id.get(run_id, {}))
+
+    def discard(self, run_id: str) -> None:
+        with self._lock:
+            self._by_run_id.pop(run_id, None)
+
+
+_RUN_SECRET_STORE = _RuntimeRunSecretStore()
 
 
 class FakeRunSupervisor:
@@ -313,29 +352,28 @@ class RunSupervisor:
         task.add_done_callback(lambda _t, rid=run_id: self._tasks.pop(rid, None))
 
     async def _execute(self, run_id: str, token: Any) -> None:
-        from bench_env.runner.cancellation import RunCancelled
+        try:
+            # VS-09 Contract 8: load the RunPlan FIRST to decide routing. A 2-lane
+            # plan uses the paired path (the paired executor builds its OWN per-lane
+            # event sinks — Contract 3 — so the supervisor does NOT build the
+            # single-lane sink for it). A 1-lane plan keeps the VS-07 lane-scoped
+            # path unchanged.
+            plan_lane_count = self._plan_lane_count(run_id)
 
-        from test_platform.execution.runner_sink import PlatformRunnerEventSink
+            if plan_lane_count == 2:
+                # Paired path: the paired executor owns per-lane sinks + routing.
+                terminal_event = await self._execute_paired(run_id, token)
+            else:
+                terminal_event = await self._execute_single_lane(run_id, token)
 
-        # VS-09 Contract 8: load the RunPlan FIRST to decide routing. A 2-lane
-        # plan uses the paired path (the paired executor builds its OWN per-lane
-        # event sinks — Contract 3 — so the supervisor does NOT build the
-        # single-lane sink for it). A 1-lane plan keeps the VS-07 lane-scoped
-        # path unchanged.
-        plan_lane_count = self._plan_lane_count(run_id)
-
-        if plan_lane_count == 2:
-            # Paired path: the paired executor owns per-lane sinks + routing.
-            terminal_event = await self._execute_paired(run_id, token)
-        else:
-            terminal_event = await self._execute_single_lane(run_id, token)
-
-        # Emit the terminal run.* event exactly once (the executor does NOT emit
-        # run.* terminal events — only the supervisor does, to avoid duplicates).
-        if terminal_event == "run.completed":
-            self._emit_terminal(run_id, "run.completed")
-        # run.cancelled / run.failed are emitted inside _mark_run_cancelled /
-        # _mark_run_failed respectively.
+            # Emit the terminal run.* event exactly once (the executor does NOT emit
+            # run.* terminal events — only the supervisor does, to avoid duplicates).
+            if terminal_event == "run.completed":
+                self._emit_terminal(run_id, "run.completed")
+            # run.cancelled / run.failed are emitted inside _mark_run_cancelled /
+            # _mark_run_failed respectively.
+        finally:
+            _RUN_SECRET_STORE.discard(run_id)
 
     async def _execute_single_lane(self, run_id: str, token: Any) -> str:
         """VS-05/06/07/08 single-lane execution path (unchanged)."""
@@ -505,6 +543,7 @@ class RunSupervisor:
             return _types.SimpleNamespace(runner_config={})
         runner_config = json.loads(row["runner_config_json"]) if row["runner_config_json"] else {}
         return _types.SimpleNamespace(
+            run_id=run_id,
             lane_key=str(row["lane_key"]),
             runner_config=runner_config,
         )
@@ -654,6 +693,7 @@ class RunService:
         require_execution_config: bool = False,
     ) -> RunDetail:
         execution_overrides = _clean_execution_overrides(execution_overrides)
+        execution_secrets = _execution_secrets_from_overrides(execution_overrides)
         request_payload: dict[str, Any] = {
             "workflow_version_id": workflow_version_id,
             "name": name,
@@ -664,6 +704,8 @@ class RunService:
         request_hash = canonical_sha256(request_payload)
         existing = self._find_idempotent_run(idempotency_key, request_hash)
         if existing is not None:
+            if execution_secrets and existing.state in _CANCELLABLE_RUN_STATES:
+                _RUN_SECRET_STORE.register(existing.id, execution_secrets)
             return existing
 
         workflow_repository = WorkflowRepository(self.database)
@@ -749,6 +791,8 @@ class RunService:
                 details=[{"run_id": run_id}],
             ) from exc
 
+        if execution_secrets:
+            _RUN_SECRET_STORE.register(run_id, execution_secrets)
         self.supervisor.submit(run_id)
         return RunRepository(self.database).get(run_id)
 
@@ -1799,6 +1843,7 @@ _ALLOWED_EXECUTION_OVERRIDE_KEYS = frozenset(
         "agent",
         "model_name",
         "model_base_url",
+        "model_api_key",
         "temperature",
         "top_p",
         "max_tokens",
@@ -1824,6 +1869,14 @@ def _clean_execution_overrides(
         if value is not None:
             cleaned[key] = value
     return cleaned
+
+
+def _execution_secrets_from_overrides(overrides: dict[str, Any]) -> dict[str, str]:
+    secrets: dict[str, str] = {}
+    model_api_key = overrides.get("model_api_key")
+    if isinstance(model_api_key, str) and model_api_key.strip():
+        secrets["model_api_key"] = model_api_key.strip()
+    return secrets
 
 
 def _definition_with_execution_overrides(
@@ -2081,7 +2134,22 @@ def _runner_config_for_lane(lane: Any, settings: PlatformSettings) -> Any:
 
     from test_platform.services.execution import _runner_config
 
-    return dataclasses_replace(_runner_config(lane), runs_dir=settings.runs_dir)
+    config = dataclasses_replace(_runner_config(lane), runs_dir=settings.runs_dir)
+    run_id = _run_id_for_lane(lane)
+    secrets = _RUN_SECRET_STORE.get(run_id)
+    if secrets:
+        config = dataclasses_replace(config, **secrets)
+    return config
+
+
+def _run_id_for_lane(lane: Any) -> str | None:
+    run_id = getattr(lane, "run_id", None)
+    if isinstance(run_id, str) and run_id:
+        return run_id
+    lane_id = getattr(lane, "lane_id", None)
+    if isinstance(lane_id, str) and ":" in lane_id:
+        return lane_id.split(":", 1)[0]
+    return None
 
 
 def _build_env(config: Any) -> Any:

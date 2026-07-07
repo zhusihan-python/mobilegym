@@ -47,6 +47,7 @@ export function RunsPage() {
   const [modelName, setModelName] = useState(
     () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
   );
+  const [modelApiKey, setModelApiKey] = useState('');
   const [launchState, setLaunchState] = useState<
     { status: 'idle' } | { status: 'submitting' } | { status: 'error'; message: string }
   >({ status: 'idle' });
@@ -168,6 +169,7 @@ export function RunsPage() {
     const trimmedAgent = agent.trim();
     const trimmedModelBaseUrl = modelBaseUrl.trim();
     const trimmedModelName = modelName.trim();
+    const trimmedModelApiKey = modelApiKey.trim();
     if (!selectedVersionId || !trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
     window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
     window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
@@ -182,6 +184,7 @@ export function RunsPage() {
         agent: trimmedAgent,
         modelBaseUrl: trimmedModelBaseUrl,
         modelName: trimmedModelName,
+        modelApiKey: trimmedModelApiKey || undefined,
       },
     })
       .then((run) => navigate(`/runs/${run.id}`))
@@ -244,6 +247,16 @@ export function RunsPage() {
                 value={modelName}
                 onChange={(event) => setModelName(event.target.value)}
                 placeholder="local-model"
+              />
+            </label>
+            <label>
+              <span>Model API key</span>
+              <input
+                type="password"
+                value={modelApiKey}
+                onChange={(event) => setModelApiKey(event.target.value)}
+                placeholder="Optional for local models"
+                autoComplete="off"
               />
             </label>
             <button

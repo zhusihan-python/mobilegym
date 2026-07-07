@@ -82,6 +82,7 @@ export function WorkflowsPage() {
   const [runModelName, setRunModelName] = useState(
     () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
   );
+  const [runModelApiKey, setRunModelApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   // VS-10 Contract 3: create-run is the authoritative gate (409). When a paired
   // run is rejected for constraint violations, surface the structured list.
@@ -233,6 +234,7 @@ export function WorkflowsPage() {
     const trimmedAgent = runAgent.trim();
     const trimmedModelBaseUrl = runModelBaseUrl.trim();
     const trimmedModelName = runModelName.trim();
+    const trimmedModelApiKey = runModelApiKey.trim();
     if (!trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
     window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
     window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
@@ -249,6 +251,7 @@ export function WorkflowsPage() {
         agent: trimmedAgent,
         modelBaseUrl: trimmedModelBaseUrl,
         modelName: trimmedModelName,
+        modelApiKey: trimmedModelApiKey || undefined,
       },
     })
       .then((run) => navigate(`/runs/${run.id}`))
@@ -417,6 +420,16 @@ export function WorkflowsPage() {
             value={runModelName}
             onChange={(event) => setRunModelName(event.target.value)}
             placeholder="local-model"
+          />
+
+          <label htmlFor="tp-workflow-model-api-key">Model API key</label>
+          <input
+            id="tp-workflow-model-api-key"
+            type="password"
+            value={runModelApiKey}
+            onChange={(event) => setRunModelApiKey(event.target.value)}
+            placeholder="Optional for local models"
+            autoComplete="off"
           />
         </div>
 

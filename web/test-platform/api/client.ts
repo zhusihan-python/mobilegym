@@ -102,6 +102,7 @@ export function createRun(input: {
     agent: string;
     modelName: string;
     modelBaseUrl: string;
+    modelApiKey?: string;
   };
 }): Promise<RunDetail> {
   return apiFetch<RunDetail>('/runs', {
@@ -117,6 +118,7 @@ export function createRun(input: {
               agent: input.execution.agent,
               model_name: input.execution.modelName,
               model_base_url: input.execution.modelBaseUrl,
+              model_api_key: input.execution.modelApiKey || undefined,
             }
           : undefined,
       },

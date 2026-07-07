@@ -329,6 +329,9 @@ describe('Test Platform immutable run planning', () => {
     fireEvent.change(screen.getByLabelText('Model name'), {
       target: { value: 'dogfood-model' },
     });
+    fireEvent.change(screen.getByLabelText('Model API key'), {
+      target: { value: 'sk-online-vision-secret' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Launch run' }));
 
     await waitFor(() => {
@@ -339,6 +342,7 @@ describe('Test Platform immutable run planning', () => {
             agent: 'generic_v2',
             model_base_url: 'http://127.0.0.1:1234/v1',
             model_name: 'dogfood-model',
+            model_api_key: 'sk-online-vision-secret',
           },
         },
       });

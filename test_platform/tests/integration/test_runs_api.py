@@ -2,7 +2,11 @@ from fastapi.testclient import TestClient
 
 from test_platform.api.app import create_app
 from test_platform.config import PlatformSettings
-from test_platform.services.runs import FakeRunSupervisor
+from test_platform.services.runs import (
+    FakeRunSupervisor,
+    _RUN_SECRET_STORE,
+    _runner_config_for_lane,
+)
 
 
 def _settings(tmp_path):
@@ -178,6 +182,51 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
         assert body["run_plan"]["lanes"][0]["runner_config"]["agent"] == "generic_v2"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_base_url"] == "http://127.0.0.1:1234/v1"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_name"] == "dogfood-model"
+
+
+def test_runs_api_accepts_online_model_key_without_persisting_secret(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=FakeRunSupervisor(),
+    )
+
+    with TestClient(app) as client:
+        _project, _revision, version = _published_version(client)
+        response = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version["id"],
+                "name": "online vision model",
+                "overrides": {
+                    "seed": 321,
+                    "execution": {
+                        **_execution_overrides(),
+                        "model_api_key": "sk-online-vision-secret",
+                    },
+                },
+            },
+            headers={"Idempotency-Key": "ci-launch-online-model-key"},
+        )
+
+        assert response.status_code == 201
+        assert "sk-online-vision-secret" not in response.text
+        body = response.json()
+        runner_config = body["run_plan"]["lanes"][0]["runner_config"]
+        assert runner_config["model_api_key_configured"] is True
+        assert "model_api_key" not in runner_config
+
+        lane = type(
+            "Lane",
+            (),
+            {
+                "run_id": body["id"],
+                "runner_config": runner_config,
+            },
+        )()
+        config = _runner_config_for_lane(lane, client.app.state.settings)
+        assert config.model_api_key == "sk-online-vision-secret"
+        _RUN_SECRET_STORE.discard(body["id"])
 
 
 def test_runs_api_rejects_launch_without_execution_config(tmp_path):
