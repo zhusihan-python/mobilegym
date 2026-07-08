@@ -1470,11 +1470,12 @@ class RunService:
     def _planned_lane_episodes(self, run_id: str) -> list[dict[str, Any]]:
         rows = self.database.connection.execute(
             """
-            SELECT e.id AS episode_id, e.episode_key, l.id AS lane_id, l.lane_key
+            SELECT e.id AS episode_id, e.episode_key, e.sequence_index,
+                   e.sequence_group_id, l.id AS lane_id, l.lane_key
             FROM episodes AS e
             CROSS JOIN lanes AS l
             WHERE e.run_id = ? AND l.run_id = ?
-            ORDER BY e.episode_key, l.lane_key
+            ORDER BY e.sequence_index IS NULL, e.sequence_index, e.episode_key, l.lane_key
             """,
             (run_id, run_id),
         ).fetchall()
@@ -1504,7 +1505,7 @@ class RunService:
         *,
         run_id: str,
         reason: str,
-        selected: list[dict[str, str]],
+        selected: list[dict[str, Any]],
     ) -> dict[str, Any]:
         now = _utc_timestamp()
         connection = self.database.connection

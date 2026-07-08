@@ -6,9 +6,9 @@ from typing import Any
 def select_retry_lane_episodes(
     planned_lane_episodes: list[dict[str, Any]],
     latest_attempts: list[dict[str, Any]],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     attempts = _attempts_by_lane_episode(latest_attempts)
-    selected: list[dict[str, str]] = []
+    selected: list[dict[str, Any]] = []
     for planned in planned_lane_episodes:
         key = _lane_episode_tuple(planned)
         attempt = attempts.get(key)
@@ -25,9 +25,9 @@ def select_retry_lane_episodes(
 def select_resume_lane_episodes(
     planned_lane_episodes: list[dict[str, Any]],
     latest_attempts: list[dict[str, Any]],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     attempts = _attempts_by_lane_episode(latest_attempts)
-    selected: list[dict[str, str]] = []
+    selected: list[dict[str, Any]] = []
     for planned in planned_lane_episodes:
         key = _lane_episode_tuple(planned)
         attempt = attempts.get(key)
@@ -52,8 +52,12 @@ def _lane_episode_tuple(value: dict[str, Any]) -> tuple[str, str]:
     return (str(value["episode_key"]), str(value["lane_key"]))
 
 
-def _lane_episode_output(value: dict[str, Any]) -> dict[str, str]:
-    return {
+def _lane_episode_output(value: dict[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {
         "episode_key": str(value["episode_key"]),
         "lane_key": str(value["lane_key"]),
     }
+    if value.get("sequence_group_id") is not None:
+        output["sequence_index"] = value.get("sequence_index")
+        output["sequence_group_id"] = str(value["sequence_group_id"])
+    return output

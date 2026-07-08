@@ -251,6 +251,43 @@ def test_retry_creates_new_attempt_selection_without_mutating_original_results(t
         ]
 
 
+def test_retry_preserves_manual_sequence_metadata_in_selected_episodes(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_retryable_single_lane_run(database)
+        database.connection.execute(
+            """
+            UPDATE episodes
+            SET sequence_index = CASE id WHEN 'ep2' THEN 0 WHEN 'ep1' THEN 1 END,
+                sequence_group_id = 'manual_sequence'
+            WHERE id IN ('ep1', 'ep2')
+            """
+        )
+        database.connection.commit()
+
+        response = client.post(f"/api/platform/v1/runs/{run_id}/retry")
+
+        assert response.status_code == 202
+        assert response.json()["selected_lane_episodes"] == [
+            {
+                "episode_key": "fake.Task::2",
+                "lane_key": "candidate",
+                "sequence_index": 0,
+                "sequence_group_id": "manual_sequence",
+                "reason": "retry_error",
+            },
+            {
+                "episode_key": "fake.Task::1",
+                "lane_key": "candidate",
+                "sequence_index": 1,
+                "sequence_group_id": "manual_sequence",
+                "reason": "retry_failed",
+            },
+        ]
+
+
 def test_retry_requires_model_api_key_when_configured_secret_is_missing(tmp_path):
     app = create_app(_settings(tmp_path), supervisor=FakeRunSupervisor())
 
@@ -397,6 +434,65 @@ def test_resume_creates_new_attempt_for_missing_and_service_restarted_episodes(t
         assert [(row["episode_id"], row["lane_id"], row["reason"]) for row in selected] == [
             ("ep1", "lane-c", "resume_missing"),
             ("ep2", "lane-c", "resume_service_restarted"),
+        ]
+    finally:
+        database.close()
+
+
+def test_resume_preserves_manual_sequence_metadata_in_selected_episodes(tmp_path):
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    try:
+        run_id = _seed_retryable_single_lane_run(database)
+        database.connection.execute("UPDATE runs SET state = 'failed' WHERE id = ?", (run_id,))
+        database.connection.execute(
+            "UPDATE run_attempts SET state = 'failed' WHERE id = 'attempt1'"
+        )
+        database.connection.execute(
+            "UPDATE lane_attempts SET state = 'failed' WHERE id = 'la1'"
+        )
+        database.connection.execute("DELETE FROM episode_attempts WHERE id = 'ea1'")
+        database.connection.execute(
+            "UPDATE episode_attempts SET outcome = 'ERROR', error_code = 'SERVICE_RESTARTED' "
+            "WHERE id = 'ea2'"
+        )
+        database.connection.execute(
+            """
+            UPDATE episodes
+            SET sequence_index = CASE id WHEN 'ep2' THEN 0 WHEN 'ep1' THEN 1 END,
+                sequence_group_id = 'manual_sequence'
+            WHERE id IN ('ep1', 'ep2')
+            """
+        )
+        database.connection.commit()
+
+        response = RunService(
+            database,
+            settings,
+            supervisor=FakeRunSupervisor(),
+            catalog_builder=lambda: TaskCatalogSnapshot(
+                repository_revision="git-vs13",
+                digest="sha256:tasks",
+                items=[],
+            ),
+        ).resume_run(run_id)
+
+        assert response["selected_lane_episodes"] == [
+            {
+                "episode_key": "fake.Task::2",
+                "lane_key": "candidate",
+                "sequence_index": 0,
+                "sequence_group_id": "manual_sequence",
+                "reason": "resume_service_restarted",
+            },
+            {
+                "episode_key": "fake.Task::1",
+                "lane_key": "candidate",
+                "sequence_index": 1,
+                "sequence_group_id": "manual_sequence",
+                "reason": "resume_missing",
+            },
         ]
     finally:
         database.close()

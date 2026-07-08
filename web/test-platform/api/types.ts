@@ -133,6 +133,8 @@ export type FollowupRunAttempt = {
     episode_key: string;
     lane_key: string;
     reason: string;
+    sequence_index?: number | null;
+    sequence_group_id?: string | null;
   }>;
 };
 
