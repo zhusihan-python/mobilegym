@@ -1101,6 +1101,34 @@ select {
   margin: 0;
 }
 
+.tp-workflow-policy-facts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.tp-workflow-policy-facts div {
+  background: #f7fafc;
+  border: 1px solid #e1e7ee;
+  border-radius: 6px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.tp-workflow-policy-facts dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.tp-workflow-policy-facts dd {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .tp-workflow-sequence ol {
   display: flex;
   flex-direction: column;

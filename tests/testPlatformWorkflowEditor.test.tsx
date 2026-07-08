@@ -230,6 +230,11 @@ describe('Test Platform workflow editor', () => {
       target: { value: 'manual_sequence' },
     });
 
+    const policyFacts = screen.getByLabelText('Manual sequence policies');
+    expect(policyFacts.textContent).toContain('State policy');
+    expect(policyFacts.textContent).toContain('isolated');
+    expect(policyFacts.textContent).toContain('Failure policy');
+    expect(policyFacts.textContent).toContain('continue');
     expect((screen.getByLabelText('Repeat count') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText('Parallel workers') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText('Processes') as HTMLInputElement).disabled).toBe(true);

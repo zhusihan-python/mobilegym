@@ -37,6 +37,8 @@ const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
 const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
 const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
 const IMAGE_URL_FORMAT_STORAGE_KEY = 'test-platform.launch.image-url-format';
+const MANUAL_SEQUENCE_STATE_POLICY = 'isolated';
+const MANUAL_SEQUENCE_FAILURE_POLICY = 'continue';
 
 type LoadState =
   | { status: 'loading' }
@@ -418,6 +420,16 @@ export function WorkflowsPage() {
           {isManualSequence ? (
             <div className="tp-workflow-sequence" aria-label="Manual sequence order">
               <h3>Manual order</h3>
+              <dl className="tp-workflow-policy-facts" aria-label="Manual sequence policies">
+                <div>
+                  <dt>State policy</dt>
+                  <dd>{MANUAL_SEQUENCE_STATE_POLICY}</dd>
+                </div>
+                <div>
+                  <dt>Failure policy</dt>
+                  <dd>{MANUAL_SEQUENCE_FAILURE_POLICY}</dd>
+                </div>
+              </dl>
               {selectedTaskIds.length > 0 ? (
                 <ol>
                   {selectedTaskIds.map((taskId, index) => (
@@ -831,8 +843,8 @@ function buildDefinition(input: BuildDefinitionInput): WorkflowDefinition {
   };
   if (isManualSequence) {
     executeConfig.execution_strategy = 'linear_sequence';
-    executeConfig.state_policy = 'isolated';
-    executeConfig.failure_policy = 'continue';
+    executeConfig.state_policy = MANUAL_SEQUENCE_STATE_POLICY;
+    executeConfig.failure_policy = MANUAL_SEQUENCE_FAILURE_POLICY;
   }
 
   const nodes: WorkflowDefinition['nodes'] = [
