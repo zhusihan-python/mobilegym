@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -152,6 +152,47 @@ const run = {
   created_at: '2026-07-03T00:00:03.000Z',
   started_at: null,
   ended_at: null,
+};
+
+const manualSequenceRun = {
+  ...run,
+  id: 'run-manual-sequence',
+  name: 'Manual sequence run',
+  fingerprint: 'sha256:manual-sequence-run',
+  progress: {
+    planned_episodes: 2,
+    planned_lane_episodes: 2,
+    completed_episodes: 0,
+    completed_lane_episodes: 0,
+  },
+  episode_identities: [
+    {
+      episode_key: 'wechat.OpenBlacklist|i0|s501|r1|t0',
+      pair_key: 'wechat.OpenBlacklist|i0|s501|r1|t0',
+      task_base_id: 'wechat.OpenBlacklist',
+      task_id: 'wechat.OpenBlacklist',
+      instance_id: 0,
+      instance_seed: 501,
+      template_index: null,
+      trial_id: 0,
+      max_steps: 15,
+      sequence_index: 0,
+      sequence_group_id: 'manual_sequence',
+    },
+    {
+      episode_key: 'wechat.BlacklistContact|i0|s502|r1|t0',
+      pair_key: 'wechat.BlacklistContact|i0|s502|r1|t0',
+      task_base_id: 'wechat.BlacklistContact',
+      task_id: 'wechat.BlacklistContact',
+      instance_id: 0,
+      instance_seed: 502,
+      template_index: null,
+      trial_id: 0,
+      max_steps: 20,
+      sequence_index: 1,
+      sequence_group_id: 'manual_sequence',
+    },
+  ],
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -355,5 +396,60 @@ describe('Test Platform immutable run planning', () => {
         },
       });
     });
+  });
+
+  it('shows manual sequence ordering metadata on run detail', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${manualSequenceRun.id}`) {
+        return jsonResponse(manualSequenceRun);
+      }
+
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+    window.history.pushState({}, '', `/test-platform/runs/${manualSequenceRun.id}`);
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
+    const identities = within(await screen.findByTestId('tp-episode-identities'));
+    expect(identities.getByRole('columnheader', { name: 'Seq' })).toBeTruthy();
+    expect(identities.getByRole('columnheader', { name: 'Group' })).toBeTruthy();
+    expect(identities.getByRole('columnheader', { name: 'Task' })).toBeTruthy();
+
+    const rows = identities.getAllByRole('row').slice(1);
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      '1',
+      'manual_sequence',
+      'wechat.OpenBlacklist',
+      'wechat.OpenBlacklist|i0|s501|r1|t0',
+      '501',
+      '0',
+      '15',
+    ]);
+    expect(within(rows[1]).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      '2',
+      'manual_sequence',
+      'wechat.BlacklistContact',
+      'wechat.BlacklistContact|i0|s502|r1|t0',
+      '502',
+      '0',
+      '20',
+    ]);
   });
 });

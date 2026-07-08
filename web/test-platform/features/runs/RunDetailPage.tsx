@@ -592,11 +592,14 @@ export function RunDetailPage() {
         </section>
       ) : null}
 
-      <section className="tp-panel">
+      <section className="tp-panel" data-testid="tp-episode-identities">
         <h2>Episode identities</h2>
         <table>
           <thead>
             <tr>
+              <th>Seq</th>
+              <th>Group</th>
+              <th>Task</th>
               <th>Episode</th>
               <th>Seed</th>
               <th>Trial</th>
@@ -606,6 +609,9 @@ export function RunDetailPage() {
           <tbody>
             {run.episode_identities.map((episode) => (
               <tr key={episode.episode_key}>
+                <td>{formatSequenceIndex(episode.sequence_index)}</td>
+                <td>{episode.sequence_group_id ?? '—'}</td>
+                <td className="tp-mono">{episode.task_base_id}</td>
                 <td className="tp-mono">{episode.episode_key}</td>
                 <td>{episode.instance_seed}</td>
                 <td>{episode.trial_id}</td>
@@ -918,6 +924,10 @@ function formatRate(value: number | null | undefined) {
     return '—';
   }
   return `${Math.round(value * 1000) / 10}%`;
+}
+
+function formatSequenceIndex(value: number | null | undefined) {
+  return value === null || value === undefined ? '—' : String(value + 1);
 }
 
 function runRequiresModelApiKey(run: RunDetail): boolean {
