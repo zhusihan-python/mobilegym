@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 from bench_env.runner.cancellation import CancellationToken, RunCancelled
 from bench_env.runner.events import EventSink, ExecutionEvent, NullEventSink
-from bench_env.runner.base import Controller
+from bench_env.runner.base import BaseRunner, Controller
 from bench_env.metrics import result_is_error, result_is_success
 from bench_env.config import RunnerConfig
 from bench_env.env.recorder import RunRecorder, episode_key_artifact_name
@@ -885,7 +885,6 @@ class SerialRunExecutor(_RunExecutorBase):
                 "Serial execution requires environment and agent factories.",
                 status_code=500,
             )
-        env = self.env_factory(lane)
         agent = self.agent_factory(lane)
         lane_root = self.settings.runs_dir / run_id / lane_attempt["artifact_root"]
         config = _runner_config(lane)
@@ -904,16 +903,28 @@ class SerialRunExecutor(_RunExecutorBase):
         )
 
         try:
-            results = await SerialRunner(
-                env,
-                agent,
-                [item.task for item in work_items],
-                config,
-                recorder=recorder,
-                prepared_work_items=work_items,
-                event_sink=events,
-                cancellation_token=token,
-            ).run()
+            if _is_manual_sequence_plan(plan):
+                results = await self._run_isolated_work_items(
+                    lane=lane,
+                    agent=agent,
+                    work_items=work_items,
+                    config=config,
+                    recorder=recorder,
+                    token=token,
+                    events=events,
+                )
+            else:
+                env = self.env_factory(lane)
+                results = await SerialRunner(
+                    env,
+                    agent,
+                    [item.task for item in work_items],
+                    config,
+                    recorder=recorder,
+                    prepared_work_items=work_items,
+                    event_sink=events,
+                    cancellation_token=token,
+                ).run()
         except RunCancelled:
             token.cancel()
             results = []
@@ -967,6 +978,50 @@ class SerialRunExecutor(_RunExecutorBase):
         # by the supervisor's _execute wrapper to avoid duplicate emits. The
         # executor only raises RunCancelled; the supervisor finalizes + emits.
         return RunRepository(self.database).get(run_id)
+
+    async def _run_isolated_work_items(
+        self,
+        *,
+        lane: PlannedLane,
+        agent: Any,
+        work_items: list[PreparedWorkItem],
+        config: RunnerConfig,
+        recorder: RunRecorder,
+        token: CancellationToken,
+        events: EventSink,
+    ) -> list[Any]:
+        results: list[Any] = []
+        try:
+            for work_item in work_items:
+                token.raise_if_cancelled()
+                env = self.env_factory(lane)
+                try:
+                    result = await BaseRunner.run_episode(
+                        env,
+                        agent,
+                        work_item.task,
+                        work_item.max_steps,
+                        recorder,
+                        trial_id=work_item.trial_id,
+                        loop_threshold=config.loop_detect,
+                        cancellation_token=token,
+                        event_sink=events,
+                        worker_id="serial",
+                        episode_key=work_item.episode_key,
+                    )
+                    results.append(result)
+                finally:
+                    close = getattr(env, "close", None)
+                    if callable(close):
+                        await _maybe_await(close())
+        except RunCancelled:
+            token.cancel()
+        finally:
+            recorder.finish_run(
+                repeat_n=config.repeat_n,
+                pass_k=config.pass_k,
+            )
+        return results
 
 
 class ParallelRunExecutor(_RunExecutorBase):
@@ -3087,6 +3142,13 @@ def _single_lane(plan: RunPlan) -> PlannedLane:
             status_code=409,
         )
     return plan.lanes[0]
+
+
+def _is_manual_sequence_plan(plan: RunPlan) -> bool:
+    return any(
+        episode.sequence_group_id == "manual_sequence"
+        for episode in plan.episodes
+    )
 
 
 def _runner_config(lane: PlannedLane) -> RunnerConfig:

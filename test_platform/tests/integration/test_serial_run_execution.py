@@ -59,6 +59,7 @@ class _ExecutableFakeEnv:
         self.sample_count = 0
         self.step_count = 0
         self.closed = False
+        self.marker = "clean"
         self._agent_message: str | None = None
         self._agent_answer: str | None = None
 
@@ -67,7 +68,10 @@ class _ExecutableFakeEnv:
         return f"{self.label}-sampled-{self.sample_count}"
 
     async def get_state(self, required_apps: list[str] | None = None) -> dict[str, Any]:
-        return {"apps": {"fake": {"label": self.label}}, "os": {"time": {"mode": "fixed"}}}
+        return {
+            "apps": {"fake": {"label": self.label, "marker": self.marker}},
+            "os": {"time": {"mode": "fixed"}},
+        }
 
     async def get_observation(self) -> Observation:
         return Observation(
@@ -79,6 +83,7 @@ class _ExecutableFakeEnv:
     async def step(self, action: Action) -> StepResult:
         self.step_count += 1
         if action.action_type == ActionType.COMPLETE:
+            self.marker = f"{self.label}-mutated"
             self._agent_message = action.data.get("return", "")
             return StepResult(
                 observation=await self.get_observation(),
@@ -109,6 +114,7 @@ class _ExecutableFakeTask:
         self.params = {"choice": "default", **params}
         self._user_params = set(params.keys())
         self.setup_count = 0
+        self.setup_state: dict[str, Any] | None = None
 
     @property
     def id(self) -> str:
@@ -122,6 +128,7 @@ class _ExecutableFakeTask:
 
     async def setup(self, env: _ExecutableFakeEnv) -> Observation:
         self.setup_count += 1
+        self.setup_state = await env.get_state()
         if "choice" not in self._user_params:
             self.params["choice"] = env.sample_choice()
         return await env.get_observation()
@@ -359,9 +366,10 @@ async def test_serial_run_execution_runs_manual_sequence_in_order_and_continues_
     task_factory = _ExecutableTaskFactory()
     materialize_a = _ExecutableFakeEnv(label="materialize-a")
     materialize_z = _ExecutableFakeEnv(label="materialize-z")
-    execute_env = _ExecutableFakeEnv(label="execute")
+    execute_z = _ExecutableFakeEnv(label="execute-z")
+    execute_a = _ExecutableFakeEnv(label="execute-a")
     agent = _FakeAgent()
-    envs = iter([materialize_a, materialize_z, execute_env])
+    envs = iter([materialize_a, materialize_z, execute_z, execute_a])
     try:
         run = _create_manual_sequence_run(database, settings)
 
@@ -384,6 +392,15 @@ async def test_serial_run_execution_runs_manual_sequence_in_order_and_continues_
             "fake.APassSecondTask choose materialize-a-sampled-1",
         ]
         assert agent.act_count == 2
+        assert execute_z.marker == "execute-z-mutated"
+        assert execute_a.marker == "execute-a-mutated"
+        execution_tasks = task_factory.instances[2:]
+        assert [
+            task.setup_state["apps"]["fake"]["marker"]
+            for task in execution_tasks
+        ] == ["clean", "clean"]
+        assert execute_z.closed is True
+        assert execute_a.closed is True
 
         attempts = database.connection.execute(
             """
