@@ -156,6 +156,18 @@ def test_run_creation_persists_the_complete_graph_and_artifact_atomically(tmp_pa
         assert database.connection.execute("SELECT COUNT(*) FROM lanes").fetchone()[0] == 1
         assert database.connection.execute("SELECT COUNT(*) FROM lane_attempts").fetchone()[0] == 1
         assert database.connection.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 2
+        sequence_rows = database.connection.execute(
+            """
+            SELECT sequence_index, sequence_group_id
+            FROM episodes
+            WHERE run_id = ?
+            """,
+            (run.id,),
+        ).fetchall()
+        assert [dict(row) for row in sequence_rows] == [
+            {"sequence_index": None, "sequence_group_id": None},
+            {"sequence_index": None, "sequence_group_id": None},
+        ]
         assert database.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
 
         artifact = settings.runs_dir / run.id / "platform" / "run-plan.json"

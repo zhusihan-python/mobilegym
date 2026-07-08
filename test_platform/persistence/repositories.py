@@ -486,10 +486,11 @@ class RunRepository:
         episodes = self.database.connection.execute(
             """
             SELECT episode_key, materialization_key, pair_key, task_base_id, task_id,
-                   instance_id, instance_seed, template_index, trial_id, max_steps
+                   instance_id, instance_seed, template_index, trial_id, max_steps,
+                   sequence_index, sequence_group_id
             FROM episodes
             WHERE run_id = ?
-            ORDER BY episode_key
+            ORDER BY sequence_index IS NULL, sequence_index, episode_key
             """,
             (run_id,),
         ).fetchall()

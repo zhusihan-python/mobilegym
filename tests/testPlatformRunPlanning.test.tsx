@@ -130,6 +130,8 @@ const run = {
       template_index: null,
       trial_id: 0,
       max_steps: 15,
+      sequence_index: null,
+      sequence_group_id: null,
     },
     {
       episode_key: 'wechat.OpenBlacklist|i0|s123|r1|t1',
@@ -141,6 +143,8 @@ const run = {
       template_index: null,
       trial_id: 1,
       max_steps: 15,
+      sequence_index: null,
+      sequence_group_id: null,
     },
   ],
   run_plan: {},

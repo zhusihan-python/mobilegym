@@ -69,6 +69,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (9, "0009_reports_baselines.sql"),
         (10, "0010_diagnostics_artifacts.sql"),
         (11, "0011_retry_resume_selection.sql"),
+        (12, "0012_manual_sequence_episode_metadata.sql"),
     ]
 
 
@@ -143,6 +144,25 @@ def test_retry_resume_selection_table_is_created(tmp_path):
             "reason",
             "created_at",
         } <= columns
+    finally:
+        database.close()
+
+
+def test_manual_sequence_episode_metadata_columns_are_nullable(tmp_path):
+    settings = PlatformSettings(
+        database_path=tmp_path / "platform.sqlite3",
+        runs_dir=tmp_path / "runs",
+    )
+    database = Database(settings)
+    try:
+        database.initialize()
+        columns = {
+            row[1]: row
+            for row in database.connection.execute("PRAGMA table_info(episodes)")
+        }
+        assert {"sequence_index", "sequence_group_id"} <= set(columns)
+        assert columns["sequence_index"][3] == 0
+        assert columns["sequence_group_id"][3] == 0
     finally:
         database.close()
 
@@ -256,4 +276,5 @@ def test_database_initialization_is_idempotent(tmp_path):
         (9, "0009_reports_baselines.sql"),
         (10, "0010_diagnostics_artifacts.sql"),
         (11, "0011_retry_resume_selection.sql"),
+        (12, "0012_manual_sequence_episode_metadata.sql"),
     ]

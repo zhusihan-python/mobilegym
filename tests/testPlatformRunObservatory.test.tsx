@@ -54,6 +54,8 @@ const run = {
       template_index: null,
       trial_id: 0,
       max_steps: 15,
+      sequence_index: null,
+      sequence_group_id: null,
     },
     {
       episode_key: 'fake.Fail|i0|s1|r1|t0',
@@ -65,6 +67,8 @@ const run = {
       template_index: null,
       trial_id: 0,
       max_steps: 15,
+      sequence_index: null,
+      sequence_group_id: null,
     },
   ],
   episode_attempts: [

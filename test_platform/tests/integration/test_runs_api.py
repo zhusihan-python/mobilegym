@@ -127,6 +127,88 @@ def _published_version(client):
     return project, health.json()["revision"], published.json()["version"]
 
 
+def _published_manual_sequence_version(client):
+    project = client.post(
+        "/api/platform/v1/projects",
+        json={"name": "Manual Sequence Runs"},
+    ).json()
+    target = client.post(
+        "/api/platform/v1/targets",
+        json={
+            "project_id": project["id"],
+            "name": "Local simulator",
+            "config": {
+                "kind": "simulator",
+                "connection": {"env_url": "http://127.0.0.1:5173"},
+                "device_profile": {
+                    "name": "Pixel 7",
+                    "viewport_width": 393,
+                    "viewport_height": 852,
+                    "physical_width": 1080,
+                    "physical_height": 2400,
+                    "device_scale_factor": 2.75,
+                },
+                "runtime": {},
+                "labels": {},
+            },
+        },
+    ).json()
+    health = client.post(f"/api/platform/v1/targets/{target['id']}/health")
+    assert health.status_code == 200
+    task_ids = ["wechat.BlacklistContact", "wechat.OpenBlacklist"]
+    workflow = client.post(
+        f"/api/platform/v1/projects/{project['id']}/workflows",
+        json={
+            "name": "Manual sequence",
+            "definition": {
+                "schema_version": 1,
+                "name": "Manual sequence",
+                "nodes": [
+                    {
+                        "id": "tasks",
+                        "type": "task_selection",
+                        "depends_on": [],
+                        "config": {
+                            "task_ids": task_ids,
+                            "order_policy": "manual",
+                            "sample_n": 1,
+                        },
+                    },
+                    {
+                        "id": "matrix",
+                        "type": "matrix",
+                        "depends_on": ["tasks"],
+                        "config": {
+                            "lanes": {
+                                "candidate": {
+                                    "target_id": target["id"],
+                                    "role": "candidate",
+                                }
+                            },
+                            "repeat_n": 1,
+                        },
+                    },
+                    {
+                        "id": "execute",
+                        "type": "execute",
+                        "depends_on": ["matrix"],
+                        "config": {
+                            "execution_strategy": "linear_sequence",
+                            "state_policy": "isolated",
+                            "failure_policy": "continue",
+                            "parallel": 1,
+                            "processes": 1,
+                        },
+                    },
+                ],
+            },
+        },
+    ).json()
+    published = client.post(f"/api/platform/v1/workflows/{workflow['id']}/publish")
+    assert published.status_code == 200
+    return project, health.json()["revision"], published.json()["version"], task_ids
+
+
 def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path):
     supervisor = FakeRunSupervisor()
     app = create_app(
@@ -179,11 +261,68 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
             }
         ]
         assert len(body["episode_identities"]) == 2
+        assert {item["sequence_index"] for item in body["episode_identities"]} == {None}
+        assert {item["sequence_group_id"] for item in body["episode_identities"]} == {None}
         assert body["fingerprint"].startswith("sha256:")
         assert body["run_plan"]["lanes"][0]["runner_config"]["agent"] == "generic_v2"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_base_url"] == "http://127.0.0.1:1234/v1"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_name"] == "dogfood-model"
         assert body["run_plan"]["lanes"][0]["runner_config"]["image_url_format"] == "data_url"
+
+
+def test_runs_api_exposes_manual_sequence_episode_metadata(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=FakeRunSupervisor(),
+    )
+
+    with TestClient(app) as client:
+        _project, _revision, version, task_ids = _published_manual_sequence_version(client)
+        response = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version["id"],
+                "name": "Manual sequence API run",
+                "overrides": {
+                    "seed": 321,
+                    "execution": _execution_overrides(),
+                },
+            },
+            headers={"Idempotency-Key": "ci-launch-manual-sequence"},
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        identities = body["episode_identities"]
+        assert [item["task_base_id"] for item in identities] == task_ids
+        assert [item["sequence_index"] for item in identities] == [0, 1]
+        assert [item["sequence_group_id"] for item in identities] == [
+            "manual_sequence",
+            "manual_sequence",
+        ]
+
+        rows = client.app.state.database.connection.execute(
+            """
+            SELECT task_base_id, sequence_index, sequence_group_id
+            FROM episodes
+            WHERE run_id = ?
+            ORDER BY sequence_index
+            """,
+            (body["id"],),
+        ).fetchall()
+        assert [dict(row) for row in rows] == [
+            {
+                "task_base_id": task_ids[0],
+                "sequence_index": 0,
+                "sequence_group_id": "manual_sequence",
+            },
+            {
+                "task_base_id": task_ids[1],
+                "sequence_index": 1,
+                "sequence_group_id": "manual_sequence",
+            },
+        ]
 
 
 def test_runs_api_accepts_online_model_key_without_persisting_secret(tmp_path):

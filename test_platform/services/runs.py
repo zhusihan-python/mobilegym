@@ -1811,9 +1811,10 @@ class RunService:
                 INSERT INTO episodes (
                   id, run_id, episode_key, materialization_key, pair_key,
                   task_base_id, task_id, instance_id, instance_seed,
-                  template_index, trial_id, max_steps, created_at
+                  template_index, trial_id, max_steps,
+                  sequence_index, sequence_group_id, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id(),
@@ -1828,6 +1829,8 @@ class RunService:
                     episode.template_index,
                     episode.trial_id,
                     episode.max_steps,
+                    episode.sequence_index,
+                    episode.sequence_group_id,
                     plan.created_at,
                 ),
             )

@@ -106,6 +106,8 @@ export type RunDetail = RunSummary & {
     template_index: number | null;
     trial_id: number;
     max_steps: number;
+    sequence_index: number | null;
+    sequence_group_id: string | null;
   }>;
   episode_attempts?: Array<{
     episode_key: string;
