@@ -119,6 +119,8 @@ describe('Test Platform workflow editor', () => {
           lane_count: 1,
           total_episodes: 4,
           lane_keys: ['candidate'],
+          ordered_task_ids: ['wechat.BlacklistContact', 'wechat.OpenBlacklist'],
+          execution_strategy: 'batch',
         });
       }
       if (url.pathname === '/api/platform/v1/workflows/workflow-1/publish') {

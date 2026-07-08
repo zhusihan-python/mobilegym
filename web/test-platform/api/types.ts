@@ -481,6 +481,8 @@ export type WorkflowCompilePreview = {
   lane_count: number;
   total_episodes: number;
   lane_keys: string[];
+  ordered_task_ids: string[];
+  execution_strategy: string;
   /** VS-10: advisory target-revision constraint violations (Contract 3). */
   violations?: ConstraintViolation[];
 };

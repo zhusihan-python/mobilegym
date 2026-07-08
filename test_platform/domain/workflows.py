@@ -130,6 +130,8 @@ class WorkflowCompilePreview(BaseModel):
     lane_count: int
     total_episodes: int
     lane_keys: list[str]
+    ordered_task_ids: list[str] = Field(default_factory=list)
+    execution_strategy: str = "batch"
     # VS-10 Contract 3: advisory constraint violations for paired (2-lane)
     # workflows. Populated by the compile-preview route after resolving the
     # latest target revisions and evaluating the compare node's
@@ -235,6 +237,12 @@ class WorkflowCompiler:
         if not isinstance(lanes, dict):
             lanes = {}
         repeat_n = _positive_int(matrix_node.config.get("repeat_n") if matrix_node else None, default=1)
+        execute_node = next((node for node in definition.nodes if node.type == "execute"), None)
+        execution_strategy = (
+            str(execute_node.config.get("execution_strategy"))
+            if execute_node and execute_node.config.get("execution_strategy")
+            else "batch"
+        )
 
         task_count = len(selected_tasks)
         task_instance_count = task_count * max_sample_n
@@ -249,6 +257,8 @@ class WorkflowCompiler:
             lane_count=lane_count,
             total_episodes=total_episodes,
             lane_keys=lane_keys,
+            ordered_task_ids=[item.task_base_id for item in selected_tasks],
+            execution_strategy=execution_strategy,
         )
 
 
@@ -730,8 +740,18 @@ def _validate_gate_config(node: WorkflowNode, node_index: int) -> list[WorkflowI
 def _select_tasks(config: dict[str, Any], catalog: TaskCatalogSnapshot) -> list[TaskCatalogItem]:
     task_ids = config.get("task_ids")
     if isinstance(task_ids, list) and task_ids:
-        requested = {str(task_id) for task_id in task_ids}
-        return [item for item in catalog.items if item.task_base_id in requested]
+        catalog_by_id = {item.task_base_id: item for item in catalog.items}
+        selected: list[TaskCatalogItem] = []
+        seen: set[str] = set()
+        for task_id in task_ids:
+            normalized = str(task_id)
+            if normalized in seen:
+                continue
+            item = catalog_by_id.get(normalized)
+            if item is not None:
+                selected.append(item)
+                seen.add(normalized)
+        return selected
 
     suites = {str(suite) for suite in config.get("suites", []) if suite} if isinstance(config.get("suites"), list) else set()
     difficulties = (

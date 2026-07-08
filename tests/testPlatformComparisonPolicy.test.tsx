@@ -160,6 +160,8 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
           lane_count: 2,
           total_episodes: 2,
           lane_keys: ['baseline', 'candidate'],
+          ordered_task_ids: ['wechat.OpenBlacklist'],
+          execution_strategy: 'batch',
           violations: [],
         });
       }
@@ -263,6 +265,8 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
           lane_count: 2,
           total_episodes: 2,
           lane_keys: ['baseline', 'candidate'],
+          ordered_task_ids: ['wechat.OpenBlacklist'],
+          execution_strategy: 'batch',
           violations: [
             {
               constraint: 'same_app',

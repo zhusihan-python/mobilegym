@@ -259,7 +259,13 @@ def test_manual_sequence_validates_previews_and_publishes(tmp_path):
     assert validation.status_code == 200
     assert validation.json()["valid"] is True
     assert preview.status_code == 200
-    assert preview.json()["total_episodes"] == 2
+    preview_body = preview.json()
+    assert preview_body["total_episodes"] == 2
+    assert preview_body["ordered_task_ids"] == [
+        "wechat.BlacklistContact",
+        "wechat.OpenBlacklist",
+    ]
+    assert preview_body["execution_strategy"] == "linear_sequence"
     assert published.status_code == 200
     assert published.json()["version"]["definition"]["nodes"][2]["config"]["state_policy"] == "isolated"
 
