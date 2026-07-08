@@ -87,6 +87,100 @@ def _definition(target_id, *, repeat_n=2):
     }
 
 
+def _manual_sequence_definition(target_id, *, invalid=False):
+    if invalid:
+        return {
+            "schema_version": 1,
+            "name": "Invalid manual sequence",
+            "nodes": [
+                {
+                    "id": "tasks",
+                    "type": "task_selection",
+                    "depends_on": [],
+                    "config": {
+                        "task_ids": ["wechat.BlacklistContact"],
+                        "suites": ["wechat"],
+                        "sample_n": 2,
+                    },
+                },
+                {
+                    "id": "matrix",
+                    "type": "matrix",
+                    "depends_on": ["tasks"],
+                    "config": {
+                        "lanes": {
+                            "baseline": {
+                                "target_id": target_id,
+                                "role": "baseline",
+                            },
+                            "candidate": {"target_id": target_id},
+                        },
+                        "repeat_n": 2,
+                    },
+                },
+                {
+                    "id": "execute",
+                    "type": "execute",
+                    "depends_on": ["matrix"],
+                    "config": {
+                        "execution_strategy": "linear_sequence",
+                        "state_policy": "carry_forward",
+                        "failure_policy": "stop",
+                        "parallel": 2,
+                        "processes": 2,
+                    },
+                },
+                {
+                    "id": "compare",
+                    "type": "compare",
+                    "depends_on": ["execute"],
+                    "config": {},
+                },
+            ],
+        }
+
+    return {
+        "schema_version": 1,
+        "name": "Manual sequence",
+        "nodes": [
+            {
+                "id": "tasks",
+                "type": "task_selection",
+                "depends_on": [],
+                "config": {
+                    "task_ids": [
+                        "wechat.BlacklistContact",
+                        "wechat.OpenBlacklist",
+                    ],
+                    "order_policy": "manual",
+                    "sample_n": 1,
+                },
+            },
+            {
+                "id": "matrix",
+                "type": "matrix",
+                "depends_on": ["tasks"],
+                "config": {
+                    "lanes": {"candidate": {"target_id": target_id}},
+                    "repeat_n": 1,
+                },
+            },
+            {
+                "id": "execute",
+                "type": "execute",
+                "depends_on": ["matrix"],
+                "config": {
+                    "execution_strategy": "linear_sequence",
+                    "state_policy": "isolated",
+                    "failure_policy": "continue",
+                    "parallel": 1,
+                    "processes": 1,
+                },
+            },
+        ],
+    }
+
+
 def test_workflow_api_validates_previews_publishes_and_freezes_versions(tmp_path):
     app = create_app(_settings(tmp_path))
 
@@ -142,6 +236,62 @@ def test_publish_rejects_disabled_targets_with_structured_errors(tmp_path):
     body = published.json()
     assert body["error"]["code"] == "WORKFLOW_VALIDATION_FAILED"
     assert body["error"]["details"][0]["code"] == "WORKFLOW_TARGET_DISABLED"
+
+
+def test_manual_sequence_validates_previews_and_publishes(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        project = _project(client)
+        target = _target(client, project["id"])
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={
+                "name": "Manual sequence",
+                "definition": _manual_sequence_definition(target["id"]),
+            },
+        ).json()
+
+        validation = client.post(f"/api/platform/v1/workflows/{workflow['id']}/validate")
+        preview = client.post(f"/api/platform/v1/workflows/{workflow['id']}/compile-preview")
+        published = client.post(f"/api/platform/v1/workflows/{workflow['id']}/publish")
+
+    assert validation.status_code == 200
+    assert validation.json()["valid"] is True
+    assert preview.status_code == 200
+    assert preview.json()["total_episodes"] == 2
+    assert published.status_code == 200
+    assert published.json()["version"]["definition"]["nodes"][2]["config"]["state_policy"] == "isolated"
+
+
+def test_manual_sequence_validate_and_publish_surface_structured_errors(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        project = _project(client)
+        target = _target(client, project["id"])
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={
+                "name": "Invalid manual sequence",
+                "definition": _manual_sequence_definition(target["id"], invalid=True),
+            },
+        ).json()
+
+        validation = client.post(f"/api/platform/v1/workflows/{workflow['id']}/validate")
+        published = client.post(f"/api/platform/v1/workflows/{workflow['id']}/publish")
+
+    assert validation.status_code == 200
+    validation_body = validation.json()
+    assert validation_body["valid"] is False
+    validation_codes = {issue["code"] for issue in validation_body["issues"]}
+    assert "WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG" in validation_codes
+
+    assert published.status_code == 400
+    publish_body = published.json()
+    assert publish_body["error"]["code"] == "WORKFLOW_VALIDATION_FAILED"
+    publish_codes = {issue["code"] for issue in publish_body["error"]["details"]}
+    assert "WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG" in publish_codes
 
 
 # ---------------------------------------------------------------------------
@@ -342,4 +492,3 @@ def test_compile_preview_returns_no_violations_when_constraints_satisfied(tmp_pa
     assert preview.status_code == 200
     body = preview.json()
     assert body["violations"] == []
-

@@ -205,6 +205,8 @@ class WorkflowValidator:
             if node.type == "gate":
                 issues.extend(_validate_gate_config(node, node_index))
 
+        issues.extend(_validate_manual_sequence(definition, node_indices))
+
         return WorkflowValidationResult(valid=not issues, issues=issues)
 
 
@@ -359,6 +361,275 @@ _VALID_GATE_THRESHOLDS = {
     "max_runtime_p95_increase",
     "max_unpaired",
 }
+
+_MANUAL_SEQUENCE_FILTER_KEYS = {
+    "app",
+    "apps",
+    "capability",
+    "capabilities",
+    "composition",
+    "compositions",
+    "difficulties",
+    "difficulty",
+    "objective",
+    "objectives",
+    "scope",
+    "scopes",
+    "split",
+    "splits",
+    "suite",
+    "suites",
+    "taxonomy",
+}
+
+
+def _validate_manual_sequence(
+    definition: WorkflowDefinition,
+    node_indices: dict[str, int],
+) -> list[WorkflowIssue]:
+    all_execute_entries = [
+        (index, node)
+        for index, node in enumerate(definition.nodes)
+        if node.type == "execute"
+    ]
+    execute_entries = [
+        (index, node)
+        for index, node in all_execute_entries
+        if node.config.get("execution_strategy") == "linear_sequence"
+    ]
+    if not execute_entries:
+        return []
+
+    issues: list[WorkflowIssue] = []
+    task_entries = [
+        (index, node)
+        for index, node in enumerate(definition.nodes)
+        if node.type == "task_selection"
+    ]
+    matrix_entries = [
+        (index, node)
+        for index, node in enumerate(definition.nodes)
+        if node.type == "matrix"
+    ]
+
+    if len(task_entries) != 1:
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence requires exactly one task_selection node.",
+                pointer="/nodes",
+            )
+        )
+    if len(matrix_entries) != 1:
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence requires exactly one matrix node.",
+                pointer="/nodes",
+            )
+        )
+    if len(execute_entries) != 1 or len(all_execute_entries) != 1:
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence requires exactly one execute node and it must use linear_sequence.",
+                pointer="/nodes",
+            )
+        )
+
+    if task_entries:
+        task_index, task_node = task_entries[0]
+        issues.extend(_validate_manual_sequence_tasks(task_node, task_index))
+    if matrix_entries:
+        matrix_index, matrix_node = matrix_entries[0]
+        issues.extend(_validate_manual_sequence_matrix(matrix_node, matrix_index))
+    if execute_entries:
+        execute_index, execute_node = execute_entries[0]
+        issues.extend(_validate_manual_sequence_execute(execute_node, execute_index))
+
+    for node_index, node in enumerate(definition.nodes):
+        if node.type == "compare":
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                    message="Manual sequence v1 does not support paired comparison.",
+                    pointer=f"/nodes/{node_index}",
+                    node_id=node.id,
+                )
+            )
+
+    # Keep the graph shape linear for v1: tasks -> matrix -> execute. Gates and
+    # reports may be appended later, but no manual sequence node should fan in
+    # from multiple prerequisites or point at missing IDs beyond the base DAG
+    # validator.
+    for node_index, node in enumerate(definition.nodes):
+        dependencies = [dep for dep in node.depends_on if dep in node_indices]
+        if len(dependencies) > 1:
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                    message="Manual sequence v1 does not support branching or fan-in dependencies.",
+                    pointer=f"/nodes/{node_index}/depends_on",
+                    node_id=node.id,
+                )
+            )
+
+    return issues
+
+
+def _validate_manual_sequence_tasks(
+    node: WorkflowNode,
+    node_index: int,
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    config = node.config or {}
+    task_ids = config.get("task_ids")
+    if not isinstance(task_ids, list) or not task_ids:
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence requires an explicit non-empty ordered task_ids list.",
+                pointer=f"/nodes/{node_index}/config/task_ids",
+                node_id=node.id,
+            )
+        )
+
+    order_policy = config.get("order_policy")
+    if order_policy is not None and order_policy != "manual":
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence order_policy must be 'manual'.",
+                pointer=f"/nodes/{node_index}/config/order_policy",
+                node_id=node.id,
+            )
+        )
+
+    sample_n = config.get("sample_n")
+    if sample_n is not None and not _is_config_one(sample_n):
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence v1 requires sample_n to be 1.",
+                pointer=f"/nodes/{node_index}/config/sample_n",
+                node_id=node.id,
+            )
+        )
+
+    for key in sorted(_MANUAL_SEQUENCE_FILTER_KEYS):
+        if key in config and _has_config_value(config.get(key)):
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                    message="Manual sequence v1 requires explicit task_ids and does not support task filters.",
+                    pointer=f"/nodes/{node_index}/config/{key}",
+                    node_id=node.id,
+                )
+            )
+    return issues
+
+
+def _validate_manual_sequence_matrix(
+    node: WorkflowNode,
+    node_index: int,
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    config = node.config or {}
+    lanes = config.get("lanes")
+    if not isinstance(lanes, dict) or len(lanes) != 1:
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence v1 requires exactly one candidate lane.",
+                pointer=f"/nodes/{node_index}/config/lanes",
+                node_id=node.id,
+            )
+        )
+    elif lanes:
+        lane_key, lane_config = next(iter(lanes.items()))
+        lane_role = (
+            lane_config.get("role")
+            if isinstance(lane_config, dict)
+            else None
+        )
+        effective_role = str(lane_role or lane_key)
+        if effective_role != "candidate":
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                    message="Manual sequence v1 only supports the candidate lane role.",
+                    pointer=f"/nodes/{node_index}/config/lanes/{lane_key}/role",
+                    node_id=node.id,
+                )
+            )
+
+    repeat_n = config.get("repeat_n")
+    if repeat_n is not None and not _is_config_one(repeat_n):
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence v1 requires repeat_n to be 1.",
+                pointer=f"/nodes/{node_index}/config/repeat_n",
+                node_id=node.id,
+            )
+        )
+    return issues
+
+
+def _validate_manual_sequence_execute(
+    node: WorkflowNode,
+    node_index: int,
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    config = node.config or {}
+    for key in ("parallel", "processes"):
+        value = config.get(key)
+        if value is not None and not _is_config_one(value):
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                    message=f"Manual sequence v1 requires {key} to be 1.",
+                    pointer=f"/nodes/{node_index}/config/{key}",
+                    node_id=node.id,
+                )
+            )
+
+    state_policy = config.get("state_policy")
+    if state_policy is not None and state_policy != "isolated":
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence v1 only supports state_policy 'isolated'.",
+                pointer=f"/nodes/{node_index}/config/state_policy",
+                node_id=node.id,
+            )
+        )
+
+    failure_policy = config.get("failure_policy")
+    if failure_policy is not None and failure_policy != "continue":
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_MANUAL_SEQUENCE_INVALID_CONFIG",
+                message="Manual sequence v1 only supports failure_policy 'continue'.",
+                pointer=f"/nodes/{node_index}/config/failure_policy",
+                node_id=node.id,
+            )
+        )
+    return issues
+
+
+def _has_config_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (list, tuple, set, dict, str)):
+        return len(value) > 0
+    return True
+
+
+def _is_config_one(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == 1
 
 
 def _validate_compare_config(node: WorkflowNode, node_index: int) -> list[WorkflowIssue]:

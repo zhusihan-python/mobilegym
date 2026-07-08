@@ -111,6 +111,7 @@ of the following are true:
 
 - `task_selection.config.task_ids` is a non-empty explicit list.
 - `task_selection.config.order_policy` is absent or equals `"manual"`.
+- `task_selection.config.sample_n` is absent or equals `1`.
 - Suite, split, difficulty, or taxonomy filters are not used as the sequence
   source in v1.
 - Exactly one matrix lane is present.
