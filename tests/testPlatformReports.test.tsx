@@ -155,6 +155,172 @@ const baseline: Baseline = {
   created_at: '2026-07-06T00:00:12.000Z',
 };
 
+const manualRun: RunDetail = {
+  ...run,
+  id: 'run-manual-sequence',
+  name: 'Manual sequence report run',
+  progress: {
+    planned_episodes: 2,
+    planned_lane_episodes: 2,
+    completed_episodes: 2,
+    completed_lane_episodes: 2,
+  },
+  lanes: [
+    { id: 'lane-c', lane_key: 'candidate', role: 'candidate', target_id: 'target-c', target_revision_id: 'rev-c' },
+  ],
+  gate_verdict: 'failed',
+  episode_identities: [
+    {
+      episode_key: 'task.alpha|i0',
+      pair_key: 'task.alpha|i0',
+      task_base_id: 'task.alpha',
+      task_id: 'task.alpha',
+      instance_id: 0,
+      instance_seed: 11,
+      template_index: null,
+      trial_id: 0,
+      max_steps: 15,
+      sequence_index: 0,
+      sequence_group_id: 'manual_sequence',
+    },
+    {
+      episode_key: 'task.beta|i0',
+      pair_key: 'task.beta|i0',
+      task_base_id: 'task.beta',
+      task_id: 'task.beta',
+      instance_id: 0,
+      instance_seed: 12,
+      template_index: null,
+      trial_id: 0,
+      max_steps: 15,
+      sequence_index: 1,
+      sequence_group_id: 'manual_sequence',
+    },
+  ],
+  episode_attempts: [
+    {
+      episode_key: 'task.alpha|i0',
+      lane_key: 'candidate',
+      attempt_no: 1,
+      state: 'completed',
+      outcome: 'FAIL',
+      error_code: 'ASSERTION_FAILURE',
+      artifact_root: 'lanes/candidate/trajectory/task_alpha',
+    },
+    {
+      episode_key: 'task.beta|i0',
+      lane_key: 'candidate',
+      attempt_no: 1,
+      state: 'completed',
+      outcome: 'PASS',
+      error_code: null,
+      artifact_root: 'lanes/candidate/trajectory/task_beta',
+    },
+  ],
+};
+
+const manualReport: RunReport = {
+  ...report,
+  id: 'report-manual',
+  run_id: manualRun.id,
+  provenance: {
+    ...report.provenance,
+    run_id: manualRun.id,
+    target_revision_ids: { candidate: 'rev-c' },
+  },
+  functional: {
+    ...report.functional,
+    summary: {
+      planned_lane_episodes: 2,
+      attempted_lane_episodes: 2,
+      successes: 1,
+      failures: 1,
+      errors: 0,
+      incomplete: 0,
+      false_completions: 0,
+      success_rate: 0.5,
+      progress_rate: 1,
+      error_rate: 0,
+      false_completion_rate: 0,
+    },
+  },
+  comparison: {
+    classification_counts: {
+      total_pairs: 0,
+      regressions: 0,
+      fixed: 0,
+      stable_pass: 0,
+      stable_fail: 0,
+      baseline_errors: 0,
+      candidate_errors: 0,
+      pairing_violations: 0,
+      unpaired: 0,
+    },
+    coverage: { total_pairs: 0, paired_pairs: 0, unpaired_pairs: 0, coverage_rate: 0 },
+    runtime_s: {
+      unit: 'seconds',
+      sample_count: 0,
+      baseline_p95: null,
+      candidate_p95: null,
+      absolute_delta: null,
+      percent_delta: null,
+    },
+    phases: {},
+    pairs: [],
+    pair_deltas: {},
+  },
+  sequence: {
+    schema_version: 1,
+    groups: [
+      {
+        sequence_group_id: 'manual_sequence',
+        summary: {
+          planned_lane_episodes: 2,
+          attempted_lane_episodes: 2,
+          successes: 1,
+          failures: 1,
+          errors: 0,
+          incomplete: 0,
+          success_rate: 0.5,
+          progress_rate: 1,
+        },
+        items: [
+          {
+            sequence_index: 0,
+            step: 1,
+            sequence_group_id: 'manual_sequence',
+            episode_key: 'task.alpha|i0',
+            task_id: 'task.alpha',
+            task_base_id: 'task.alpha',
+            lane_key: 'candidate',
+            status: 'completed',
+            outcome: 'FAIL',
+            error_code: 'ASSERTION_FAILURE',
+            episode_attempt_id: 'ea-alpha',
+          },
+          {
+            sequence_index: 1,
+            step: 2,
+            sequence_group_id: 'manual_sequence',
+            episode_key: 'task.beta|i0',
+            task_id: 'task.beta',
+            task_base_id: 'task.beta',
+            lane_key: 'candidate',
+            status: 'completed',
+            outcome: 'PASS',
+            error_code: null,
+            episode_attempt_id: 'ea-beta',
+          },
+        ],
+      },
+    ],
+  },
+  gate: {
+    ...report.gate,
+    observed: { min_success_rate: 0.5 },
+  },
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -282,5 +448,73 @@ describe('Test Platform reports UI', () => {
       );
     });
     expect(await screen.findByText('Promoted baseline for candidate.')).toBeTruthy();
+  });
+
+  it('groups manual sequence report items under the ordered sequence', async () => {
+    window.history.pushState({}, '', `/test-platform/runs/${manualRun.id}`);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const decodedPath = decodeURIComponent(url.pathname);
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${manualRun.id}`) {
+        return jsonResponse(manualRun);
+      }
+      if (url.pathname === `/api/platform/v1/runs/${manualRun.id}/report`) {
+        return jsonResponse(manualReport);
+      }
+      if (url.pathname === `/api/platform/v1/runs/${manualRun.id}/diagnostics`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: manualRun.id,
+          run_attempt_id: 'attempt-1',
+          input_hash: 'sha256:diagnostics',
+          provenance: manualReport.provenance,
+          summary: { total: 0, by_category: {}, by_severity: {} },
+          items: [],
+        });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${manualRun.id}/artifacts`) {
+        return jsonResponse({ items: [] });
+      }
+      if (decodedPath.includes(`/runs/${manualRun.id}/episodes/`)) {
+        return jsonResponse({
+          error: {
+            code: 'REPLAY_ARTIFACT_MISSING',
+            message: 'Replay artifacts are not available yet.',
+            details: [],
+          },
+        }, 404);
+      }
+
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    const sequence = await screen.findByTestId('tp-report-sequence-manual_sequence');
+    expect(sequence.textContent).toContain('Manual sequence');
+    expect(sequence.textContent).toContain('manual_sequence');
+    expect(sequence.textContent).toContain('Step 1');
+    expect(sequence.textContent).toContain('task.alpha');
+    expect(sequence.textContent).toContain('FAIL');
+    expect(sequence.textContent).toContain('ASSERTION_FAILURE');
+    expect(sequence.textContent).toContain('Step 2');
+    expect(sequence.textContent).toContain('task.beta');
+    expect(sequence.textContent).toContain('PASS');
+    expect(screen.queryByLabelText('Regression pairs only')).toBeNull();
+    expect(screen.queryByTestId('tp-report-pair-pair-regression')).toBeNull();
   });
 });

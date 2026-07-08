@@ -662,6 +662,8 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
 
   const data = report.report;
   const counts = data.comparison.classification_counts;
+  const sequenceGroups = data.sequence?.groups ?? [];
+  const hasComparisonPairs = data.comparison.pairs.length > 0;
   const visiblePairs = regressionsOnly
     ? data.comparison.pairs.filter((pair) => pair.classification === 'regression')
     : data.comparison.pairs;
@@ -737,31 +739,95 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
         </div>
       </dl>
 
-      <label className="tp-inline-control">
-        <input
-          type="checkbox"
-          checked={regressionsOnly}
-          onChange={(event) => setRegressionsOnly(event.currentTarget.checked)}
-        />
-        Regression pairs only
-      </label>
+      {hasComparisonPairs ? (
+        <label className="tp-inline-control">
+          <input
+            type="checkbox"
+            checked={regressionsOnly}
+            onChange={(event) => setRegressionsOnly(event.currentTarget.checked)}
+          />
+          Regression pairs only
+        </label>
+      ) : null}
 
       {message ? <p className="tp-kicker">{message}</p> : null}
 
-      <div className="tp-report-pairs">
-        {visiblePairs.map((pair) => (
-          <details key={pair.pair_key} data-testid={`tp-report-pair-${pair.pair_key}`}>
-            <summary>
-              <span className="tp-mono">{pair.pair_key}</span>
-              {' · '}
-              <span className={`tp-classification tp-classification-${pair.classification}`}>
-                {pair.classification}
-              </span>
-            </summary>
-            <pre className="tp-report-diff">{JSON.stringify(pair.delta, null, 2)}</pre>
-          </details>
-        ))}
-      </div>
+      {sequenceGroups.length > 0 ? (
+        <div className="tp-report-sequences" data-testid="tp-report-sequences">
+          {sequenceGroups.map((group) => (
+            <section
+              key={group.sequence_group_id}
+              data-testid={`tp-report-sequence-${group.sequence_group_id}`}
+            >
+              <div className="tp-report-subheading">
+                <h3>Manual sequence</h3>
+                <span className="tp-mono">{group.sequence_group_id}</span>
+              </div>
+              <dl className="tp-run-facts">
+                <div>
+                  <dt>Steps</dt>
+                  <dd>{group.summary.planned_lane_episodes ?? group.items.length}</dd>
+                </div>
+                <div>
+                  <dt>Success rate</dt>
+                  <dd>{formatRate(group.summary.success_rate)}</dd>
+                </div>
+                <div>
+                  <dt>Errors</dt>
+                  <dd>{group.summary.errors ?? 0}</dd>
+                </div>
+              </dl>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Step</th>
+                    <th>Task</th>
+                    <th>Lane</th>
+                    <th>Outcome</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.items.map((item) => {
+                    const outcome = item.outcome ?? item.status;
+                    const outcomeClass = item.outcome ?? 'pending';
+                    return (
+                      <tr key={`${item.sequence_group_id}:${item.lane_key}:${item.episode_key}`}>
+                        <td>{item.step ? `Step ${item.step}` : '—'}</td>
+                        <td className="tp-mono">{item.task_id}</td>
+                        <td>{item.lane_key}</td>
+                        <td>
+                          <span className={`tp-outcome tp-outcome-${outcomeClass.toLowerCase()}`}>
+                            {outcome}
+                          </span>
+                        </td>
+                        <td>{item.error_code ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </section>
+          ))}
+        </div>
+      ) : null}
+
+      {hasComparisonPairs ? (
+        <div className="tp-report-pairs">
+          {visiblePairs.map((pair) => (
+            <details key={pair.pair_key} data-testid={`tp-report-pair-${pair.pair_key}`}>
+              <summary>
+                <span className="tp-mono">{pair.pair_key}</span>
+                {' · '}
+                <span className={`tp-classification tp-classification-${pair.classification}`}>
+                  {pair.classification}
+                </span>
+              </summary>
+              <pre className="tp-report-diff">{JSON.stringify(pair.delta, null, 2)}</pre>
+            </details>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

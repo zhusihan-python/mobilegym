@@ -29,6 +29,7 @@ from test_platform.domain.reports.functional import build_functional_report
 from test_platform.domain.reports.gates import evaluate_gates
 from test_platform.domain.reports.input import ReportInput
 from test_platform.domain.reports.performance import build_performance_report
+from test_platform.domain.reports.sequence import build_sequence_report
 from test_platform.domain.runs import RunDetail, RunDomainError, RunNotFound, RunSummary
 from test_platform.domain.targets import (
     DuplicateTargetName,
@@ -786,10 +787,10 @@ class ReportInputRepository:
             """
             SELECT id, episode_key, materialization_key, pair_key, task_base_id,
                    task_id, instance_id, instance_seed, template_index,
-                   trial_id, max_steps
+                   trial_id, max_steps, sequence_index, sequence_group_id
             FROM episodes
             WHERE run_id = ?
-            ORDER BY episode_key
+            ORDER BY sequence_index IS NULL, sequence_index, episode_key
             """,
             (run_id,),
         ).fetchall()
@@ -806,6 +807,12 @@ class ReportInputRepository:
                 "template_index": row["template_index"],
                 "trial_id": int(row["trial_id"]),
                 "max_steps": int(row["max_steps"]),
+                "sequence_index": row["sequence_index"],
+                "sequence_group_id": (
+                    str(row["sequence_group_id"])
+                    if row["sequence_group_id"] is not None
+                    else None
+                ),
             }
             for row in rows
         ]
@@ -1849,6 +1856,7 @@ def _build_report_payload(
     functional = build_functional_report(report_input)
     performance = build_performance_report(report_input)
     comparison = build_comparison_report(report_input)
+    sequence = build_sequence_report(report_input)
     report = {
         "id": report_id,
         "schema_version": 1,
@@ -1859,6 +1867,7 @@ def _build_report_payload(
         "functional": functional,
         "performance": performance,
         "comparison": comparison,
+        "sequence": sequence,
         "created_at": created_at,
     }
     report["gate"] = evaluate_gates(report, thresholds)
@@ -1998,23 +2007,28 @@ def _planned_lane_episodes(
                 if lane_attempt_id is not None
                 else None
             )
-            planned.append(
-                {
-                    "episode_id": episode["episode_id"],
-                    "episode_key": episode["episode_key"],
-                    "pair_key": episode["pair_key"],
-                    "task_base_id": episode["task_base_id"],
-                    "task_id": episode["task_id"],
-                    "lane_id": lane["lane_id"],
-                    "lane_key": lane["lane_key"],
-                    "role": lane["role"],
-                    "lane_attempt_id": lane_attempt_id,
-                    "episode_attempt_id": latest["id"] if latest is not None else None,
-                    "status": latest["state"] if latest is not None else "incomplete",
-                    "outcome": latest["outcome"] if latest is not None else None,
-                    "error_code": latest["error_code"] if latest is not None else None,
-                }
-            )
+            item = {
+                "episode_id": episode["episode_id"],
+                "episode_key": episode["episode_key"],
+                "pair_key": episode["pair_key"],
+                "task_base_id": episode["task_base_id"],
+                "task_id": episode["task_id"],
+                "lane_id": lane["lane_id"],
+                "lane_key": lane["lane_key"],
+                "role": lane["role"],
+                "lane_attempt_id": lane_attempt_id,
+                "episode_attempt_id": latest["id"] if latest is not None else None,
+                "status": latest["state"] if latest is not None else "incomplete",
+                "outcome": latest["outcome"] if latest is not None else None,
+                "error_code": latest["error_code"] if latest is not None else None,
+            }
+            if (
+                episode.get("sequence_index") is not None
+                or episode.get("sequence_group_id") is not None
+            ):
+                item["sequence_index"] = episode.get("sequence_index")
+                item["sequence_group_id"] = episode.get("sequence_group_id")
+            planned.append(item)
     return planned
 
 

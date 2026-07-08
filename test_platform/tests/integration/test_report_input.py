@@ -288,3 +288,35 @@ def test_report_input_selects_latest_terminal_raw_rows_and_planned_incompletes(t
         assert pair["candidate_attempt"]["result_json"]["is_error"] is True
     finally:
         database.close()
+
+
+def test_report_input_carries_manual_sequence_metadata_to_planned_rows(tmp_path):
+    database = _database(tmp_path)
+    try:
+        run_id = _seed_reportable_paired_run(database)
+        database.connection.execute(
+            """
+            UPDATE episodes
+            SET sequence_index = CASE id WHEN 'ep0' THEN 0 WHEN 'ep1' THEN 1 END,
+                sequence_group_id = 'manual_sequence'
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        )
+        database.connection.commit()
+
+        report_input = ReportInputRepository(database).get_for_run(run_id)
+        planned = [
+            item
+            for item in report_input.planned_lane_episodes
+            if item["lane_key"] == "candidate"
+        ]
+
+        assert [item["task_id"] for item in planned] == ["fake.Task", "fake.Task"]
+        assert [item["sequence_index"] for item in planned] == [0, 1]
+        assert [item["sequence_group_id"] for item in planned] == [
+            "manual_sequence",
+            "manual_sequence",
+        ]
+    finally:
+        database.close()

@@ -268,6 +268,26 @@ export type RunReport = {
     }>;
     pair_deltas: Record<string, Record<string, unknown>>;
   };
+  sequence?: {
+    schema_version: number;
+    groups: Array<{
+      sequence_group_id: string;
+      summary: Record<string, number>;
+      items: Array<{
+        sequence_index: number | null;
+        step: number | null;
+        sequence_group_id: string;
+        episode_key: string;
+        task_id: string;
+        task_base_id: string;
+        lane_key: string;
+        status: string;
+        outcome: string | null;
+        error_code: string | null;
+        episode_attempt_id: string | null;
+      }>;
+    }>;
+  };
   gate: GateResult;
   created_at: string;
 };
