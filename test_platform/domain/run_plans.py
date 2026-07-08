@@ -39,6 +39,8 @@ class EpisodeTemplate(BaseModel):
     template_index: int | None
     trial_id: int
     max_steps: int
+    sequence_index: int | None = None
+    sequence_group_id: str | None = None
 
 
 class RunPlan(BaseModel):
@@ -191,20 +193,28 @@ def _selected_tasks(
     catalog: TaskCatalogSnapshot,
 ) -> list[TaskCatalogItem]:
     task_ids = config.get("task_ids")
-    requested = {str(task_id) for task_id in task_ids} if isinstance(task_ids, list) else set()
+    requested_order = _ordered_task_ids(task_ids)
+    requested = set(requested_order)
     suites = {str(suite) for suite in config.get("suites", [])} if isinstance(config.get("suites"), list) else set()
     difficulties = (
         {str(value) for value in config.get("difficulty", [])}
         if isinstance(config.get("difficulty"), list)
         else set()
     )
-    selected = [
-        item
-        for item in catalog.items
-        if (not requested or item.task_base_id in requested)
-        and (not suites or item.suite in suites)
-        and (not difficulties or item.difficulty in difficulties)
-    ]
+    if requested_order:
+        catalog_by_id = {item.task_base_id: item for item in catalog.items}
+        selected = [
+            catalog_by_id[task_id]
+            for task_id in requested_order
+            if task_id in catalog_by_id
+        ]
+    else:
+        selected = [
+            item
+            for item in catalog.items
+            if (not suites or item.suite in suites)
+            and (not difficulties or item.difficulty in difficulties)
+        ]
     missing = sorted(requested - {item.task_base_id for item in selected})
     if missing:
         raise ValueError(
@@ -213,6 +223,20 @@ def _selected_tasks(
     if not selected:
         raise ValueError("Published workflow task selection is empty.")
     return selected
+
+
+def _ordered_task_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        task_id = str(item)
+        if task_id in seen:
+            continue
+        ordered.append(task_id)
+        seen.add(task_id)
+    return ordered
 
 
 def _compile_lanes(
@@ -289,6 +313,7 @@ def _compile_episodes(
 ) -> list[EpisodeTemplate]:
     episodes: list[EpisodeTemplate] = []
     sample_templates = bool(execute_config.get("sample_templates", False))
+    is_linear_sequence = execute_config.get("execution_strategy") == "linear_sequence"
     for task in tasks:
         for instance_id in range(sample_n):
             instance_seed = (
@@ -306,6 +331,7 @@ def _compile_episodes(
             max_steps = _max_steps(task, execute_config)
             for trial_id in range(repeat_n):
                 episode_key = f"{materialization_key}|t{trial_id}"
+                sequence_index = len(episodes) if is_linear_sequence else None
                 episodes.append(
                     EpisodeTemplate(
                         episode_key=episode_key,
@@ -318,6 +344,8 @@ def _compile_episodes(
                         template_index=template_index,
                         trial_id=trial_id,
                         max_steps=max_steps,
+                        sequence_index=sequence_index,
+                        sequence_group_id="manual_sequence" if is_linear_sequence else None,
                     )
                 )
     return episodes

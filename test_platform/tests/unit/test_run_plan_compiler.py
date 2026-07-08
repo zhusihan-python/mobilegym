@@ -5,28 +5,34 @@ from test_platform.domain.task_catalog import TaskCatalogItem, TaskCatalogSnapsh
 from test_platform.domain.workflows import WorkflowDefinition
 
 
+def _task(task_base_id: str):
+    return TaskCatalogItem(
+        task_base_id=task_base_id,
+        suite=task_base_id.split(".", maxsplit=1)[0],
+        class_name=task_base_id.rsplit(".", maxsplit=1)[-1],
+        apps=["wechat"],
+        templates=[task_base_id],
+        parameters={},
+        difficulty="L1",
+        scope="S1",
+        objective="operate",
+        composition="atomic",
+        capabilities=[],
+        max_steps=15,
+        answer_fields=False,
+        optimal_path_lengths=[],
+    )
+
+
 def _catalog():
     return TaskCatalogSnapshot(
         schema_version=1,
         repository_revision="git-vs04",
         digest="sha256:catalog",
         items=[
-            TaskCatalogItem(
-                task_base_id="wechat.OpenBlacklist",
-                suite="wechat",
-                class_name="OpenBlacklist",
-                apps=["wechat"],
-                templates=["Open blacklist"],
-                parameters={},
-                difficulty="L1",
-                scope="S1",
-                objective="operate",
-                composition="atomic",
-                capabilities=[],
-                max_steps=15,
-                answer_fields=False,
-                optimal_path_lengths=[],
-            )
+            _task("wechat.OpenBlacklist"),
+            _task("wechat.BlacklistContact"),
+            _task("wechat.SendMessage"),
         ],
     )
 
@@ -92,6 +98,53 @@ def _definition_with_gate():
         }
     )
     return WorkflowDefinition.model_validate(payload)
+
+
+def _manual_sequence_definition(task_ids):
+    return WorkflowDefinition.model_validate(
+        {
+            "schema_version": 1,
+            "name": "Manual sequence",
+            "nodes": [
+                {
+                    "id": "tasks",
+                    "type": "task_selection",
+                    "depends_on": [],
+                    "config": {
+                        "task_ids": task_ids,
+                        "order_policy": "manual",
+                        "sample_n": 1,
+                    },
+                },
+                {
+                    "id": "matrix",
+                    "type": "matrix",
+                    "depends_on": ["tasks"],
+                    "config": {
+                        "lanes": {
+                            "candidate": {
+                                "target_id": "target-a",
+                                "role": "candidate",
+                            }
+                        },
+                        "repeat_n": 1,
+                    },
+                },
+                {
+                    "id": "execute",
+                    "type": "execute",
+                    "depends_on": ["matrix"],
+                    "config": {
+                        "execution_strategy": "linear_sequence",
+                        "state_policy": "isolated",
+                        "failure_policy": "continue",
+                        "parallel": 1,
+                        "processes": 1,
+                    },
+                },
+            ],
+        }
+    )
 
 
 def _targets():
@@ -169,6 +222,8 @@ def test_identical_inputs_produce_identical_plan_fingerprints_and_episode_identi
         episode.episode_key for episode in second.episodes
     ]
     assert len(first.episodes) == 4
+    assert {episode.sequence_index for episode in first.episodes} == {None}
+    assert {episode.sequence_group_id for episode in first.episodes} == {None}
 
 
 def test_lane_or_seed_changes_alter_the_plan_fingerprint():
@@ -221,6 +276,66 @@ def test_compiler_freezes_gate_thresholds_into_run_plan():
     }
 
 
+def test_manual_sequence_run_plan_preserves_order_and_adds_sequence_metadata():
+    task_ids = [
+        "wechat.SendMessage",
+        "wechat.OpenBlacklist",
+        "wechat.BlacklistContact",
+    ]
+
+    plan = RunPlanCompiler().compile(
+        run_id="run-random",
+        workflow_version_id="workflow-version-1",
+        definition=_manual_sequence_definition(task_ids),
+        catalog=_catalog(),
+        targets=_targets(),
+        seed=123,
+        created_at="2026-07-03T12:00:00.000Z",
+    )
+
+    assert [episode.task_base_id for episode in plan.episodes] == task_ids
+    assert [episode.sequence_index for episode in plan.episodes] == [0, 1, 2]
+    assert {
+        episode.sequence_group_id for episode in plan.episodes
+    } == {"manual_sequence"}
+    assert plan.task_source.selection["task_ids"] == task_ids
+
+
+def test_manual_sequence_order_changes_plan_fingerprint():
+    first = RunPlanCompiler().compile(
+        run_id="run-random",
+        workflow_version_id="workflow-version-1",
+        definition=_manual_sequence_definition(
+            ["wechat.OpenBlacklist", "wechat.SendMessage"]
+        ),
+        catalog=_catalog(),
+        targets=_targets(),
+        seed=123,
+        created_at="2026-07-03T12:00:00.000Z",
+    )
+    second = RunPlanCompiler().compile(
+        run_id="run-random",
+        workflow_version_id="workflow-version-1",
+        definition=_manual_sequence_definition(
+            ["wechat.SendMessage", "wechat.OpenBlacklist"]
+        ),
+        catalog=_catalog(),
+        targets=_targets(),
+        seed=123,
+        created_at="2026-07-03T12:00:00.000Z",
+    )
+
+    assert first.fingerprint != second.fingerprint
+    assert [episode.task_base_id for episode in first.episodes] == [
+        "wechat.OpenBlacklist",
+        "wechat.SendMessage",
+    ]
+    assert [episode.task_base_id for episode in second.episodes] == [
+        "wechat.SendMessage",
+        "wechat.OpenBlacklist",
+    ]
+
+
 def test_legacy_run_plan_payload_defaults_gates_to_empty_dict():
     plan = _compile()
     payload = plan.model_dump(mode="json")
@@ -229,3 +344,16 @@ def test_legacy_run_plan_payload_defaults_gates_to_empty_dict():
     reparsed = type(plan).model_validate(payload)
 
     assert reparsed.gates == {}
+
+
+def test_legacy_episode_payload_defaults_sequence_metadata_to_none():
+    plan = _compile()
+    payload = plan.model_dump(mode="json")
+    for episode in payload["episodes"]:
+        episode.pop("sequence_index")
+        episode.pop("sequence_group_id")
+
+    reparsed = type(plan).model_validate(payload)
+
+    assert {episode.sequence_index for episode in reparsed.episodes} == {None}
+    assert {episode.sequence_group_id for episode in reparsed.episodes} == {None}
