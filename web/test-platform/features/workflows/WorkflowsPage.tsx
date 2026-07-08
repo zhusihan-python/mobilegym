@@ -48,10 +48,13 @@ type LoadState =
     }
   | { status: 'error'; message: string };
 
+type WorkflowMode = 'batch' | 'manual_sequence';
+
 export function WorkflowsPage() {
   const navigate = useNavigate();
   const { selectedProject } = useOutletContext<{ selectedProject: Project }>();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('batch');
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [targetId, setTargetId] = useState('');
   const [repeatCount, setRepeatCount] = useState(1);
@@ -136,16 +139,20 @@ export function WorkflowsPage() {
     return state.tasks;
   }, [state]);
 
+  const isManualSequence = workflowMode === 'manual_sequence';
+  const effectivePairedEnabled = pairedEnabled && !isManualSequence;
+
   const definition = useMemo(
     () =>
       buildDefinition(
         {
+          workflowMode,
           selectedTaskIds,
           targetId,
           repeatCount,
           parallelCount,
           processCount,
-          paired: pairedEnabled
+          paired: effectivePairedEnabled
             ? {
                 baselineTargetId,
                 candidateTargetId,
@@ -157,12 +164,13 @@ export function WorkflowsPage() {
         },
       ),
     [
+      workflowMode,
       repeatCount,
       selectedTaskIds,
       targetId,
       parallelCount,
       processCount,
-      pairedEnabled,
+      effectivePairedEnabled,
       baselineTargetId,
       candidateTargetId,
       targetConstraints,
@@ -177,6 +185,27 @@ export function WorkflowsPage() {
         ? current.filter((item) => item !== taskId)
         : [...current, taskId],
     );
+    setPreview(null);
+    setPublishedVersion(null);
+  };
+
+  const moveSelectedTask = (taskId: string, direction: -1 | 1) => {
+    setSelectedTaskIds((current) => {
+      const index = current.indexOf(taskId);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+    setPreview(null);
+    setPublishedVersion(null);
+  };
+
+  const removeSelectedTask = (taskId: string) => {
+    setSelectedTaskIds((current) => current.filter((item) => item !== taskId));
     setPreview(null);
     setPublishedVersion(null);
   };
@@ -301,10 +330,36 @@ export function WorkflowsPage() {
           <p>Select tasks and a simulator target before publishing an immutable version.</p>
         </div>
         <div className="tp-workflow-actions">
-          <button type="button" onClick={validatePreview} disabled={busy || !canSubmit(selectedTaskIds, targetId, pairedEnabled, baselineTargetId, candidateTargetId)}>
+          <button
+            type="button"
+            onClick={validatePreview}
+            disabled={
+              busy ||
+              !canSubmit(
+                selectedTaskIds,
+                targetId,
+                effectivePairedEnabled,
+                baselineTargetId,
+                candidateTargetId,
+              )
+            }
+          >
             Validate preview
           </button>
-          <button type="button" onClick={publish} disabled={busy || !canSubmit(selectedTaskIds, targetId, pairedEnabled, baselineTargetId, candidateTargetId)}>
+          <button
+            type="button"
+            onClick={publish}
+            disabled={
+              busy ||
+              !canSubmit(
+                selectedTaskIds,
+                targetId,
+                effectivePairedEnabled,
+                baselineTargetId,
+                candidateTargetId,
+              )
+            }
+          >
             Publish workflow
           </button>
           {publishedVersion ? (
@@ -320,18 +375,87 @@ export function WorkflowsPage() {
       </section>
 
       <section className="tp-panel tp-workflow-editor">
-        <div className="tp-workflow-task-list" aria-label="Workflow tasks">
-          {visibleTasks.map((task) => (
-            <label key={task.task_base_id} className="tp-checkbox-row">
-              <input
-                type="checkbox"
-                checked={selectedTaskIds.includes(task.task_base_id)}
-                onChange={() => toggleTask(task.task_base_id)}
-                aria-label={`Select ${task.task_base_id}`}
-              />
-              <span>{task.task_base_id}</span>
-            </label>
-          ))}
+        <div className="tp-workflow-mode">
+          <label className="tp-segmented-control">
+            <span>Mode</span>
+            <select
+              aria-label="Workflow mode"
+              value={workflowMode}
+              onChange={(event) => {
+                const nextMode = event.currentTarget.value as WorkflowMode;
+                setWorkflowMode(nextMode);
+                if (nextMode === 'manual_sequence') {
+                  setPairedEnabled(false);
+                  setRepeatCount(1);
+                  setParallelCount(1);
+                  setProcessCount(1);
+                }
+                setPreview(null);
+                setPublishedVersion(null);
+              }}
+            >
+              <option value="batch">Batch</option>
+              <option value="manual_sequence">Manual sequence</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="tp-workflow-task-column">
+          <div className="tp-workflow-task-list" aria-label="Workflow tasks">
+            {visibleTasks.map((task) => (
+              <label key={task.task_base_id} className="tp-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={selectedTaskIds.includes(task.task_base_id)}
+                  onChange={() => toggleTask(task.task_base_id)}
+                  aria-label={`Select ${task.task_base_id}`}
+                />
+                <span>{task.task_base_id}</span>
+              </label>
+            ))}
+          </div>
+
+          {isManualSequence ? (
+            <div className="tp-workflow-sequence" aria-label="Manual sequence order">
+              <h3>Manual order</h3>
+              {selectedTaskIds.length > 0 ? (
+                <ol>
+                  {selectedTaskIds.map((taskId, index) => (
+                    <li key={taskId}>
+                      <span>{taskId}</span>
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => moveSelectedTask(taskId, -1)}
+                          disabled={index === 0}
+                          aria-label={`Move ${taskId} up`}
+                        >
+                          Up
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveSelectedTask(taskId, 1)}
+                          disabled={index === selectedTaskIds.length - 1}
+                          aria-label={`Move ${taskId} down`}
+                        >
+                          Down
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeSelectedTask(taskId)}
+                          aria-label={`Remove ${taskId}`}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p>No tasks selected</p>
+              )}
+            </div>
+          ) : null}
         </div>
 
         <div className="tp-workflow-controls">
@@ -359,6 +483,7 @@ export function WorkflowsPage() {
             type="number"
             min={1}
             value={repeatCount}
+            disabled={isManualSequence}
             onChange={(event) => {
               setRepeatCount(Math.max(1, Number(event.target.value) || 1));
               setPreview(null);
@@ -372,6 +497,7 @@ export function WorkflowsPage() {
             type="number"
             min={1}
             value={parallelCount}
+            disabled={isManualSequence}
             onChange={(event) => {
               setParallelCount(Math.max(1, Number(event.target.value) || 1));
               setPreview(null);
@@ -385,6 +511,7 @@ export function WorkflowsPage() {
             type="number"
             min={1}
             value={processCount}
+            disabled={isManualSequence}
             onChange={(event) => {
               setProcessCount(Math.max(1, Number(event.target.value) || 1));
               setPreview(null);
@@ -457,7 +584,8 @@ export function WorkflowsPage() {
           <label className="tp-checkbox-row">
             <input
               type="checkbox"
-              checked={pairedEnabled}
+              checked={effectivePairedEnabled}
+              disabled={isManualSequence}
               onChange={(event) => {
                 setPairedEnabled(event.target.checked);
                 setPreview(null);
@@ -468,7 +596,7 @@ export function WorkflowsPage() {
             <span>Paired comparison (baseline vs candidate)</span>
           </label>
 
-          {pairedEnabled ? (
+          {effectivePairedEnabled ? (
             <div className="tp-workflow-paired-controls">
               <label htmlFor="tp-workflow-baseline-target">Baseline target</label>
               <select
@@ -571,6 +699,16 @@ export function WorkflowsPage() {
         <section className="tp-panel">
           <h2>Compile preview</h2>
           <p>{preview.total_episodes} total episodes</p>
+          <dl className="tp-workflow-preview-facts">
+            <div>
+              <dt>Strategy</dt>
+              <dd>{preview.execution_strategy}</dd>
+            </div>
+            <div>
+              <dt>Order</dt>
+              <dd>{preview.ordered_task_ids.join(' -> ')}</dd>
+            </div>
+          </dl>
           {preview.violations && preview.violations.length > 0 ? (
             <div data-testid="tp-constraint-violations" className="tp-constraint-violations">
               <p className="tp-inline-alert">
@@ -647,6 +785,7 @@ type PairedConfig = {
 };
 
 type BuildDefinitionInput = {
+  workflowMode: WorkflowMode;
   selectedTaskIds: string[];
   targetId: string;
   repeatCount: number;
@@ -657,6 +796,7 @@ type BuildDefinitionInput = {
 
 function buildDefinition(input: BuildDefinitionInput): WorkflowDefinition {
   const {
+    workflowMode,
     selectedTaskIds,
     targetId,
     repeatCount,
@@ -664,25 +804,43 @@ function buildDefinition(input: BuildDefinitionInput): WorkflowDefinition {
     processCount,
     paired,
   } = input;
+  const isManualSequence = workflowMode === 'manual_sequence';
+  const effectivePaired = isManualSequence ? null : paired;
+  const effectiveRepeatCount = isManualSequence ? 1 : repeatCount;
+  const effectiveParallelCount = isManualSequence ? 1 : parallelCount;
+  const effectiveProcessCount = isManualSequence ? 1 : processCount;
   // VS-10 Contract 2: when paired comparison is enabled, the matrix node grows
   // two lanes (baseline + candidate) with explicit roles, and a compare node
   // carries the three policy axes. The single-lane path is unchanged.
-  const lanes = paired
+  const lanes = effectivePaired
     ? {
-        baseline: { target_id: paired.baselineTargetId, role: 'baseline' },
-        candidate: { target_id: paired.candidateTargetId, role: 'candidate' },
+        baseline: { target_id: effectivePaired.baselineTargetId, role: 'baseline' },
+        candidate: { target_id: effectivePaired.candidateTargetId, role: 'candidate' },
       }
     : { candidate: { target_id: targetId } };
+  const taskSelectionConfig: Record<string, unknown> = {
+    task_ids: selectedTaskIds,
+    sample_n: 1,
+  };
+  if (isManualSequence) {
+    taskSelectionConfig.order_policy = 'manual';
+  }
+  const executeConfig: Record<string, unknown> = {
+    parallel: Math.max(1, effectiveParallelCount),
+    processes: Math.max(1, effectiveProcessCount),
+  };
+  if (isManualSequence) {
+    executeConfig.execution_strategy = 'linear_sequence';
+    executeConfig.state_policy = 'isolated';
+    executeConfig.failure_policy = 'continue';
+  }
 
   const nodes: WorkflowDefinition['nodes'] = [
     {
       id: 'tasks',
       type: 'task_selection',
       depends_on: [],
-      config: {
-        task_ids: selectedTaskIds,
-        sample_n: 1,
-      },
+      config: taskSelectionConfig,
     },
     {
       id: 'matrix',
@@ -690,29 +848,26 @@ function buildDefinition(input: BuildDefinitionInput): WorkflowDefinition {
       depends_on: ['tasks'],
       config: {
         lanes,
-        repeat_n: repeatCount,
+        repeat_n: effectiveRepeatCount,
       },
     },
     {
       id: 'execute',
       type: 'execute',
       depends_on: ['matrix'],
-      config: {
-        parallel: Math.max(1, parallelCount),
-        processes: Math.max(1, processCount),
-      },
+      config: executeConfig,
     },
   ];
 
-  if (paired) {
+  if (effectivePaired) {
     nodes.push({
       id: 'compare',
       type: 'compare',
       depends_on: ['execute'],
       config: {
-        target_constraints: paired.targetConstraints,
-        initial_state_policy: paired.initialStatePolicy,
-        execution: paired.execution,
+        target_constraints: effectivePaired.targetConstraints,
+        initial_state_policy: effectivePaired.initialStatePolicy,
+        execution: effectivePaired.execution,
       },
     });
   }

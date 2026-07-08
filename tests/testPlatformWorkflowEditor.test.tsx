@@ -158,4 +158,123 @@ describe('Test Platform workflow editor', () => {
     expect(await screen.findByText('Published version 1')).toBeTruthy();
     expect(requests.some((request) => request.path.endsWith('/publish'))).toBe(true);
   });
+
+  it('builds a manual sequence definition from reordered selected tasks', async () => {
+    const requests: Array<{ path: string; body: any }> = [];
+    let workflow = {
+      id: 'workflow-1',
+      project_id: project.id,
+      name: 'Manual sequence',
+      draft_definition: null,
+      latest_version: null,
+      created_at: '2026-07-03T00:00:02.000Z',
+      updated_at: '2026-07-03T00:00:02.000Z',
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ path: url.pathname, body });
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/tasks') {
+        return jsonResponse({ items: tasks, next_cursor: null, digest: 'sha256:test' });
+      }
+      if (url.pathname === '/api/platform/v1/targets') {
+        return jsonResponse({ items: [target], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
+        if (init?.method === 'POST') {
+          workflow = { ...workflow, draft_definition: body.definition };
+          return jsonResponse(workflow, 201);
+        }
+        return jsonResponse({ items: [], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/workflows/workflow-1/compile-preview') {
+        return jsonResponse({
+          task_count: 2,
+          task_instance_count: 2,
+          trial_count: 1,
+          lane_count: 1,
+          total_episodes: 2,
+          lane_keys: ['candidate'],
+          ordered_task_ids: ['wechat.OpenBlacklist', 'wechat.BlacklistContact'],
+          execution_strategy: 'linear_sequence',
+        });
+      }
+
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Workflows' })).toBeTruthy();
+    const repeatInput = await screen.findByLabelText('Repeat count');
+    fireEvent.change(repeatInput, { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Parallel workers'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('Processes'), { target: { value: '2' } });
+    fireEvent.click(screen.getByLabelText('Paired comparison (baseline vs candidate)'));
+    fireEvent.change(screen.getByLabelText('Workflow mode'), {
+      target: { value: 'manual_sequence' },
+    });
+
+    expect((screen.getByLabelText('Repeat count') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Parallel workers') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Processes') as HTMLInputElement).disabled).toBe(true);
+    const pairedToggle = screen.getByLabelText(
+      'Paired comparison (baseline vs candidate)',
+    ) as HTMLInputElement;
+    expect(pairedToggle.disabled).toBe(true);
+    expect(pairedToggle.checked).toBe(false);
+
+    fireEvent.click(await screen.findByLabelText('Select wechat.BlacklistContact'));
+    fireEvent.click(screen.getByLabelText('Select wechat.OpenBlacklist'));
+    fireEvent.click(screen.getByRole('button', { name: 'Move wechat.OpenBlacklist up' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Validate preview' }));
+
+    await waitFor(() => {
+      expect(requests.some((request) => request.path.endsWith('/compile-preview'))).toBe(true);
+    });
+    expect(await screen.findByText('linear_sequence')).toBeTruthy();
+    expect(await screen.findByText('wechat.OpenBlacklist -> wechat.BlacklistContact')).toBeTruthy();
+
+    const draftRequest = requests.find(
+      (request) => request.path.endsWith('/workflows') && request.body?.definition,
+    );
+    expect(draftRequest).toBeTruthy();
+    const definition = draftRequest!.body.definition;
+    const taskSelection = definition.nodes.find((node: any) => node.type === 'task_selection');
+    expect(taskSelection.config.task_ids).toEqual([
+      'wechat.OpenBlacklist',
+      'wechat.BlacklistContact',
+    ]);
+    expect(taskSelection.config.order_policy).toBe('manual');
+    expect(taskSelection.config.sample_n).toBe(1);
+
+    const matrix = definition.nodes.find((node: any) => node.type === 'matrix');
+    expect(matrix.config.repeat_n).toBe(1);
+    expect(matrix.config.lanes).toEqual({ candidate: { target_id: target.id } });
+
+    const execute = definition.nodes.find((node: any) => node.type === 'execute');
+    expect(execute.config).toMatchObject({
+      execution_strategy: 'linear_sequence',
+      state_policy: 'isolated',
+      failure_policy: 'continue',
+      parallel: 1,
+      processes: 1,
+    });
+    expect(definition.nodes.some((node: any) => node.type === 'compare')).toBe(false);
+  });
 });

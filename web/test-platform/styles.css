@@ -1026,6 +1026,17 @@ select {
   grid-template-columns: minmax(0, 1fr) 240px;
 }
 
+.tp-workflow-mode {
+  grid-column: 1 / -1;
+}
+
+.tp-workflow-task-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
 .tp-workflow-task-list {
   border: 1px solid #e1e7ee;
   border-radius: 6px;
@@ -1044,6 +1055,104 @@ select {
 
 .tp-checkbox-row + .tp-checkbox-row {
   border-top: 1px solid #e1e7ee;
+}
+
+.tp-workflow-sequence {
+  border: 1px solid #e1e7ee;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.tp-workflow-sequence h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.tp-workflow-sequence p {
+  color: #64748b;
+  margin: 0;
+}
+
+.tp-workflow-sequence ol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style-position: inside;
+  margin: 0;
+  padding: 0;
+}
+
+.tp-workflow-sequence li {
+  align-items: center;
+  background: #f7fafc;
+  border: 1px solid #e1e7ee;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.tp-workflow-sequence li > span {
+  overflow-wrap: anywhere;
+}
+
+.tp-workflow-sequence li > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tp-workflow-sequence button {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #17202a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 30px;
+  padding: 5px 8px;
+}
+
+.tp-workflow-sequence button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.tp-workflow-paired,
+.tp-workflow-preview-facts {
+  grid-column: 1 / -1;
+}
+
+.tp-workflow-preview-facts {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0 0;
+}
+
+.tp-workflow-preview-facts div {
+  background: #f7fafc;
+  border: 1px solid #e1e7ee;
+  border-radius: 6px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.tp-workflow-preview-facts dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.tp-workflow-preview-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .tp-target-list {
