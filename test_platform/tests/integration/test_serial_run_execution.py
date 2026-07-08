@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from bench_env.env.base import Action, ActionType, Observation, StepResult
+from bench_env.runner.cancellation import CancellationToken, RunCancelled
 from bench_env.task.judge import JudgeResult
 from test_platform.domain.task_catalog import TaskCatalogItem, TaskCatalogSnapshot
 from test_platform.persistence.database import Database
@@ -53,8 +54,9 @@ class _Stopwatch:
 class _ExecutableFakeEnv:
     supports_state_injection = True
 
-    def __init__(self, *, label: str) -> None:
+    def __init__(self, *, label: str, on_close: Any | None = None) -> None:
         self.label = label
+        self.on_close = on_close
         self.stopwatch = _Stopwatch()
         self.sample_count = 0
         self.step_count = 0
@@ -94,6 +96,8 @@ class _ExecutableFakeEnv:
 
     async def close(self) -> None:
         self.closed = True
+        if callable(self.on_close):
+            self.on_close()
 
     @property
     def agent_message(self) -> str | None:
@@ -428,5 +432,63 @@ async def test_serial_run_execution_runs_manual_sequence_in_order_and_continues_
         ]
         assert detail.progress["completed_episodes"] == 2
         assert detail.progress["completed_lane_episodes"] == 2
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_serial_manual_sequence_cancel_after_first_result_synthesizes_remaining(tmp_path):
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    task_factory = _ExecutableTaskFactory()
+    token = CancellationToken()
+    materialize_a = _ExecutableFakeEnv(label="materialize-a")
+    materialize_z = _ExecutableFakeEnv(label="materialize-z")
+    execute_z = _ExecutableFakeEnv(label="execute-z", on_close=token.cancel)
+    envs = iter([materialize_a, materialize_z, execute_z])
+    try:
+        run = _create_manual_sequence_run(database, settings)
+
+        with pytest.raises(RunCancelled):
+            await SerialRunExecutor(
+                database,
+                settings,
+                task_factory=task_factory,
+                env_factory=lambda lane: next(envs),
+                agent_factory=lambda lane: _FakeAgent(),
+            ).execute_run(run.id, token=token)
+
+        attempts = database.connection.execute(
+            """
+            SELECT e.task_base_id, e.sequence_index, ea.state, ea.outcome, ea.error_code
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            WHERE e.run_id = ?
+            ORDER BY e.sequence_index
+            """,
+            (run.id,),
+        ).fetchall()
+        assert [dict(row) for row in attempts] == [
+            {
+                "task_base_id": "fake.ZFailFirstTask",
+                "sequence_index": 0,
+                "state": "cancelled",
+                "outcome": "CANCELLED",
+                "error_code": "CANCELLED",
+            },
+            {
+                "task_base_id": "fake.APassSecondTask",
+                "sequence_index": 1,
+                "state": "cancelled",
+                "outcome": "CANCELLED",
+                "error_code": "CANCELLED",
+            },
+        ]
+        run_row = database.connection.execute(
+            "SELECT state FROM runs WHERE id = ?",
+            (run.id,),
+        ).fetchone()
+        assert run_row["state"] == "cancelled"
     finally:
         database.close()

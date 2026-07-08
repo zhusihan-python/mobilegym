@@ -929,7 +929,6 @@ class SerialRunExecutor(_RunExecutorBase):
             token.cancel()
             results = []
 
-        ingestor = ResultIngestor(self.database)
         # P2.2: cancellation is driven solely by the token, NOT by an empty
         # results list — an exception that left results empty before the first
         # episode would otherwise be misclassified as a cancellation.
@@ -943,24 +942,19 @@ class SerialRunExecutor(_RunExecutorBase):
         if any_result_cancelled:
             token.cancel()
         cancelled = token.cancelled
-        for work_item, result in zip(work_items, results, strict=True):
-            artifact_root = _episode_artifact_root(
-                lane_attempt["artifact_root"],
-                result,
-                repeat_n=config.repeat_n,
-                episode_key=work_item.episode_key,
-            )
-            ingestor.ingest_episode_attempt(
-                run_id=run_id,
-                lane_attempt_id=lane_attempt["id"],
-                episode_key=work_item.episode_key,
-                result=result,
-                artifact_root=artifact_root,
-                cancelled=token.cancelled,
-            )
+        self._reconcile_and_ingest(
+            run_id=run_id,
+            lane_attempt=lane_attempt,
+            work_items=work_items,
+            results=results,
+            cancelled=cancelled,
+            repeat_n=config.repeat_n,
+            event_sink=events,
+        )
         # Serial execution finalizes once after all ordered episodes are
         # ingested. Parallel execution follows the same one-finalize-per-lane
         # rule after all workers finish.
+        ingestor = ResultIngestor(self.database)
         ingestor.finalize_lane_run(
             run_id=run_id,
             lane_attempt_id=lane_attempt["id"],
@@ -978,6 +972,113 @@ class SerialRunExecutor(_RunExecutorBase):
         # by the supervisor's _execute wrapper to avoid duplicate emits. The
         # executor only raises RunCancelled; the supervisor finalizes + emits.
         return RunRepository(self.database).get(run_id)
+
+    def _reconcile_and_ingest(
+        self,
+        *,
+        run_id: str,
+        lane_attempt: dict[str, str],
+        work_items: list[PreparedWorkItem],
+        results: list[Any],
+        cancelled: bool,
+        repeat_n: int,
+        event_sink: EventSink,
+    ) -> None:
+        if len(results) > len(work_items):
+            raise RunDomainError(
+                "EPISODE_RESULT_UNKNOWN",
+                "The serial runner returned more results than planned episodes.",
+                status_code=500,
+                details=[
+                    {
+                        "run_id": run_id,
+                        "planned_episode_count": len(work_items),
+                        "result_count": len(results),
+                    }
+                ],
+            )
+
+        ingestor = ResultIngestor(self.database)
+        for index, work_item in enumerate(work_items):
+            result = results[index] if index < len(results) else None
+            artifact_root = _episode_artifact_root(
+                lane_attempt["artifact_root"],
+                result,
+                repeat_n=repeat_n,
+                episode_key=work_item.episode_key,
+            )
+            if result is not None:
+                ingestor.ingest_episode_attempt(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt["id"],
+                    episode_key=work_item.episode_key,
+                    result=result,
+                    artifact_root=artifact_root,
+                    cancelled=cancelled,
+                )
+                continue
+
+            synthetic = self._synthetic_missing_result(work_item, cancelled=cancelled)
+            if cancelled:
+                missing_code = "CANCELLED"
+                terminal_event_type = "episode.cancelled"
+                terminal_outcome = "CANCELLED"
+            else:
+                missing_code = "WORKER_CRASH"
+                terminal_event_type = "episode.error"
+                terminal_outcome = "ERROR"
+            ingestor.ingest_episode_attempt(
+                run_id=run_id,
+                lane_attempt_id=lane_attempt["id"],
+                episode_key=work_item.episode_key,
+                result=synthetic,
+                artifact_root=artifact_root,
+                cancelled=cancelled,
+                error_code_override=missing_code,
+            )
+            try:
+                event_sink.emit(ExecutionEvent(
+                    type=terminal_event_type,
+                    timestamp="",
+                    phase="execute",
+                    task_id=getattr(work_item.task, "id", None),
+                    trial_id=work_item.trial_id,
+                    episode_key=work_item.episode_key,
+                    payload={
+                        "outcome": terminal_outcome,
+                        "error_code": missing_code,
+                        "steps": 0,
+                        "reason": "missing_result",
+                    },
+                ))
+            except Exception:  # noqa: BLE001 — event failure must not break ingestion
+                pass
+
+    @staticmethod
+    def _synthetic_missing_result(
+        work_item: PreparedWorkItem, *, cancelled: bool,
+    ) -> dict[str, Any]:
+        if cancelled:
+            return {
+                "id": getattr(work_item.task, "id", "unknown"),
+                "trial_id": work_item.trial_id,
+                "is_success": False,
+                "is_error": False,
+                "execution": {
+                    "error": None,
+                    "stop_reason": "CANCELLED",
+                },
+            }
+        return {
+            "id": getattr(work_item.task, "id", "unknown"),
+            "trial_id": work_item.trial_id,
+            "is_success": False,
+            "is_error": True,
+            "execution": {
+                "error": "Serial runner exited without reporting a result (WORKER_CRASH).",
+                "stop_reason": "ERROR",
+            },
+        }
 
     async def _run_isolated_work_items(
         self,
