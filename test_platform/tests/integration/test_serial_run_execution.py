@@ -7,9 +7,16 @@ import pytest
 
 from bench_env.env.base import Action, ActionType, Observation, StepResult
 from bench_env.task.judge import JudgeResult
+from test_platform.domain.task_catalog import TaskCatalogItem, TaskCatalogSnapshot
 from test_platform.persistence.database import Database
-from test_platform.persistence.repositories import ReplayRepository
+from test_platform.persistence.repositories import (
+    ProjectRepository,
+    ReplayRepository,
+    TargetRepository,
+    WorkflowRepository,
+)
 from test_platform.services.execution import SerialRunExecutor
+from test_platform.services.runs import FakeRunSupervisor, RunService
 from test_platform.tests.integration.test_single_lane_materialization import _create_run, _settings
 
 
@@ -105,10 +112,12 @@ class _ExecutableFakeTask:
 
     @property
     def id(self) -> str:
-        return "fake.SampleTask"
+        return getattr(self, "task_base_id", "fake.SampleTask")
 
     @property
     def description(self) -> str:
+        if self.id != "fake.SampleTask":
+            return f"{self.id} choose {self.params['choice']}"
         return f"Choose {self.params['choice']}"
 
     async def setup(self, env: _ExecutableFakeEnv) -> Observation:
@@ -121,6 +130,8 @@ class _ExecutableFakeTask:
         return None
 
     def evaluate(self, input) -> JudgeResult:
+        if "Fail" in self.id:
+            return JudgeResult.fail("intentional sequence failure")
         return JudgeResult.ok()
 
 
@@ -130,6 +141,7 @@ class _ExecutableTaskFactory:
 
     def instantiate(self, template, params: dict[str, Any] | None = None) -> _ExecutableFakeTask:
         task = _ExecutableFakeTask(_seed=template.instance_seed, **(params or {}))
+        task.task_base_id = template.task_base_id
         task._instance_id = template.instance_id
         task._template_index = template.template_index
         self.instances.append(task)
@@ -153,6 +165,131 @@ class _FakeAgent:
 
     def reset_history(self) -> None:
         self.history.clear()
+
+
+def _manual_sequence_catalog() -> TaskCatalogSnapshot:
+    def item(task_base_id: str) -> TaskCatalogItem:
+        return TaskCatalogItem(
+            task_base_id=task_base_id,
+            suite="fake",
+            class_name=task_base_id.rsplit(".", maxsplit=1)[-1],
+            apps=["fake"],
+            templates=[f"{task_base_id} choose {{choice}}"],
+            parameters={"choice": {"type": "string", "default": "default"}},
+            difficulty="L1",
+            scope="S1",
+            objective="operate",
+            composition="atomic",
+            capabilities=[],
+            max_steps=15,
+            answer_fields=False,
+            optimal_path_lengths=[],
+        )
+
+    return TaskCatalogSnapshot(
+        schema_version=1,
+        repository_revision="git-vs05",
+        digest="sha256:manual-sequence-catalog",
+        items=[
+            item("fake.ZFailFirstTask"),
+            item("fake.APassSecondTask"),
+        ],
+    )
+
+
+def _create_manual_sequence_run(database: Database, settings) -> Any:
+    project = ProjectRepository(database).create("Manual sequence execution")
+    target = TargetRepository(database).create(
+        project_id=project.id,
+        name="Local simulator",
+        config={
+            "kind": "simulator",
+            "connection": {"env_url": "http://127.0.0.1:5173"},
+            "device_profile": {
+                "name": "Pixel 7",
+                "viewport_width": 393,
+                "viewport_height": 852,
+                "physical_width": 1080,
+                "physical_height": 2400,
+                "device_scale_factor": 2.75,
+            },
+            "runtime": {},
+            "labels": {},
+        },
+    )
+    TargetRepository(database).record_revision(
+        target_id=target.id,
+        metadata={
+            "schema_version": 1,
+            "data": {"revision": "seed-v1"},
+            "resolved_at": "2026-07-03T12:00:00.000Z",
+        },
+        warnings=[],
+        health_status="healthy",
+    )
+    workflow = WorkflowRepository(database).create(
+        project_id=project.id,
+        name="Manual sequence",
+        definition={
+            "schema_version": 1,
+            "name": "Manual sequence",
+            "nodes": [
+                {
+                    "id": "tasks",
+                    "type": "task_selection",
+                    "depends_on": [],
+                    "config": {
+                        "task_ids": [
+                            "fake.ZFailFirstTask",
+                            "fake.APassSecondTask",
+                        ],
+                        "order_policy": "manual",
+                        "sample_n": 1,
+                    },
+                },
+                {
+                    "id": "matrix",
+                    "type": "matrix",
+                    "depends_on": ["tasks"],
+                    "config": {
+                        "lanes": {
+                            "candidate": {
+                                "target_id": target.id,
+                                "role": "candidate",
+                            }
+                        },
+                        "repeat_n": 1,
+                    },
+                },
+                {
+                    "id": "execute",
+                    "type": "execute",
+                    "depends_on": ["matrix"],
+                    "config": {
+                        "execution_strategy": "linear_sequence",
+                        "state_policy": "isolated",
+                        "failure_policy": "continue",
+                        "parallel": 1,
+                        "processes": 1,
+                        "agent": "fake",
+                        "model_name": "fake-model",
+                    },
+                },
+            ],
+        },
+    )
+    version = WorkflowRepository(database).publish(workflow.id)
+    return RunService(
+        database,
+        settings,
+        supervisor=FakeRunSupervisor(),
+        catalog_builder=_manual_sequence_catalog,
+    ).create_run(
+        workflow_version_id=version.id,
+        name="M05 manual sequence execution",
+        seed=4242,
+        idempotency_key="manual-sequence-execution-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -210,5 +347,69 @@ async def test_serial_run_execution_materializes_executes_ingests_and_writes_lan
         assert (lane_root / "errors.jsonl").exists()
         assert (lane_root / "summary.json").exists()
         assert detail.progress["completed_episodes"] == 1
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_serial_run_execution_runs_manual_sequence_in_order_and_continues_after_failure(tmp_path):
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    task_factory = _ExecutableTaskFactory()
+    materialize_a = _ExecutableFakeEnv(label="materialize-a")
+    materialize_z = _ExecutableFakeEnv(label="materialize-z")
+    execute_env = _ExecutableFakeEnv(label="execute")
+    agent = _FakeAgent()
+    envs = iter([materialize_a, materialize_z, execute_env])
+    try:
+        run = _create_manual_sequence_run(database, settings)
+
+        detail = await SerialRunExecutor(
+            database,
+            settings,
+            task_factory=task_factory,
+            env_factory=lambda lane: next(envs),
+            agent_factory=lambda lane: agent,
+        ).execute_run(run.id)
+
+        assert detail.state == "completed"
+        assert [item["task_base_id"] for item in detail.episode_identities] == [
+            "fake.ZFailFirstTask",
+            "fake.APassSecondTask",
+        ]
+        assert [item["sequence_index"] for item in detail.episode_identities] == [0, 1]
+        assert agent.instructions == [
+            "fake.ZFailFirstTask choose materialize-z-sampled-1",
+            "fake.APassSecondTask choose materialize-a-sampled-1",
+        ]
+        assert agent.act_count == 2
+
+        attempts = database.connection.execute(
+            """
+            SELECT e.task_base_id, e.sequence_index, ea.state, ea.outcome
+            FROM episode_attempts AS ea
+            JOIN episodes AS e ON e.id = ea.episode_id
+            WHERE e.run_id = ?
+            ORDER BY e.sequence_index
+            """,
+            (run.id,),
+        ).fetchall()
+        assert [dict(row) for row in attempts] == [
+            {
+                "task_base_id": "fake.ZFailFirstTask",
+                "sequence_index": 0,
+                "state": "completed",
+                "outcome": "FAIL",
+            },
+            {
+                "task_base_id": "fake.APassSecondTask",
+                "sequence_index": 1,
+                "state": "completed",
+                "outcome": "PASS",
+            },
+        ]
+        assert detail.progress["completed_episodes"] == 2
+        assert detail.progress["completed_lane_episodes"] == 2
     finally:
         database.close()

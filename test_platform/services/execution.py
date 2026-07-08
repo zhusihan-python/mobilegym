@@ -849,10 +849,10 @@ class SerialRunExecutor(_RunExecutorBase):
             task_factory=self.task_factory,
             env_factory=self.env_factory,
         ).materialize_run(run_id, token=token, events=events)
-        if len(prepared) != 1:
+        if not prepared:
             raise RunDomainError(
                 "UNSUPPORTED_RUN_PLAN",
-                "VS-05 supports exactly one prepared task.",
+                "Serial execution requires at least one prepared task.",
                 status_code=409,
             )
 
@@ -872,10 +872,10 @@ class SerialRunExecutor(_RunExecutorBase):
                     max_steps=episode.max_steps,
                 )
             )
-        if len(work_items) != 1:
+        if not work_items:
             raise RunDomainError(
                 "UNSUPPORTED_RUN_PLAN",
-                "VS-05 supports exactly one serial episode.",
+                "Serial execution requires at least one episode.",
                 status_code=409,
             )
 
@@ -947,9 +947,9 @@ class SerialRunExecutor(_RunExecutorBase):
                 artifact_root=artifact_root,
                 cancelled=token.cancelled,
             )
-        # Serial execution has exactly one episode per lane, so finalizing once
-        # after the single ingest is correct. (Parallel execution finalizes once
-        # after ALL episodes are ingested.)
+        # Serial execution finalizes once after all ordered episodes are
+        # ingested. Parallel execution follows the same one-finalize-per-lane
+        # rule after all workers finish.
         ingestor.finalize_lane_run(
             run_id=run_id,
             lane_attempt_id=lane_attempt["id"],
