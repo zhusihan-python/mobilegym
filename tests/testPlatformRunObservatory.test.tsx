@@ -3,7 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
-import { chooseDefaultReplayOption } from '../web/test-platform/features/runs/episodeReplay';
+import { EpisodePicker } from '../web/test-platform/features/runs/EpisodePicker';
+import { RunObservatory } from '../web/test-platform/features/runs/RunObservatory';
+import {
+  buildReplayOptions,
+  chooseDefaultReplayOption,
+} from '../web/test-platform/features/runs/episodeReplay';
 
 const project = {
   id: 'project-1',
@@ -145,6 +150,32 @@ const completedRetryRun = {
       artifact_root: 'lanes/candidate/attempts/0002/trajectory/fake_Fail',
     },
   ],
+};
+
+const manualSequenceRun = {
+  ...run,
+  id: 'manual-sequence-observatory',
+  name: 'Manual sequence observatory',
+  state: 'completed',
+  progress: {
+    planned_episodes: 2,
+    planned_lane_episodes: 2,
+    completed_episodes: 2,
+    completed_lane_episodes: 2,
+  },
+  episode_identities: [
+    {
+      ...run.episode_identities[1],
+      sequence_index: 0,
+      sequence_group_id: 'manual_sequence',
+    },
+    {
+      ...run.episode_identities[0],
+      sequence_index: 1,
+      sequence_group_id: 'manual_sequence',
+    },
+  ],
+  episode_attempts: [run.episode_attempts[0], run.episode_attempts[1]],
 };
 
 class FakeEventSource {
@@ -443,6 +474,86 @@ describe('Run Observatory', () => {
     expect(settingsJson).not.toContain('token-secret');
   });
 
+  it('orders and labels manual sequence replay options by sequence index', () => {
+    const sequenceRun = {
+      ...run,
+      episode_identities: [
+        sequenceEpisode('task.gamma', 2),
+        sequenceEpisode('task.alpha', 0),
+        sequenceEpisode('task.beta', 1),
+      ],
+      episode_attempts: [
+        sequenceAttempt('task.gamma', 'PASS'),
+        sequenceAttempt('task.beta', 'PASS'),
+        sequenceAttempt('task.alpha', 'FAIL'),
+      ],
+    };
+    const options = buildReplayOptions(sequenceRun);
+
+    expect(options.map((option) => option.taskId)).toEqual([
+      'task.alpha',
+      'task.beta',
+      'task.gamma',
+    ]);
+    expect(options.map((option) => option.sequenceIndex)).toEqual([0, 1, 2]);
+
+    render(
+      <EpisodePicker options={options} selectedId={options[0]?.id ?? null} onSelect={vi.fn()} />,
+    );
+
+    const picker = screen.getByLabelText('Replay episode') as HTMLSelectElement;
+    expect(Array.from(picker.options).map((option) => option.textContent)).toEqual([
+      'Step 1: task.alpha | candidate | attempt 1 | FAIL',
+      'Step 2: task.beta | candidate | attempt 1 | PASS',
+      'Step 3: task.gamma | candidate | attempt 1 | PASS',
+    ]);
+  });
+
+  it('keeps manual sequence replay scoped to the selected episode in Run Observatory', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = requestUrl(input);
+        const decodedPath = decodeURIComponent(url.pathname);
+
+        if (decodedPath.includes('/episodes/fake.Fail|i0|s1|r1|t0/replay')) {
+          expect(url.searchParams.get('lane_key')).toBe('candidate');
+          expect(url.searchParams.get('attempt_no')).toBe('1');
+          return jsonResponse(replayBody('fake.Fail|i0|s1|r1|t0'));
+        }
+        if (decodedPath.includes('/episodes/fake.Pass|i0|s1|r1|t0/replay')) {
+          expect(url.searchParams.get('lane_key')).toBe('candidate');
+          expect(url.searchParams.get('attempt_no')).toBe('1');
+          return jsonResponse(replayBody('fake.Pass|i0|s1|r1|t0'));
+        }
+
+        throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+      }),
+    );
+
+    render(<RunObservatory run={manualSequenceRun} live={null} diagnostics={{ status: 'idle' }} />);
+
+    const picker = (await screen.findByLabelText('Replay episode')) as HTMLSelectElement;
+    expect(Array.from(picker.options).map((option) => option.textContent)).toEqual([
+      'Step 1: fake.Fail | candidate | attempt 1 | FAIL',
+      'Step 2: fake.Pass | candidate | attempt 1 | PASS',
+    ]);
+    expect(picker.selectedOptions[0]?.textContent).toContain('Step 1: fake.Fail');
+
+    const screenshot = (await screen.findByTestId('tp-replay-screenshot')) as HTMLImageElement;
+    expect(screenshot.getAttribute('src')).toContain('/artifacts/fail-annot-2/content');
+    expect(screen.getByTestId('tp-judge-result-json').textContent).toContain('MAX_STEPS');
+
+    fireEvent.change(picker, { target: { value: picker.options[1]?.value } });
+
+    await waitFor(() => {
+      expect(screen.getByText('Step 2: COMPLETE')).toBeTruthy();
+    });
+    expect(
+      (screen.getByTestId('tp-replay-screenshot') as HTMLImageElement).getAttribute('src'),
+    ).toContain('/artifacts/pass-annot-2/content');
+  });
+
   it('defaults to the newest attempt when debug outcomes have the same priority', () => {
     const selected = chooseDefaultReplayOption([
       {
@@ -451,6 +562,8 @@ describe('Run Observatory', () => {
         laneKey: 'candidate',
         attemptNo: 1,
         taskId: 'fake.Task',
+        sequenceIndex: null,
+        sequenceGroupId: null,
         outcome: 'FAIL',
         errorCode: 'ASSERTION_FAILURE',
         artifactRoot: 'old',
@@ -461,6 +574,8 @@ describe('Run Observatory', () => {
         laneKey: 'candidate',
         attemptNo: 2,
         taskId: 'fake.Task',
+        sequenceIndex: null,
+        sequenceGroupId: null,
         outcome: 'ERROR',
         errorCode: 'EXECUTION_ERROR',
         artifactRoot: 'new',
@@ -475,6 +590,8 @@ describe('Run Observatory', () => {
         laneKey: 'candidate',
         attemptNo: 1,
         taskId: 'fake.Task',
+        sequenceIndex: null,
+        sequenceGroupId: null,
         outcome: 'FAIL',
         errorCode: 'ASSERTION_FAILURE',
         artifactRoot: 'old',
@@ -485,6 +602,8 @@ describe('Run Observatory', () => {
         laneKey: 'candidate',
         attemptNo: 2,
         taskId: 'fake.Task',
+        sequenceIndex: null,
+        sequenceGroupId: null,
         outcome: 'PASS',
         errorCode: null,
         artifactRoot: 'new',
@@ -572,3 +691,31 @@ describe('Run Observatory', () => {
     });
   });
 });
+
+function sequenceEpisode(taskId: string, sequenceIndex: number) {
+  return {
+    episode_key: `${taskId}|i0|s1|r1|t0`,
+    pair_key: `${taskId}|i0|s1|r1|t0`,
+    task_base_id: taskId,
+    task_id: taskId,
+    instance_id: 0,
+    instance_seed: 1,
+    template_index: null,
+    trial_id: 0,
+    max_steps: 15,
+    sequence_index: sequenceIndex,
+    sequence_group_id: 'manual_sequence',
+  };
+}
+
+function sequenceAttempt(taskId: string, outcome: 'PASS' | 'FAIL') {
+  return {
+    episode_key: `${taskId}|i0|s1|r1|t0`,
+    lane_key: 'candidate',
+    attempt_no: 1,
+    state: 'completed',
+    outcome,
+    error_code: outcome === 'FAIL' ? 'ASSERTION_FAILURE' : null,
+    artifact_root: `lanes/candidate/trajectory/${taskId.replace('.', '_')}`,
+  };
+}

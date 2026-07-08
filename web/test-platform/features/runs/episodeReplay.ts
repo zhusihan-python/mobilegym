@@ -6,6 +6,8 @@ export type ReplayOption = {
   laneKey: string;
   attemptNo: number | 'latest';
   taskId: string;
+  sequenceIndex: number | null;
+  sequenceGroupId: string | null;
   outcome: string | null;
   errorCode: string | null;
   artifactRoot: string | null;
@@ -26,36 +28,60 @@ const DEBUG_OUTCOME_RANK: Record<string, number> = {
 };
 
 export function buildReplayOptions(run: RunDetail): ReplayOption[] {
-  const taskByEpisode = new Map(run.episode_identities.map((item) => [item.episode_key, item.task_id]));
+  const episodeMetadata = new Map(
+    run.episode_identities.map((item) => [
+      item.episode_key,
+      {
+        taskId: item.task_id,
+        sequenceIndex: item.sequence_index,
+        sequenceGroupId: item.sequence_group_id,
+      },
+    ]),
+  );
   const attempts = run.episode_attempts ?? [];
 
   if (attempts.length > 0) {
-    return attempts.map((attempt) => {
-      const outcome = attempt.outcome ? String(attempt.outcome).toUpperCase() : null;
-      return {
-        id: replayOptionId(attempt.episode_key, attempt.lane_key, attempt.attempt_no),
-        episodeKey: attempt.episode_key,
-        laneKey: attempt.lane_key,
-        attemptNo: attempt.attempt_no,
-        taskId: taskByEpisode.get(attempt.episode_key) ?? baseTaskLabel(attempt.episode_key),
-        outcome,
-        errorCode: attempt.error_code,
-        artifactRoot: attempt.artifact_root,
-      };
-    });
+    return sortReplayOptions(
+      attempts.map((attempt, order) => {
+        const outcome = attempt.outcome ? String(attempt.outcome).toUpperCase() : null;
+        const metadata = episodeMetadata.get(attempt.episode_key);
+        return {
+          option: {
+            id: replayOptionId(attempt.episode_key, attempt.lane_key, attempt.attempt_no),
+            episodeKey: attempt.episode_key,
+            laneKey: attempt.lane_key,
+            attemptNo: attempt.attempt_no,
+            taskId: metadata?.taskId ?? baseTaskLabel(attempt.episode_key),
+            sequenceIndex: metadata?.sequenceIndex ?? null,
+            sequenceGroupId: metadata?.sequenceGroupId ?? null,
+            outcome,
+            errorCode: attempt.error_code,
+            artifactRoot: attempt.artifact_root,
+          },
+          order,
+        };
+      }),
+    );
   }
 
   const laneKey = defaultLaneKey(run);
-  return run.episode_identities.map((episode) => ({
-    id: replayOptionId(episode.episode_key, laneKey, 'latest'),
-    episodeKey: episode.episode_key,
-    laneKey,
-    attemptNo: 'latest',
-    taskId: episode.task_id,
-    outcome: null,
-    errorCode: null,
-    artifactRoot: null,
-  }));
+  return sortReplayOptions(
+    run.episode_identities.map((episode, order) => ({
+      option: {
+        id: replayOptionId(episode.episode_key, laneKey, 'latest'),
+        episodeKey: episode.episode_key,
+        laneKey,
+        attemptNo: 'latest',
+        taskId: episode.task_id,
+        sequenceIndex: episode.sequence_index,
+        sequenceGroupId: episode.sequence_group_id,
+        outcome: null,
+        errorCode: null,
+        artifactRoot: null,
+      },
+      order,
+    })),
+  );
 }
 
 export function chooseDefaultReplayOption(options: ReplayOption[]): ReplayOption | null {
@@ -165,6 +191,23 @@ function outcomeRank(outcome: string | null) {
 
 function attemptRank(attemptNo: number | 'latest') {
   return attemptNo === 'latest' ? Number.MAX_SAFE_INTEGER : attemptNo;
+}
+
+function sortReplayOptions(entries: Array<{ option: ReplayOption; order: number }>) {
+  return [...entries]
+    .sort((a, b) => {
+      const sequenceDelta =
+        sequenceRank(a.option.sequenceIndex) - sequenceRank(b.option.sequenceIndex);
+      if (sequenceDelta !== 0) {
+        return sequenceDelta;
+      }
+      return a.order - b.order;
+    })
+    .map((entry) => entry.option);
+}
+
+function sequenceRank(sequenceIndex: number | null) {
+  return typeof sequenceIndex === 'number' ? sequenceIndex : Number.MAX_SAFE_INTEGER;
 }
 
 function baseTaskLabel(episodeKey: string) {

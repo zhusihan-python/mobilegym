@@ -39,5 +39,9 @@ export function EpisodePicker({
 
 function episodeOptionLabel(option: ReplayOption) {
   const outcome = option.outcome ?? 'planned';
-  return `${option.taskId} | ${option.laneKey} | attempt ${option.attemptNo} | ${outcome}`;
+  const taskLabel =
+    typeof option.sequenceIndex === 'number'
+      ? `Step ${option.sequenceIndex + 1}: ${option.taskId}`
+      : option.taskId;
+  return `${taskLabel} | ${option.laneKey} | attempt ${option.attemptNo} | ${outcome}`;
 }
