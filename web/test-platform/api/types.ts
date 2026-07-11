@@ -84,6 +84,7 @@ export type RunDetail = RunSummary & {
     state: string;
     started_at: string | null;
     ended_at: string | null;
+    compatibility?: Array<Record<string, unknown>> | null;
     created_at: string;
   }>;
   lane_attempts?: Array<{

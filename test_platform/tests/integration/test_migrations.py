@@ -70,6 +70,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (10, "0010_diagnostics_artifacts.sql"),
         (11, "0011_retry_resume_selection.sql"),
         (12, "0012_manual_sequence_episode_metadata.sql"),
+        (13, "0013_run_attempt_compatibility.sql"),
     ]
 
 
@@ -277,4 +278,5 @@ def test_database_initialization_is_idempotent(tmp_path):
         (10, "0010_diagnostics_artifacts.sql"),
         (11, "0011_retry_resume_selection.sql"),
         (12, "0012_manual_sequence_episode_metadata.sql"),
+        (13, "0013_run_attempt_compatibility.sql"),
     ]

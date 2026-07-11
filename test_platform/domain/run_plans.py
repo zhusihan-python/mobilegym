@@ -71,6 +71,7 @@ class RunPlanCompiler:
         targets: dict[str, Any],
         seed: int,
         created_at: str,
+        compatibility_summary: dict[str, Any] | None = None,
     ) -> RunPlan:
         task_node = _required_node(definition, "task_selection")
         matrix_node = _required_node(definition, "matrix")
@@ -115,6 +116,8 @@ class RunPlanCompiler:
                 "max_tokens",
             ),
         )
+        if compatibility_summary is not None:
+            agent["compatibility"] = compatibility_summary
         judge = _pick_config(
             execute_node.config,
             ("judge_mode", "judge_model", "judge_base_url", "eval_mode"),
@@ -148,7 +151,10 @@ class RunPlanCompiler:
             },
             "comparison": comparison,
             "gates": gates,
-            "agent": agent,
+            # Exclude compatibility summary from fingerprint — it contains
+            # latency/cache metadata that varies per check and must not break
+            # fingerprint reproducibility.
+            "agent": {k: v for k, v in agent.items() if k != "compatibility"},
             "judge": judge,
             "artifacts": artifacts,
         }

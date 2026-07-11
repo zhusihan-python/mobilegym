@@ -717,11 +717,13 @@ class RunService:
         *,
         supervisor: Any,
         catalog_builder: Callable[[], TaskCatalogSnapshot] = build_task_catalog_snapshot,
+        compatibility_preflight: Any = None,
     ) -> None:
         self.database = database
         self.settings = settings
         self.supervisor = supervisor
         self.catalog_builder = catalog_builder
+        self._compatibility_preflight = compatibility_preflight
 
     def create_run(
         self,
@@ -732,6 +734,7 @@ class RunService:
         idempotency_key: str,
         execution_overrides: dict[str, Any] | None = None,
         require_execution_config: bool = False,
+        skip_compatibility_check: bool = False,
     ) -> RunDetail:
         execution_overrides = _clean_execution_overrides(execution_overrides)
         execution_secrets = _execution_secrets_from_overrides(execution_overrides)
@@ -742,6 +745,7 @@ class RunService:
         }
         if execution_overrides:
             request_payload["execution_overrides"] = execution_overrides
+        request_payload["skip_compatibility_check"] = skip_compatibility_check
         request_hash = canonical_sha256(request_payload)
         existing = self._find_idempotent_run(idempotency_key, request_hash)
         if existing is not None:
@@ -769,11 +773,9 @@ class RunService:
             )
         if require_execution_config:
             _require_launch_execution_config(definition)
+
         targets = self._resolve_targets(definition)
         # VS-10 Contract 3: create-run is the AUTHORITATIVE constraint gate.
-        # Resolve frozen target revisions (already done above) and evaluate the
-        # compare node's target_constraints. Any violation raises RunDomainError
-        # (409) with the violation details — the run is NOT created.
         self._enforce_target_constraints(definition, targets)
         run_id = new_id()
         created_at = _utc_timestamp()
@@ -793,6 +795,56 @@ class RunService:
                 str(exc),
                 status_code=409,
             ) from exc
+
+        # TP-H10: compatibility preflight — AFTER plan compile (so we can check
+        # ALL distinct lane effective configs) but BEFORE artifact write or DB
+        # transaction. A failed check blocks creation with zero side effects.
+        if self._compatibility_preflight is not None:
+            seen_configs: dict[tuple, list[str]] = {}  # config_tuple -> lane_keys
+            checks: list[dict[str, Any]] = []
+            for lane in plan.lanes:
+                rc = lane.runner_config
+                config_tuple = (
+                    str(rc.get("agent") or ""),
+                    str(rc.get("model_base_url") or ""),
+                    str(rc.get("model_name") or ""),
+                    str(rc.get("image_url_format") or "data_url"),
+                )
+                seen_configs.setdefault(config_tuple, []).append(lane.lane_key)
+            for cache_key, lane_keys in seen_configs.items():
+                # Use the first lane's config (all sharing this key are identical).
+                first_lane = next(l for l in plan.lanes if l.lane_key == lane_keys[0])
+                rc = first_lane.runner_config
+                preflight_result = self._compatibility_preflight.check(
+                    agent=str(rc.get("agent") or ""),
+                    base_url=str(rc.get("model_base_url") or ""),
+                    model=str(rc.get("model_name") or ""),
+                    image_url_format=str(rc.get("image_url_format") or "data_url"),
+                    api_key=str(execution_secrets.get("model_api_key") or ""),
+                    skip=skip_compatibility_check,
+                )
+                entry = preflight_result.to_provenance()
+                entry["lane_keys"] = lane_keys
+                checks.append(entry)
+                if preflight_result.outcome == "failed":
+                    raise RunDomainError(
+                        "RUN_COMPATIBILITY_CHECK_FAILED",
+                        preflight_result.explanation,
+                        status_code=409,
+                        details=[
+                            {
+                                "code": preflight_result.code,
+                                "lane_keys": lane_keys,
+                                "checked_model": str(rc.get("model_name") or ""),
+                                "checked_image_format": str(
+                                    rc.get("image_url_format") or "data_url"
+                                ),
+                            }
+                        ],
+                    )
+            if checks:
+                plan.agent["compatibility"] = {"checks": checks}
+
         temporary_root = self.settings.runs_dir / f".{run_id}.tmp"
         final_root = self.settings.runs_dir / run_id
         self._write_plan_artifact(temporary_root, plan)
@@ -1168,6 +1220,7 @@ class RunService:
         run_id: str,
         *,
         execution_overrides: dict[str, Any] | None = None,
+        skip_compatibility_check: bool = False,
     ) -> dict[str, Any]:
         run = RunRepository(self.database).get(run_id)
         if run.state not in {"completed", "failed", "cancelled"}:
@@ -1178,6 +1231,21 @@ class RunService:
                 details=[{"run_id": run_id, "state": run.state}],
             )
 
+        # TP-H10: preflight BEFORE registering secrets or creating attempt.
+        # Extract candidate secret without mutating the secret store.
+        candidate_secrets = _followup_execution_secrets_from_overrides(execution_overrides)
+        candidate_api_key = str(candidate_secrets.get("model_api_key") or "")
+        # If no new key in overrides, use the already-registered key.
+        if not candidate_api_key:
+            existing = _RUN_SECRET_STORE.get(run_id) or {}
+            candidate_api_key = str(existing.get("model_api_key") or "")
+        # Validate key requirement without registering.
+        self._validate_followup_key(run_id, candidate_api_key)
+        # Preflight with candidate key — zero side effects on failure.
+        compat_provenance = self._preflight_followup(
+            run_id, skip_compatibility_check, candidate_api_key
+        )
+        # Only NOW register secrets (after preflight passed).
         self._register_followup_execution_secrets(run_id, execution_overrides)
         source_attempt = self._latest_terminal_run_attempt(run_id)
         planned = self._planned_lane_episodes(run_id)
@@ -1195,6 +1263,7 @@ class RunService:
             run_id=run_id,
             reason="retry",
             selected=selected,
+            compatibility_provenance=compat_provenance,
         )
         self.supervisor.submit(run_id)
         return result
@@ -1204,6 +1273,7 @@ class RunService:
         run_id: str,
         *,
         execution_overrides: dict[str, Any] | None = None,
+        skip_compatibility_check: bool = False,
     ) -> dict[str, Any]:
         run = RunRepository(self.database).get(run_id)
         if run.state not in {"completed", "failed", "cancelled"}:
@@ -1214,8 +1284,18 @@ class RunService:
                 details=[{"run_id": run_id, "state": run.state}],
             )
 
-        self._register_followup_execution_secrets(run_id, execution_overrides)
+        # TP-H10: preflight BEFORE registering secrets or creating attempt.
+        candidate_secrets = _followup_execution_secrets_from_overrides(execution_overrides)
+        candidate_api_key = str(candidate_secrets.get("model_api_key") or "")
+        if not candidate_api_key:
+            existing = _RUN_SECRET_STORE.get(run_id) or {}
+            candidate_api_key = str(existing.get("model_api_key") or "")
+        self._validate_followup_key(run_id, candidate_api_key)
         self._assert_resume_compatible(run_id)
+        compat_provenance = self._preflight_followup(
+            run_id, skip_compatibility_check, candidate_api_key
+        )
+        self._register_followup_execution_secrets(run_id, execution_overrides)
         source_attempt = self._latest_terminal_run_attempt(run_id)
         planned = self._planned_lane_episodes(run_id)
         latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
@@ -1232,6 +1312,7 @@ class RunService:
             run_id=run_id,
             reason="resume",
             selected=selected,
+            compatibility_provenance=compat_provenance,
         )
         self.supervisor.submit(run_id)
         return result
@@ -1433,6 +1514,20 @@ class RunService:
                 ],
             )
 
+    def _validate_followup_key(self, run_id: str, candidate_api_key: str) -> None:
+        """Validate that the candidate API key satisfies the run's requirement,
+        WITHOUT registering it in the secret store. Called before preflight."""
+        if (
+            self._run_requires_model_api_key(run_id)
+            and not candidate_api_key
+        ):
+            raise RunDomainError(
+                "RUN_EXECUTION_SECRET_MISSING",
+                "Retry or resume requires the model API key again because secrets are not persisted.",
+                status_code=400,
+                details=[{"field": "execution.model_api_key"}],
+            )
+
     def _register_followup_execution_secrets(
         self,
         run_id: str,
@@ -1441,16 +1536,71 @@ class RunService:
         secrets = _followup_execution_secrets_from_overrides(execution_overrides)
         if secrets:
             _RUN_SECRET_STORE.register(run_id, secrets)
-        if (
-            self._run_requires_model_api_key(run_id)
-            and not _RUN_SECRET_STORE.get(run_id).get("model_api_key")
-        ):
-            raise RunDomainError(
-                "RUN_EXECUTION_SECRET_MISSING",
-                "Retry or resume requires the model API key again because secrets are not persisted.",
-                status_code=400,
-                details=[{"field": "execution.model_api_key"}],
+
+    def _preflight_followup(
+        self, run_id: str, skip: bool, candidate_api_key: str = ""
+    ) -> list[dict[str, Any]] | None:
+        """TP-H10: compatibility preflight for retry/resume.
+
+        Checks ALL distinct lane execution configs (not just the first lane),
+        using the candidate API key (not the registered secret store, which has
+        not been modified yet). Returns a list of per-lane provenance summaries,
+        or None if no preflight is configured. Raises on failure.
+        """
+        if self._compatibility_preflight is None:
+            return None
+        rows = self.database.connection.execute(
+            "SELECT lane_key, runner_config_json FROM lanes WHERE run_id = ? ORDER BY lane_key",
+            (run_id,),
+        ).fetchall()
+        if not rows:
+            return None
+
+        # Group lanes by distinct effective config (tuple key, same as create-run).
+        seen_configs: dict[tuple, list[str]] = {}
+        config_by_key: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            rc = json.loads(row["runner_config_json"]) if row["runner_config_json"] else {}
+            config_tuple = (
+                str(rc.get("agent") or ""),
+                str(rc.get("model_base_url") or ""),
+                str(rc.get("model_name") or ""),
+                str(rc.get("image_url_format") or "data_url"),
             )
+            seen_configs.setdefault(config_tuple, []).append(row["lane_key"])
+            config_by_key[row["lane_key"]] = rc
+
+        summaries: list[dict[str, Any]] = []
+        for config_tuple, lane_keys in seen_configs.items():
+            rc = config_by_key[lane_keys[0]]
+            result = self._compatibility_preflight.check(
+                agent=str(rc.get("agent") or ""),
+                base_url=str(rc.get("model_base_url") or ""),
+                model=str(rc.get("model_name") or ""),
+                image_url_format=str(rc.get("image_url_format") or "data_url"),
+                api_key=candidate_api_key,
+                skip=skip,
+            )
+            summary = result.to_provenance()
+            summary["lane_keys"] = lane_keys
+            summaries.append(summary)
+            if result.outcome == "failed":
+                raise RunDomainError(
+                    "RUN_COMPATIBILITY_CHECK_FAILED",
+                    result.explanation,
+                    status_code=409,
+                    details=[
+                        {
+                            "code": result.code,
+                            "lane_keys": lane_keys,
+                            "checked_model": str(rc.get("model_name") or ""),
+                            "checked_image_format": str(
+                                rc.get("image_url_format") or "data_url"
+                            ),
+                        }
+                    ],
+                )
+        return summaries
 
     def _run_requires_model_api_key(self, run_id: str) -> bool:
         rows = self.database.connection.execute(
@@ -1552,6 +1702,7 @@ class RunService:
         run_id: str,
         reason: str,
         selected: list[dict[str, Any]],
+        compatibility_provenance: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         now = _utc_timestamp()
         connection = self.database.connection
@@ -1598,11 +1749,18 @@ class RunService:
                 connection.execute(
                     """
                     INSERT INTO run_attempts (
-                      id, run_id, attempt_no, reason, state, created_at
+                      id, run_id, attempt_no, reason, state, compatibility_json, created_at
                     )
-                    VALUES (?, ?, ?, ?, 'queued', ?)
+                    VALUES (?, ?, ?, ?, 'queued', ?, ?)
                     """,
-                    (run_attempt_id, run_id, attempt_no, reason, now),
+                    (
+                        run_attempt_id,
+                        run_id,
+                        attempt_no,
+                        reason,
+                        canonical_json(compatibility_provenance) if compatibility_provenance else None,
+                        now,
+                    ),
                 )
                 for node in node_rows:
                     connection.execute(

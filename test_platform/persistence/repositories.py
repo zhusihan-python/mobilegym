@@ -512,7 +512,8 @@ class RunRepository:
         ).fetchall()
         run_attempts = self.database.connection.execute(
             """
-            SELECT id, attempt_no, reason, state, started_at, ended_at, created_at
+            SELECT id, attempt_no, reason, state, started_at, ended_at,
+                   compatibility_json, created_at
             FROM run_attempts
             WHERE run_id = ?
             ORDER BY attempt_no, created_at
@@ -558,7 +559,23 @@ class RunRepository:
                     }
                     for lane in lane_rows
                 ],
-                "run_attempts": [dict(attempt) for attempt in run_attempts],
+                "run_attempts": [
+                    {
+                        "id": attempt["id"],
+                        "attempt_no": attempt["attempt_no"],
+                        "reason": attempt["reason"],
+                        "state": attempt["state"],
+                        "started_at": attempt["started_at"],
+                        "ended_at": attempt["ended_at"],
+                        "compatibility": (
+                            json.loads(attempt["compatibility_json"])
+                            if attempt["compatibility_json"]
+                            else None
+                        ),
+                        "created_at": attempt["created_at"],
+                    }
+                    for attempt in run_attempts
+                ],
                 "episode_identities": [dict(episode) for episode in episodes],
                 "lane_attempts": [dict(attempt) for attempt in lane_attempts],
                 "episode_attempts": [dict(attempt) for attempt in episode_attempts],

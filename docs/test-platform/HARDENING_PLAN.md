@@ -652,6 +652,13 @@ python -m pytest -c bench_env/tests/pytest.ini \
 
 ## TP-H10: Fail fast before incompatible execution creation
 
+Current evidence: [`evidence/2026-07-12-tp-h10-preflight.md`](evidence/2026-07-12-tp-h10-preflight.md).
+A compatibility preflight gate blocks run/retry/resume creation for incompatible
+endpoints with zero persistent side effects. Compatible checks are cached
+(process-local TTL) and recorded as redacted provenance. The skip field is
+documented but the console never defaults to skip. Non-screenshot agents retain
+their existing behavior. TP-H10 is complete.
+
 ### What to build
 
 Require a compatible exact-match check before creating a run for an Agent with a
@@ -662,19 +669,19 @@ in run or attempt provenance.
 
 ### Acceptance criteria
 
-- [ ] Incompatible or indeterminate required checks return a structured
+- [x] Incompatible or indeterminate required checks return a structured
       creation error before run or follow-up-attempt persistence.
-- [ ] Failure creates no run, lane, episode, attempt, event, artifact root, or
+- [x] Failure creates no run, lane, episode, attempt, event, artifact root, or
       runtime secret-store entry.
-- [ ] Failed Retry or Resume preflight creates no new run attempt, lane attempt,
+- [x] Failed Retry or Resume preflight creates no new run attempt, lane attempt,
       episode attempt, event, artifact root, or runtime secret-store entry.
-- [ ] A successful exact-match recent check may be reused only for the same
+- [x] A successful exact-match recent check may be reused only for the same
       endpoint, model, Agent requirement, and image format.
-- [ ] API clients may explicitly skip the check only through a documented
+- [x] API clients may explicitly skip the check only through a documented
       troubleshooting field; the console does not default to skip.
-- [ ] A skipped check is redacted and recorded as skipped in provenance.
-- [ ] Provider timeouts are bounded and do not leave a partially created run.
-- [ ] Existing non-screenshot Agents retain their current launch behavior until
+- [x] A skipped check is redacted and recorded as skipped in provenance.
+- [x] Provider timeouts are bounded and do not leave a partially created run.
+- [x] Existing non-screenshot Agents retain their current launch behavior until
       their requirements are explicitly declared.
 
 ### Test seam

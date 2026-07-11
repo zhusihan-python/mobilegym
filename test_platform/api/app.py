@@ -48,6 +48,12 @@ def create_app(
         from test_platform.adapters.model_compatibility import OpenAICompatibilityProbe
 
         compatibility_probe = OpenAICompatibilityProbe()
+
+    # Process-scoped preflight (shared across all RunService instances so the
+    # TTL cache survives across HTTP requests). Thread-safe via internal lock.
+    from test_platform.services.compatibility_preflight import CompatibilityPreflight
+
+    platform_preflight = CompatibilityPreflight(compatibility_probe)
     platform_supervisor = supervisor or RunSupervisor(
         platform_database,
         settings,
@@ -97,6 +103,7 @@ def create_app(
     app.state.supervisor = platform_supervisor
     app.state.sse_broker = platform_broker
     app.state.compatibility_probe = compatibility_probe
+    app.state.compatibility_preflight = platform_preflight
 
     install_request_id_middleware(app)
     install_mutation_origin_middleware(app)

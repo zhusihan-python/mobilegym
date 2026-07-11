@@ -7,6 +7,8 @@ from test_platform.services.runs import (
     _RUN_SECRET_STORE,
     _runner_config_for_lane,
 )
+from test_platform.testing.fake_compat import FakeCompatibilityProbe
+from test_platform.services.compatibility_preflight import CompatibilityPreflight
 
 
 def _settings(tmp_path):
@@ -215,6 +217,7 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=supervisor,
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:
@@ -275,6 +278,7 @@ def test_runs_api_exposes_manual_sequence_episode_metadata(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=FakeRunSupervisor(),
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:
@@ -330,6 +334,7 @@ def test_runs_api_accepts_online_model_key_without_persisting_secret(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=FakeRunSupervisor(),
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:
@@ -375,6 +380,7 @@ def test_runs_api_rejects_launch_without_execution_config(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=FakeRunSupervisor(),
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:
@@ -400,6 +406,7 @@ def test_runs_api_rejects_invalid_image_url_format(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=FakeRunSupervisor(),
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:
@@ -572,6 +579,7 @@ def test_create_run_blocks_when_target_constraints_violated(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=supervisor,
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:
@@ -609,6 +617,7 @@ def test_create_run_proceeds_when_constraints_satisfied(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=supervisor,
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:

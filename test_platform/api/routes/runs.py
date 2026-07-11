@@ -25,6 +25,7 @@ class CreateRunRequest(BaseModel):
     workflow_version_id: str = Field(min_length=1)
     name: str | None = Field(default=None, max_length=100)
     overrides: RunOverrides = Field(default_factory=RunOverrides)
+    skip_compatibility_check: bool = False
 
 
 class ImportRunRequest(BaseModel):
@@ -35,6 +36,7 @@ class ImportRunRequest(BaseModel):
 
 class FollowupRunRequest(BaseModel):
     execution: dict[str, object] | None = None
+    skip_compatibility_check: bool = False
 
 
 @router.post("/runs", status_code=201)
@@ -48,6 +50,7 @@ def create_run(
             get_database(request),
             request.app.state.settings,
             supervisor=request.app.state.supervisor,
+            compatibility_preflight=getattr(request.app.state, "compatibility_preflight", None),
         ).create_run(
             workflow_version_id=body.workflow_version_id,
             name=body.name,
@@ -55,6 +58,7 @@ def create_run(
             execution_overrides=body.overrides.execution,
             require_execution_config=True,
             idempotency_key=idempotency_key,
+            skip_compatibility_check=body.skip_compatibility_check,
         )
     except RunDomainError as exc:
         raise _run_error(exc) from exc
@@ -243,7 +247,12 @@ def retry_run(
             get_database(request),
             request.app.state.settings,
             supervisor=request.app.state.supervisor,
-        ).retry_run(run_id, execution_overrides=body.execution if body else None)
+            compatibility_preflight=getattr(request.app.state, "compatibility_preflight", None),
+        ).retry_run(
+            run_id,
+            execution_overrides=body.execution if body else None,
+            skip_compatibility_check=body.skip_compatibility_check if body else False,
+        )
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 
@@ -259,7 +268,12 @@ def resume_run(
             get_database(request),
             request.app.state.settings,
             supervisor=request.app.state.supervisor,
-        ).resume_run(run_id, execution_overrides=body.execution if body else None)
+            compatibility_preflight=getattr(request.app.state, "compatibility_preflight", None),
+        ).resume_run(
+            run_id,
+            execution_overrides=body.execution if body else None,
+            skip_compatibility_check=body.skip_compatibility_check if body else False,
+        )
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 

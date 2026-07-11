@@ -14,6 +14,11 @@ from typing import Protocol
 
 # ---- Stable codes ----------------------------------------------------------
 
+# Agents whose inference path requires screenshot/vision compatibility.
+# Only agents in this set are gated by the preflight check; all others retain
+# their existing launch behavior.
+SCREENSHOT_REQUIRED_AGENTS = frozenset({"generic_v2"})
+
 COMPATIBLE = "compatible"
 UNREACHABLE = "unreachable"
 AUTHENTICATION_FAILURE = "authentication_failure"
