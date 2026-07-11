@@ -2,7 +2,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import HTTPException
+from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -36,6 +36,26 @@ def install_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(request, "HTTP_ERROR", message, []),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Sanitize: return only field paths (loc) and error type codes.
+        # Never echo the rejected input value (which may contain secrets).
+        safe_details = [
+            {"loc": list(err.get("loc", [])), "type": err.get("type", "")}
+            for err in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content=_error_payload(
+                request,
+                "VALIDATION_ERROR",
+                "Request validation failed.",
+                safe_details,
+            ),
         )
 
     @app.exception_handler(Exception)

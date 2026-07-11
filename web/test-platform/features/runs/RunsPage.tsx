@@ -1,8 +1,20 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useOutletContext } from 'react-router-dom';
 
-import { createRun, importLegacyRun, listRuns, listWorkflows } from '../../api/client';
-import type { CollectionResponse, Project, RunSummary, WorkflowSummary } from '../../api/types';
+import {
+  checkModelCompatibility,
+  createRun,
+  importLegacyRun,
+  listRuns,
+  listWorkflows,
+} from '../../api/client';
+import type {
+  CollectionResponse,
+  CompatibilityResult,
+  Project,
+  RunSummary,
+  WorkflowSummary,
+} from '../../api/types';
 import { EmptyState } from '../../components/EmptyState';
 
 const AGENT_OPTIONS = [
@@ -55,6 +67,21 @@ export function RunsPage() {
   const [launchState, setLaunchState] = useState<
     { status: 'idle' } | { status: 'submitting' } | { status: 'error'; message: string }
   >({ status: 'idle' });
+
+  // Compatibility check state
+  const [compatState, setCompatState] = useState<
+    | { status: 'idle' }
+    | { status: 'checking' }
+    | { status: 'loaded'; result: CompatibilityResult }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' });
+  const compatTokenRef = useRef(0);
+
+  // Clear stale compatibility result when any form field changes.
+  const clearCompatResult = () => {
+    compatTokenRef.current += 1;
+    setCompatState({ status: 'idle' });
+  };
 
   useEffect(() => {
     let active = true;
@@ -178,6 +205,32 @@ export function RunsPage() {
     );
   })();
 
+  const testConnection = () => {
+    const trimmedModelBaseUrl = modelBaseUrl.trim();
+    const trimmedModelName = modelName.trim();
+    if (!trimmedModelBaseUrl || !trimmedModelName) return;
+    compatTokenRef.current += 1;
+    const token = compatTokenRef.current;
+    setCompatState({ status: 'checking' });
+    checkModelCompatibility({
+      modelBaseUrl: trimmedModelBaseUrl,
+      modelName: trimmedModelName,
+      modelApiKey: modelApiKey.trim() || undefined,
+      imageUrlFormat: imageUrlFormat.trim() || 'data_url',
+    })
+      .then((result) => {
+        if (token !== compatTokenRef.current) return;
+        setCompatState({ status: 'loaded', result });
+      })
+      .catch((error) => {
+        if (token !== compatTokenRef.current) return;
+        setCompatState({
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Compatibility check failed.',
+        });
+      });
+  };
+
   const submitLaunch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedAgent = agent.trim();
@@ -223,7 +276,10 @@ export function RunsPage() {
               <span>Workflow version</span>
               <select
                 value={selectedVersionId}
-                onChange={(event) => setSelectedVersionId(event.target.value)}
+                onChange={(event) => {
+                  setSelectedVersionId(event.target.value);
+                  clearCompatResult();
+                }}
               >
                 {workflows.map((wf) => (
                   <option key={wf.latest_version!.id} value={wf.latest_version!.id}>
@@ -242,7 +298,10 @@ export function RunsPage() {
             </label>
             <label>
               <span>Agent</span>
-              <select value={agent} onChange={(event) => setAgent(event.target.value)}>
+              <select value={agent} onChange={(event) => {
+                setAgent(event.target.value);
+                clearCompatResult();
+              }}>
                 {AGENT_OPTIONS.map((option) => (
                   <option key={option} value={option}>
                     {option}
@@ -254,7 +313,10 @@ export function RunsPage() {
               <span>Model base URL</span>
               <input
                 value={modelBaseUrl}
-                onChange={(event) => setModelBaseUrl(event.target.value)}
+                onChange={(event) => {
+                  setModelBaseUrl(event.target.value);
+                  clearCompatResult();
+                }}
                 placeholder="http://127.0.0.1:1234/v1"
               />
             </label>
@@ -262,7 +324,10 @@ export function RunsPage() {
               <span>Model name</span>
               <input
                 value={modelName}
-                onChange={(event) => setModelName(event.target.value)}
+                onChange={(event) => {
+                  setModelName(event.target.value);
+                  clearCompatResult();
+                }}
                 placeholder="local-model"
               />
             </label>
@@ -271,14 +336,20 @@ export function RunsPage() {
               <input
                 type="password"
                 value={modelApiKey}
-                onChange={(event) => setModelApiKey(event.target.value)}
+                onChange={(event) => {
+                  setModelApiKey(event.target.value);
+                  clearCompatResult();
+                }}
                 placeholder="Optional for local models"
                 autoComplete="off"
               />
             </label>
             <label>
               <span>Image URL format</span>
-              <select value={imageUrlFormat} onChange={(event) => setImageUrlFormat(event.target.value)}>
+              <select value={imageUrlFormat} onChange={(event) => {
+                setImageUrlFormat(event.target.value);
+                clearCompatResult();
+              }}>
                 <option value="data_url">OpenAI data URL</option>
                 <option value="bare_base64">BigModel bare base64</option>
               </select>
@@ -295,9 +366,41 @@ export function RunsPage() {
             >
               {launchState.status === 'submitting' ? 'Launching...' : 'Launch run'}
             </button>
+            {agent.trim() === 'generic_v2' ? (
+              <button
+                type="button"
+                onClick={testConnection}
+                disabled={
+                  compatState.status === 'checking'
+                  || !modelBaseUrl.trim()
+                  || !modelName.trim()
+                }
+                data-testid="tp-test-connection"
+              >
+                {compatState.status === 'checking' ? 'Checking...' : 'Test connection'}
+              </button>
+            ) : (
+              <span data-testid="tp-test-connection-disabled" className="tp-hint">
+                Compatibility check is available for generic_v2 only.
+              </span>
+            )}
           </form>
           {launchState.status === 'error' ? (
             <p className="tp-error-text" role="alert">{launchState.message}</p>
+          ) : null}
+          {compatState.status === 'loaded' ? (
+            <div className="tp-compat-result" data-testid="tp-compat-result">
+              <strong className={`tp-compat-code tp-compat-code-${compatState.result.code}`}>
+                {compatState.result.code}
+              </strong>
+              <span>{compatState.result.explanation}</span>
+              <span className="tp-mono">
+                {compatState.result.checked_model} · {compatState.result.checked_image_format} · {compatState.result.latency_ms}ms
+              </span>
+            </div>
+          ) : null}
+          {compatState.status === 'error' ? (
+            <p className="tp-error-text" role="alert">{compatState.message}</p>
           ) : null}
         </section>
       ) : null}

@@ -392,6 +392,14 @@ export type CancelRunResponse = {
   state: string;
 };
 
+export type CompatibilityResult = {
+  code: string;
+  explanation: string;
+  latency_ms: number;
+  checked_model: string;
+  checked_image_format: string;
+};
+
 export type TargetRevision = {
   id: string;
   metadata_hash: string;

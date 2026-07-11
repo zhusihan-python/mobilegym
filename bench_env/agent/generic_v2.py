@@ -14,6 +14,7 @@ import re
 from typing import Any, ClassVar, Optional
 
 from bench_env.agent.base import BaseAgent, AgentConfig, ActionMapping, AgentStepRecord
+from bench_env.agent.screenshot_message import build_screenshot_user_message
 from bench_env.env.base import Action, ActionType, Observation
 from bench_env.llm import LLMClient
 
@@ -285,13 +286,7 @@ class GenericAgentV2(BaseAgent):
         else:
             user_text = f"[Step {step_num}]"
 
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": obs.image_data_url}},
-                {"type": "text", "text": user_text},
-            ],
-        })
+        messages.append(build_screenshot_user_message(obs.image_data_url, user_text))
 
         return messages
 

@@ -598,6 +598,13 @@ hardening baseline.
 
 ## TP-H09: Test screenshot-model compatibility
 
+Current evidence: [`evidence/2026-07-12-tp-h09-model-compatibility.md`](evidence/2026-07-12-tp-h09-model-compatibility.md).
+A typed compatibility interface, OpenAI adapter (verified via MockTransport),
+sanitized 422 handler, public endpoint, and launch-form Test connection action
+are implemented. The probe reuses the same screenshot-message helper as
+`generic_v2`. Secrets are structurally excluded and verified with sentinel
+tests. TP-H09 is complete.
+
 ### What to build
 
 Add a typed `ModelCompatibility` interface, an OpenAI-compatible production
@@ -607,20 +614,20 @@ the exact screenshot message used by `generic_v2`.
 
 ### Acceptance criteria
 
-- [ ] The check validates endpoint URL, authentication, model identity, image
+- [x] The check validates endpoint URL, authentication, model identity, image
       transport format, and a bounded minimal image request.
-- [ ] The image request uses the same message-building implementation as real
+- [x] The image request uses the same message-building implementation as real
       inference.
-- [ ] Results use stable codes for compatible, unreachable, authentication
+- [x] Results use stable codes for compatible, unreachable, authentication
       failure, missing model, unsupported vision, unsupported image format,
       timeout, and indeterminate provider response.
-- [ ] The console displays the code, concise explanation, latency, checked model,
+- [x] The console displays the code, concise explanation, latency, checked model,
       and checked image format.
-- [ ] Secrets never appear in the compatibility snapshot, logs, errors, events,
+- [x] Secrets never appear in the compatibility snapshot, logs, errors, events,
       exports, or browser storage.
-- [ ] The fake provider adapter covers success and every stable failure without
+- [x] The fake provider adapter covers success and every stable failure without
       live network access.
-- [ ] The feature does not persist or version an Execution Profile.
+- [x] The feature does not persist or version an Execution Profile.
 
 ### Test seam
 

@@ -6,6 +6,7 @@ import type {
   BaselineEligibility,
   CancelRunResponse,
   CollectionResponse,
+  CompatibilityResult,
   Comparison,
   EpisodeReplay,
   FollowupRunAttempt,
@@ -234,6 +235,25 @@ export function cancelRun(runId: string, idempotencyKey?: string): Promise<Cance
   return apiFetch<CancelRunResponse>(`/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
     headers,
+  });
+}
+
+export function checkModelCompatibility(input: {
+  modelBaseUrl: string;
+  modelName: string;
+  modelApiKey?: string;
+  imageUrlFormat: string;
+  timeoutSeconds?: number;
+}): Promise<CompatibilityResult> {
+  return apiFetch<CompatibilityResult>('/model-compatibility/check', {
+    method: 'POST',
+    body: JSON.stringify({
+      model_base_url: input.modelBaseUrl,
+      model_name: input.modelName,
+      model_api_key: input.modelApiKey || '',
+      image_url_format: input.imageUrlFormat,
+      timeout_seconds: input.timeoutSeconds ?? 15,
+    }),
   });
 }
 

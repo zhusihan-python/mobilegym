@@ -12,6 +12,7 @@ from test_platform.api.middleware import (
     install_request_id_middleware,
 )
 from test_platform.api.routes.artifacts import router as artifacts_router
+from test_platform.api.routes.compatibility import router as compatibility_router
 from test_platform.api.routes.health import router as health_router
 from test_platform.api.routes.diagnostics import router as diagnostics_router
 from test_platform.api.routes.projects import router as projects_router
@@ -36,10 +37,17 @@ def create_app(
     supervisor: object | None = None,
     executor_resolver: Callable[[Any], Any] | None = None,
     token_factory: Callable[[], Any] | None = None,
+    compatibility_probe: object | None = None,
 ) -> FastAPI:
     platform_database = database or Database(settings)
     platform_adapter_registry = adapter_registry or TargetAdapterRegistry()
     platform_broker = SSEBroker()
+    # Production defaults: construct a real OpenAI compatibility probe unless
+    # a test explicitly injects one (or None to disable).
+    if compatibility_probe is None:
+        from test_platform.adapters.model_compatibility import OpenAICompatibilityProbe
+
+        compatibility_probe = OpenAICompatibilityProbe()
     platform_supervisor = supervisor or RunSupervisor(
         platform_database,
         settings,
@@ -88,11 +96,13 @@ def create_app(
     app.state.adapter_registry = platform_adapter_registry
     app.state.supervisor = platform_supervisor
     app.state.sse_broker = platform_broker
+    app.state.compatibility_probe = compatibility_probe
 
     install_request_id_middleware(app)
     install_mutation_origin_middleware(app)
     install_error_handlers(app)
     app.include_router(artifacts_router)
+    app.include_router(compatibility_router)
     app.include_router(diagnostics_router)
     app.include_router(health_router)
     app.include_router(projects_router)
