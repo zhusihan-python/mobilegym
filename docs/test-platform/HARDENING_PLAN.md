@@ -561,6 +561,13 @@ python -m pytest -c test_platform/pytest.ini \
 
 ## TP-H08: Record post-P1 Milestone D regression evidence
 
+Current evidence: [`evidence/2026-07-12-tp-h08-post-p1-regression.md`](evidence/2026-07-12-tp-h08-post-p1-regression.md).
+All seven TP-H00 commands pass at the P1 completion commit (`00da2cb`): 301 Test
+Platform tests, 226 bench_env common tests, 55 platform frontend tests, 177
+simulator tests, clean type checks, and 0 lint errors. The four TP-H00 blockers
+are no longer reproducible. The P1 hardening baseline is green. TP-H08 is
+complete.
+
 ### What to build
 
 Run and record the official operational-MVP regression after P0 correctness and
@@ -570,13 +577,13 @@ live dependency.
 
 ### Acceptance criteria
 
-- [ ] All commands required by TP-H00 are rerun at the P1 completion commit.
-- [ ] The deterministic Manual Sequence and paired browser smoke tests pass.
-- [ ] Any warning is classified and linked to an owner or accepted-debt entry.
-- [ ] No live model result is claimed by this record.
-- [ ] The acceptance record is reproducible and contains no local credentials or
+- [x] All commands required by TP-H00 are rerun at the P1 completion commit.
+- [x] The deterministic Manual Sequence and paired browser smoke tests pass.
+- [x] Any warning is classified and linked to an owner or accepted-debt entry.
+- [x] No live model result is claimed by this record.
+- [x] The acceptance record is reproducible and contains no local credentials or
       private paths.
-- [ ] P2 work does not begin until this gate is green or an explicit blocker is
+- [x] P2 work does not begin until this gate is green or an explicit blocker is
       accepted.
 
 ### Test seam
