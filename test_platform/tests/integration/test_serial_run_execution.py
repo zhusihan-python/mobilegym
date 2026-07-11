@@ -473,9 +473,9 @@ async def test_serial_manual_sequence_cancel_after_first_result_synthesizes_rema
             {
                 "task_base_id": "fake.ZFailFirstTask",
                 "sequence_index": 0,
-                "state": "cancelled",
-                "outcome": "CANCELLED",
-                "error_code": "CANCELLED",
+                "state": "completed",
+                "outcome": "FAIL",
+                "error_code": "ASSERTION_FAILURE",
             },
             {
                 "task_base_id": "fake.APassSecondTask",

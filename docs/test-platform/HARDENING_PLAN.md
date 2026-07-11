@@ -224,6 +224,10 @@ python -m pytest -c test_platform/pytest.ini \
 
 ## TP-H02: Unify single-lane outcome commit
 
+Current evidence: [`evidence/2026-07-11-tp-h02-lane-outcome-committer.md`](evidence/2026-07-11-tp-h02-lane-outcome-committer.md)
+(`Complete`: all single-lane executors use the canonical committer; contract,
+adapter parity, focused, and full regressions pass).
+
 ### What to build
 
 Replace the serial, parallel, and multi-process result-reconciliation variants
@@ -233,19 +237,19 @@ facts and finalizes the lane exactly once.
 
 ### Acceptance criteria
 
-- [ ] Serial, parallel, and multi-process executors call the same outcome-commit
+- [x] Serial, parallel, and multi-process executors call the same outcome-commit
       interface.
-- [ ] Object results, dictionary results, and serial positional results are
+- [x] Object results, dictionary results, and serial positional results are
       normalized before canonical reconciliation.
-- [ ] Ingestion occurs in immutable plan order regardless of delivery order.
-- [ ] Missing, cancelled, unknown, and duplicate result semantics match the PRD.
-- [ ] Synthetic terminal events and persisted attempts describe the same
+- [x] Ingestion occurs in immutable plan order regardless of delivery order.
+- [x] Missing, cancelled, unknown, and duplicate result semantics match the PRD.
+- [x] Synthetic terminal events and persisted attempts describe the same
       outcome and error code.
-- [ ] Artifact roots remain compatible with existing Run Explorer and replay
+- [x] Artifact roots remain compatible with existing Run Explorer and replay
       discovery.
-- [ ] Lane finalization occurs exactly once after every planned lane episode has
+- [x] Lane finalization occurs exactly once after every planned lane episode has
       a terminal interpretation.
-- [ ] Replaced shallow reconciliation tests are removed once interface-level
+- [x] Replaced shallow reconciliation tests are removed once interface-level
       coverage proves the same behavior.
 
 ### Test seam
@@ -271,6 +275,7 @@ counts.
 
 ```bash
 python -m pytest -c test_platform/pytest.ini \
+  test_platform/tests/integration/test_lane_outcome_committer.py \
   test_platform/tests/integration/test_serial_run_execution.py \
   test_platform/tests/integration/test_parallel_lane.py \
   test_platform/tests/integration/test_multiprocess_lane.py \

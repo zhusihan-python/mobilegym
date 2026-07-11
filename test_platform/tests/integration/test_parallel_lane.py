@@ -4,7 +4,6 @@ Drives ParallelRunExecutor directly (and via the supervisor) with fake env
 pools / agents / tasks to verify:
 - multi-episode parallel runs ingest results in PLAN order;
 - a crashed worker yields a WORKER_CRASH error_code for the missing episode;
-- unknown / duplicate episode_keys raise RunDomainError (never silently pass);
 - cancellation releases every env in the pool;
 - exactly one run.started on normal completion; NO run.started on pre-execution
   cancel.
@@ -18,7 +17,6 @@ import pytest
 
 from bench_env.env.base import Action, ActionType, Observation, StepResult
 from bench_env.runner.events import ExecutionEvent
-from test_platform.domain.runs import RunDomainError
 from test_platform.persistence.database import Database
 from test_platform.services.execution import ParallelRunExecutor
 from test_platform.tests.integration.test_single_lane_materialization import (
@@ -404,82 +402,6 @@ async def test_parallel_missing_result_gets_worker_crash(tmp_path):
         assert row is not None
         assert row["error_code"] == "WORKER_CRASH"
         assert row["outcome"] == "ERROR"
-    finally:
-        database.close()
-
-
-def test_parallel_unknown_episode_key_raises(tmp_path):
-    """An unknown episode_key in the results → RunDomainError (reconciliation)."""
-    settings = _settings(tmp_path)
-    database = Database(settings)
-    database.initialize()
-    try:
-        executor = ParallelRunExecutor(database, settings, task_factory=_FakeTaskFactory())
-
-        class _FakeItem:
-            episode_key = "known"
-            trial_id = 0
-            max_steps = 5
-
-            class task:
-                id = "fake.SampleTask"
-
-        class _UnknownResult:
-            episode_key = "totally-unknown"
-            task_id = "fake.SampleTask"
-            trial_id = 0
-
-            def to_dict(self):
-                return {"id": "fake.SampleTask", "trial_id": 0, "is_success": True}
-
-        with pytest.raises(RunDomainError) as exc_info:
-            executor._reconcile_and_ingest(
-                run_id="r1",
-                lane_attempt={"id": "la1", "artifact_root": "lanes/candidate"},
-                work_items=[_FakeItem()],
-                results=[_UnknownResult()],
-                cancelled=False,
-            )
-        assert exc_info.value.code == "EPISODE_RESULT_UNKNOWN"
-    finally:
-        database.close()
-
-
-def test_parallel_duplicate_episode_key_raises(tmp_path):
-    """Two results with the same episode_key → RunDomainError."""
-    settings = _settings(tmp_path)
-    database = Database(settings)
-    database.initialize()
-    try:
-        executor = ParallelRunExecutor(database, settings, task_factory=_FakeTaskFactory())
-
-        class _FakeItem:
-            episode_key = "dup"
-            trial_id = 0
-            max_steps = 5
-
-            class task:
-                id = "fake.SampleTask"
-
-        class _Result:
-            def __init__(self, key):
-                self.episode_key = key
-                self.task_id = "fake.SampleTask"
-                self.trial_id = 0
-
-            def to_dict(self):
-                return {"id": "fake.SampleTask", "trial_id": 0, "is_success": True}
-
-        with pytest.raises(RunDomainError) as exc_info:
-            executor._reconcile_and_ingest(
-                run_id="r1",
-                lane_attempt={"id": "la1", "artifact_root": "lanes/candidate"},
-                work_items=[_FakeItem()],
-                results=[_Result("dup"), _Result("dup")],
-                cancelled=False,
-            )
-        assert exc_info.value.code == "EPISODE_RESULT_UNKNOWN"
-        assert exc_info.value.details  # carries the duplicate detail
     finally:
         database.close()
 

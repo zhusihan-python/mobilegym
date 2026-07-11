@@ -351,15 +351,46 @@ class ResultIngestor:
     ) -> dict[str, Any]:
         """Insert ONE episode_attempts row. Does NOT touch lane/run/run_attempt state.
 
-        For parallel execution many episodes share a lane; finalizing the lane
-        per-episode would complete the whole run on the first episode. The
-        parallel executor calls this once per result, then ``finalize_lane_run``
-        exactly once at the end.
+        For batch execution many episodes share a lane; finalizing the lane
+        per-episode would complete the whole run on the first episode.
+        ``LaneOutcomeCommitter`` reuses the uncommitted implementation for each
+        interpreted result inside its one batch transaction, then finalizes the
+        lane and run in that same transaction.
 
         ``error_code_override`` (when provided) replaces the derived error_code
-        — used by reconciliation to label missing/crashed episodes (e.g.
-        WORKER_CRASH) without altering the outcome derivation.
+        — used by ``LaneOutcomeCommitter`` to label missing/crashed episodes
+        (e.g. WORKER_CRASH) without altering the outcome derivation.
         """
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection = self.database.connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                summary = self._ingest_episode_attempt_uncommitted(
+                    run_id=run_id,
+                    lane_attempt_id=lane_attempt_id,
+                    episode_key=episode_key,
+                    result=result,
+                    artifact_root=artifact_root,
+                    cancelled=cancelled,
+                    error_code_override=error_code_override,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return summary
+
+    def _ingest_episode_attempt_uncommitted(
+        self,
+        *,
+        run_id: str,
+        lane_attempt_id: str,
+        episode_key: str,
+        result: Any,
+        artifact_root: str,
+        cancelled: bool = False,
+        error_code_override: str | None = None,
+    ) -> dict[str, Any]:
         connection = self.database.connection
         episode_row = connection.execute(
             """
@@ -376,14 +407,8 @@ class ResultIngestor:
                 status_code=500,
                 details=[{"run_id": run_id, "episode_key": episode_key}],
             )
-
-        # The lane_attempt must exist, but its state is left untouched here.
         lane_row = connection.execute(
-            """
-            SELECT run_attempt_id
-            FROM lane_attempts
-            WHERE id = ?
-            """,
+            "SELECT run_attempt_id FROM lane_attempts WHERE id = ?",
             (lane_attempt_id,),
         ).fetchone()
         if lane_row is None:
@@ -401,45 +426,34 @@ class ResultIngestor:
             if error_code_override is not None
             else _error_code_for_outcome(outcome)
         )
-        # The episode_attempt's own state is terminal (it represents one finished
-        # attempt); the lane/run state is finalized separately.
         terminal_state = "cancelled" if cancelled else "completed"
         now = _utc_timestamp()
         attempt_id = new_id()
-
-        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
-            attempt_no = self._next_attempt_no(str(episode_row["id"]), lane_attempt_id)
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO episode_attempts (
-                      id, episode_id, lane_attempt_id, attempt_no, state,
-                      outcome, error_code, result_json, artifact_root,
-                      started_at, ended_at, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        attempt_id,
-                        episode_row["id"],
-                        lane_attempt_id,
-                        attempt_no,
-                        terminal_state,
-                        outcome,
-                        error_code,
-                        canonical_json(normalized),
-                        artifact_root,
-                        now,
-                        now,
-                        now,
-                    ),
-                )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
-
+        attempt_no = self._next_attempt_no(str(episode_row["id"]), lane_attempt_id)
+        connection.execute(
+            """
+            INSERT INTO episode_attempts (
+              id, episode_id, lane_attempt_id, attempt_no, state,
+              outcome, error_code, result_json, artifact_root,
+              started_at, ended_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attempt_id,
+                episode_row["id"],
+                lane_attempt_id,
+                attempt_no,
+                terminal_state,
+                outcome,
+                error_code,
+                canonical_json(normalized),
+                artifact_root,
+                now,
+                now,
+                now,
+            ),
+        )
         return {
             "id": attempt_id,
             "episode_id": episode_row["id"],
@@ -474,12 +488,22 @@ class ResultIngestor:
         Single-lane executors that call this get identical behaviour.
         """
         _ = cancelled  # accepted for symmetry; terminal_state is authoritative
-        self.finalize_lane_only(
-            lane_attempt_id=lane_attempt_id, terminal_state=terminal_state
-        )
-        self.finalize_run(
-            run_id=run_id, terminal_state=terminal_state, cancelled=cancelled
-        )
+        with self.database._lock:  # noqa: SLF100 — one lane/run transaction
+            connection = self.database.connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._finalize_lane_only_uncommitted(
+                    lane_attempt_id=lane_attempt_id,
+                    terminal_state=terminal_state,
+                )
+                self._finalize_run_uncommitted(
+                    run_id=run_id,
+                    terminal_state=terminal_state,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     def finalize_lane_only(
         self,
@@ -493,6 +517,25 @@ class ResultIngestor:
         episodes are ingested, then finalizes the run once after the comparison
         is recorded. Idempotent on terminal rows.
         """
+        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection = self.database.connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._finalize_lane_only_uncommitted(
+                    lane_attempt_id=lane_attempt_id,
+                    terminal_state=terminal_state,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+    def _finalize_lane_only_uncommitted(
+        self,
+        *,
+        lane_attempt_id: str,
+        terminal_state: str,
+    ) -> None:
         connection = self.database.connection
         lane_row = connection.execute(
             "SELECT run_attempt_id FROM lane_attempts WHERE id = ?",
@@ -507,23 +550,16 @@ class ResultIngestor:
             )
         now = _utc_timestamp()
         cancellable = "('queued','preparing','running','evaluating','reporting')"
-        with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                connection.execute(
-                    f"""
-                    UPDATE lane_attempts
-                    SET state = ?,
-                        started_at = COALESCE(started_at, ?),
-                        ended_at = COALESCE(ended_at, ?)
-                    WHERE id = ? AND state IN {cancellable}
-                    """,
-                    (terminal_state, now, now, lane_attempt_id),
-                )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+        connection.execute(
+            f"""
+            UPDATE lane_attempts
+            SET state = ?,
+                started_at = COALESCE(started_at, ?),
+                ended_at = COALESCE(ended_at, ?)
+            WHERE id = ? AND state IN {cancellable}
+            """,
+            (terminal_state, now, now, lane_attempt_id),
+        )
 
     def finalize_run(
         self,
@@ -538,37 +574,49 @@ class ResultIngestor:
         and the comparison is recorded. Idempotent on terminal rows.
         """
         _ = cancelled  # accepted for symmetry; terminal_state is authoritative
-        connection = self.database.connection
-        now = _utc_timestamp()
-        cancellable = "('queued','preparing','running','evaluating','reporting')"
         with self.database._lock:  # noqa: SLF100 — serialize against EventWriter/cancel
+            connection = self.database.connection
             connection.execute("BEGIN IMMEDIATE")
             try:
-                connection.execute(
-                    f"""
-                    UPDATE run_attempts
-                    SET state = ?,
-                        started_at = COALESCE(started_at, ?),
-                        ended_at = COALESCE(ended_at, ?)
-                    WHERE run_id = ? AND state IN {cancellable}
-                    """,
-                    (terminal_state, now, now, run_id),
-                )
-                connection.execute(
-                    f"""
-                    UPDATE runs
-                    SET state = ?,
-                        started_at = COALESCE(started_at, ?),
-                        ended_at = COALESCE(ended_at, ?),
-                        updated_at = ?
-                    WHERE id = ? AND state IN {cancellable}
-                    """,
-                    (terminal_state, now, now, now, run_id),
+                self._finalize_run_uncommitted(
+                    run_id=run_id,
+                    terminal_state=terminal_state,
                 )
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
+
+    def _finalize_run_uncommitted(
+        self,
+        *,
+        run_id: str,
+        terminal_state: str,
+    ) -> None:
+        connection = self.database.connection
+        now = _utc_timestamp()
+        cancellable = "('queued','preparing','running','evaluating','reporting')"
+        connection.execute(
+            f"""
+            UPDATE run_attempts
+            SET state = ?,
+                started_at = COALESCE(started_at, ?),
+                ended_at = COALESCE(ended_at, ?)
+            WHERE run_id = ? AND state IN {cancellable}
+            """,
+            (terminal_state, now, now, run_id),
+        )
+        connection.execute(
+            f"""
+            UPDATE runs
+            SET state = ?,
+                started_at = COALESCE(started_at, ?),
+                ended_at = COALESCE(ended_at, ?),
+                updated_at = ?
+            WHERE id = ? AND state IN {cancellable}
+            """,
+            (terminal_state, now, now, now, run_id),
+        )
 
     def ingest_episode_result(
         self,
@@ -582,9 +630,9 @@ class ResultIngestor:
     ) -> dict[str, Any]:
         """Backward-compatible wrapper: insert the episode attempt, then finalize.
 
-        Serial execution has exactly one episode per lane, so combining the two
-        is correct there. Parallel execution MUST call the two methods explicitly
-        (insert per episode, finalize once at the end).
+        This remains for legacy one-result callers. Batch executors MUST use
+        ``LaneOutcomeCommitter`` so every planned episode is interpreted before
+        one finalization at the end.
         """
         summary = self.ingest_episode_attempt(
             run_id=run_id,
@@ -655,6 +703,283 @@ class ResultIngestor:
             except Exception:
                 connection.rollback()
                 raise
+
+
+@dataclass(frozen=True)
+class LaneExpectedEpisode:
+    episode_key: str
+    task_id: str | None
+    trial_id: int
+
+
+@dataclass(frozen=True)
+class LaneObservedResult:
+    episode_key: str | None
+    result: Any
+
+
+@dataclass(frozen=True)
+class LaneOutcomeBatch:
+    run_id: str
+    lane_attempt_id: str
+    lane_artifact_root: str
+    expected: tuple[LaneExpectedEpisode, ...]
+    observed: tuple[LaneObservedResult, ...]
+    cancelled: bool
+    repeat_n: int = 1
+
+
+class LaneOutcomeCommitter:
+    """Canonical reconciliation and durable commit for one single-lane batch."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+        self._ingestor = ResultIngestor(database)
+
+    def commit(
+        self,
+        batch: LaneOutcomeBatch,
+        *,
+        events: EventSink | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        observed_by_key = self._validate_and_index(batch)
+        committed: list[dict[str, Any]] = []
+        missing_events: list[tuple[LaneExpectedEpisode, str, str, str]] = []
+        connection = self.database.connection
+
+        with self.database._lock:  # noqa: SLF100 - one atomic lane outcome commit
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                for expected in batch.expected:
+                    observation = observed_by_key.get(expected.episode_key)
+                    result = observation.result if observation is not None else None
+                    artifact_root = _episode_artifact_root(
+                        batch.lane_artifact_root,
+                        result,
+                        repeat_n=batch.repeat_n,
+                        episode_key=expected.episode_key,
+                    )
+                    if observation is not None:
+                        committed.append(
+                            self._ingestor._ingest_episode_attempt_uncommitted(
+                                run_id=batch.run_id,
+                                lane_attempt_id=batch.lane_attempt_id,
+                                episode_key=expected.episode_key,
+                                result=result,
+                                artifact_root=artifact_root,
+                                cancelled=_result_is_cancelled(result),
+                            )
+                        )
+                        continue
+
+                    synthetic, outcome, error_code, event_type = (
+                        self._missing_interpretation(
+                            expected,
+                            cancelled=batch.cancelled,
+                        )
+                    )
+                    committed.append(
+                        self._ingestor._ingest_episode_attempt_uncommitted(
+                            run_id=batch.run_id,
+                            lane_attempt_id=batch.lane_attempt_id,
+                            episode_key=expected.episode_key,
+                            result=synthetic,
+                            artifact_root=artifact_root,
+                            cancelled=batch.cancelled,
+                            error_code_override=error_code,
+                        )
+                    )
+                    missing_events.append(
+                        (expected, outcome, error_code, event_type)
+                    )
+
+                terminal_state = "cancelled" if batch.cancelled else "completed"
+                self._ingestor._finalize_lane_only_uncommitted(
+                    lane_attempt_id=batch.lane_attempt_id,
+                    terminal_state=terminal_state,
+                )
+                self._ingestor._finalize_run_uncommitted(
+                    run_id=batch.run_id,
+                    terminal_state=terminal_state,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+        for expected, outcome, error_code, event_type in missing_events:
+            self._emit_missing(
+                events,
+                expected=expected,
+                outcome=outcome,
+                error_code=error_code,
+                event_type=event_type,
+            )
+        return tuple(committed)
+
+    @staticmethod
+    def _validate_and_index(
+        batch: LaneOutcomeBatch,
+    ) -> dict[str, LaneObservedResult]:
+        expected_keys = [item.episode_key for item in batch.expected]
+        expected_set = set(expected_keys)
+        if len(expected_keys) != len(expected_set):
+            raise RunDomainError(
+                "EPISODE_RESULT_UNKNOWN",
+                "The run plan contains duplicate episode keys.",
+                status_code=500,
+                details=[{"run_id": batch.run_id, "duplicate_plan_keys": True}],
+            )
+
+        observed_by_key: dict[str, LaneObservedResult] = {}
+        unknown_keys: list[str] = []
+        for observation in batch.observed:
+            key = observation.episode_key
+            if key is None:
+                unknown_keys.append("<missing episode_key>")
+                continue
+            if key not in expected_set:
+                unknown_keys.append(key)
+                continue
+            if key in observed_by_key:
+                raise RunDomainError(
+                    "EPISODE_RESULT_UNKNOWN",
+                    "The runner returned duplicate results for one episode.",
+                    status_code=500,
+                    details=[
+                        {
+                            "run_id": batch.run_id,
+                            "episode_key": key,
+                            "duplicate": True,
+                        }
+                    ],
+                )
+            observed_by_key[key] = observation
+        if unknown_keys:
+            raise RunDomainError(
+                "EPISODE_RESULT_UNKNOWN",
+                "The runner returned results for unknown episodes.",
+                status_code=500,
+                details=[
+                    {"run_id": batch.run_id, "unknown_episode_keys": unknown_keys}
+                ],
+            )
+        return observed_by_key
+
+    @staticmethod
+    def _missing_interpretation(
+        expected: LaneExpectedEpisode,
+        *,
+        cancelled: bool,
+    ) -> tuple[dict[str, Any], str, str, str]:
+        if cancelled:
+            return (
+                {
+                    "id": expected.task_id or "unknown",
+                    "trial_id": expected.trial_id,
+                    "is_success": False,
+                    "is_error": False,
+                    "execution": {"error": None, "stop_reason": "CANCELLED"},
+                },
+                "CANCELLED",
+                "CANCELLED",
+                "episode.cancelled",
+            )
+        return (
+            {
+                "id": expected.task_id or "unknown",
+                "trial_id": expected.trial_id,
+                "is_success": False,
+                "is_error": True,
+                "execution": {
+                    "error": "Worker exited without reporting a result (WORKER_CRASH).",
+                    "stop_reason": "ERROR",
+                },
+            },
+            "ERROR",
+            "WORKER_CRASH",
+            "episode.error",
+        )
+
+    @staticmethod
+    def _emit_missing(
+        events: EventSink | None,
+        *,
+        expected: LaneExpectedEpisode,
+        outcome: str,
+        error_code: str,
+        event_type: str,
+    ) -> None:
+        if events is None:
+            return
+        try:
+            events.emit(
+                ExecutionEvent(
+                    type=event_type,
+                    timestamp="",
+                    phase="execute",
+                    task_id=expected.task_id,
+                    trial_id=expected.trial_id,
+                    episode_key=expected.episode_key,
+                    payload={
+                        "outcome": outcome,
+                        "error_code": error_code,
+                        "steps": 0,
+                        "reason": "missing_result",
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 - event failure must not break ingestion
+            pass
+
+
+def _expected_lane_episodes(
+    work_items: list[PreparedWorkItem],
+) -> tuple[LaneExpectedEpisode, ...]:
+    return tuple(
+        LaneExpectedEpisode(
+            episode_key=item.episode_key,
+            task_id=getattr(item.task, "id", None),
+            trial_id=item.trial_id,
+        )
+        for item in work_items
+    )
+
+
+def _serial_observations(
+    expected: tuple[LaneExpectedEpisode, ...],
+    results: list[Any],
+) -> tuple[LaneObservedResult, ...]:
+    return tuple(
+        LaneObservedResult(
+            episode_key=(
+                expected[index].episode_key
+                if index < len(expected)
+                else getattr(result, "episode_key", None)
+            ),
+            result=result,
+        )
+        for index, result in enumerate(results)
+    )
+
+
+def _object_observations(results: list[Any]) -> tuple[LaneObservedResult, ...]:
+    return tuple(
+        LaneObservedResult(
+            episode_key=getattr(result, "episode_key", None),
+            result=result,
+        )
+        for result in results
+    )
+
+
+def _dict_observations(
+    results: list[dict[str, Any]],
+) -> tuple[LaneObservedResult, ...]:
+    return tuple(
+        LaneObservedResult(episode_key=result.get("episode_key"), result=result)
+        for result in results
+    )
 
 
 def _current_run_attempt_id(database: Database, run_id: str) -> str:
@@ -942,28 +1267,22 @@ class SerialRunExecutor(_RunExecutorBase):
         if any_result_cancelled:
             token.cancel()
         cancelled = token.cancelled
-        self._reconcile_and_ingest(
-            run_id=run_id,
-            lane_attempt=lane_attempt,
-            work_items=work_items,
-            results=results,
-            cancelled=cancelled,
-            repeat_n=config.repeat_n,
-            event_sink=events,
-        )
-        # Serial execution finalizes once after all ordered episodes are
-        # ingested. Parallel execution follows the same one-finalize-per-lane
-        # rule after all workers finish.
-        ingestor = ResultIngestor(self.database)
-        ingestor.finalize_lane_run(
-            run_id=run_id,
-            lane_attempt_id=lane_attempt["id"],
-            terminal_state="cancelled" if cancelled else "completed",
-            cancelled=cancelled,
+        expected = _expected_lane_episodes(work_items)
+        LaneOutcomeCommitter(self.database).commit(
+            LaneOutcomeBatch(
+                run_id=run_id,
+                lane_attempt_id=lane_attempt["id"],
+                lane_artifact_root=lane_attempt["artifact_root"],
+                expected=expected,
+                observed=_serial_observations(expected, results),
+                cancelled=cancelled,
+                repeat_n=config.repeat_n,
+            ),
+            events=events,
         )
 
         if cancelled:
-            ingestor.mark_run_cancelled(run_id)
+            ResultIngestor(self.database).mark_run_cancelled(run_id)
             # Re-raise so the supervisor emits run.cancelled (not run.completed).
             # The run/lane state is already terminal here; the supervisor's
             # _mark_run_cancelled is idempotent.
@@ -972,113 +1291,6 @@ class SerialRunExecutor(_RunExecutorBase):
         # by the supervisor's _execute wrapper to avoid duplicate emits. The
         # executor only raises RunCancelled; the supervisor finalizes + emits.
         return RunRepository(self.database).get(run_id)
-
-    def _reconcile_and_ingest(
-        self,
-        *,
-        run_id: str,
-        lane_attempt: dict[str, str],
-        work_items: list[PreparedWorkItem],
-        results: list[Any],
-        cancelled: bool,
-        repeat_n: int,
-        event_sink: EventSink,
-    ) -> None:
-        if len(results) > len(work_items):
-            raise RunDomainError(
-                "EPISODE_RESULT_UNKNOWN",
-                "The serial runner returned more results than planned episodes.",
-                status_code=500,
-                details=[
-                    {
-                        "run_id": run_id,
-                        "planned_episode_count": len(work_items),
-                        "result_count": len(results),
-                    }
-                ],
-            )
-
-        ingestor = ResultIngestor(self.database)
-        for index, work_item in enumerate(work_items):
-            result = results[index] if index < len(results) else None
-            artifact_root = _episode_artifact_root(
-                lane_attempt["artifact_root"],
-                result,
-                repeat_n=repeat_n,
-                episode_key=work_item.episode_key,
-            )
-            if result is not None:
-                ingestor.ingest_episode_attempt(
-                    run_id=run_id,
-                    lane_attempt_id=lane_attempt["id"],
-                    episode_key=work_item.episode_key,
-                    result=result,
-                    artifact_root=artifact_root,
-                    cancelled=cancelled,
-                )
-                continue
-
-            synthetic = self._synthetic_missing_result(work_item, cancelled=cancelled)
-            if cancelled:
-                missing_code = "CANCELLED"
-                terminal_event_type = "episode.cancelled"
-                terminal_outcome = "CANCELLED"
-            else:
-                missing_code = "WORKER_CRASH"
-                terminal_event_type = "episode.error"
-                terminal_outcome = "ERROR"
-            ingestor.ingest_episode_attempt(
-                run_id=run_id,
-                lane_attempt_id=lane_attempt["id"],
-                episode_key=work_item.episode_key,
-                result=synthetic,
-                artifact_root=artifact_root,
-                cancelled=cancelled,
-                error_code_override=missing_code,
-            )
-            try:
-                event_sink.emit(ExecutionEvent(
-                    type=terminal_event_type,
-                    timestamp="",
-                    phase="execute",
-                    task_id=getattr(work_item.task, "id", None),
-                    trial_id=work_item.trial_id,
-                    episode_key=work_item.episode_key,
-                    payload={
-                        "outcome": terminal_outcome,
-                        "error_code": missing_code,
-                        "steps": 0,
-                        "reason": "missing_result",
-                    },
-                ))
-            except Exception:  # noqa: BLE001 — event failure must not break ingestion
-                pass
-
-    @staticmethod
-    def _synthetic_missing_result(
-        work_item: PreparedWorkItem, *, cancelled: bool,
-    ) -> dict[str, Any]:
-        if cancelled:
-            return {
-                "id": getattr(work_item.task, "id", "unknown"),
-                "trial_id": work_item.trial_id,
-                "is_success": False,
-                "is_error": False,
-                "execution": {
-                    "error": None,
-                    "stop_reason": "CANCELLED",
-                },
-            }
-        return {
-            "id": getattr(work_item.task, "id", "unknown"),
-            "trial_id": work_item.trial_id,
-            "is_success": False,
-            "is_error": True,
-            "execution": {
-                "error": "Serial runner exited without reporting a result (WORKER_CRASH).",
-                "stop_reason": "ERROR",
-            },
-        }
 
     async def _run_isolated_work_items(
         self,
@@ -1287,13 +1499,17 @@ class ParallelRunExecutor(_RunExecutorBase):
         # (7) Reconcile results against the expected episode_keys (from
         # work_items). Missing → synthetic ERROR + WORKER_CRASH; unknown /
         # duplicate → hard error (never silently drop or double-count).
-        self._reconcile_and_ingest(
-            run_id=run_id,
-            lane_attempt=lane_attempt,
-            work_items=work_items,
-            results=results,
-            cancelled=token.cancelled,
-            event_sink=events,
+        expected = _expected_lane_episodes(work_items)
+        LaneOutcomeCommitter(self.database).commit(
+            LaneOutcomeBatch(
+                run_id=run_id,
+                lane_attempt_id=lane_attempt["id"],
+                lane_artifact_root=lane_attempt["artifact_root"],
+                expected=expected,
+                observed=_object_observations(results),
+                cancelled=token.cancelled,
+            ),
+            events=events,
         )
 
         # (10) If cancelled, mark the run cancelled and re-raise so the
@@ -1302,165 +1518,6 @@ class ParallelRunExecutor(_RunExecutorBase):
             ResultIngestor(self.database).mark_run_cancelled(run_id)
             raise RunCancelled()
         return RunRepository(self.database).get(run_id)
-
-    def _reconcile_and_ingest(
-        self,
-        *,
-        run_id: str,
-        lane_attempt: dict[str, str],
-        work_items: list[PreparedWorkItem],
-        results: list[Any],
-        cancelled: bool,
-        event_sink: Any = None,
-    ) -> None:
-        """Reconcile runner results against expected episode_keys and ingest.
-
-        - MISSING expected key → synthetic ERROR result ingested with
-          ``error_code_override='WORKER_CRASH'``.
-        - UNKNOWN key (in results, not expected) → RunDomainError.
-        - DUPLICATE key (two results, same key) → RunDomainError.
-        Then ingest every episode (in plan order) and finalize the lane once.
-        """
-        expected_keys = [item.episode_key for item in work_items]
-        expected_set = set(expected_keys)
-
-        # Index results by episode_key, detecting duplicates.
-        results_by_key: dict[str, Any] = {}
-        unknown_keys: list[str] = []
-        for result in results:
-            key = getattr(result, "episode_key", None)
-            if key is None:
-                # A result without episode_key is unrecoverable for parallel
-                # attribution — treat as unknown.
-                unknown_keys.append("<missing episode_key>")
-                continue
-            if key not in expected_set:
-                unknown_keys.append(key)
-                continue
-            if key in results_by_key:
-                raise RunDomainError(
-                    "EPISODE_RESULT_UNKNOWN",
-                    "The runner returned duplicate results for one episode.",
-                    status_code=500,
-                    details=[{"run_id": run_id, "episode_key": key, "duplicate": True}],
-                )
-            results_by_key[key] = result
-        if unknown_keys:
-            raise RunDomainError(
-                "EPISODE_RESULT_UNKNOWN",
-                "The runner returned results for unknown episodes.",
-                status_code=500,
-                details=[
-                    {"run_id": run_id, "unknown_episode_keys": unknown_keys}
-                ],
-            )
-
-        ingestor = ResultIngestor(self.database)
-        # Ingest in PLAN order so episode_attempts are deterministic.
-        for work_item in work_items:
-            key = work_item.episode_key
-            artifact_root = _episode_artifact_root(
-                lane_attempt["artifact_root"],
-                results_by_key.get(key),
-                repeat_n=1,
-                episode_key=key,
-            )
-            if key in results_by_key:
-                ingestor.ingest_episode_attempt(
-                    run_id=run_id,
-                    lane_attempt_id=lane_attempt["id"],
-                    episode_key=key,
-                    result=results_by_key[key],
-                    artifact_root=artifact_root,
-                    cancelled=cancelled,
-                )
-            else:
-                # Missing result → the worker crashed/exited before reporting,
-                # OR the run was cancelled before this episode ran. The label
-                # MUST match the cause (ParallelRunExecutor mirrors
-                # MultiprocessRunExecutor here): a user cancel is CANCELLED
-                # (not a crash). error_code + terminal episode event follow suit.
-                synthetic = self._synthetic_crash_result(work_item, cancelled=cancelled)
-                if cancelled:
-                    missing_code = "CANCELLED"
-                    terminal_event_type = "episode.cancelled"
-                    terminal_outcome = "CANCELLED"
-                else:
-                    missing_code = "WORKER_CRASH"
-                    terminal_event_type = "episode.error"
-                    terminal_outcome = "ERROR"
-                ingestor.ingest_episode_attempt(
-                    run_id=run_id,
-                    lane_attempt_id=lane_attempt["id"],
-                    episode_key=key,
-                    result=synthetic,
-                    artifact_root=artifact_root,
-                    cancelled=cancelled,
-                    error_code_override=missing_code,
-                )
-                # P2: also emit a live terminal episode event so the UI's
-                # completed-count (deduped by episode_key) reflects this missing
-                # episode. The event type + payload match the cause.
-                if event_sink is not None:
-                    try:
-                        event_sink.emit(ExecutionEvent(
-                            type=terminal_event_type,
-                            timestamp="",
-                            phase="execute",
-                            task_id=getattr(work_item.task, "id", None),
-                            trial_id=work_item.trial_id,
-                            episode_key=key,
-                            payload={
-                                "outcome": terminal_outcome,
-                                "error_code": missing_code,
-                                "steps": 0,
-                                "reason": "missing_result",
-                            },
-                        ))
-                    except Exception:  # noqa: BLE001 — event failure must not break ingestion
-                        pass
-
-        # Finalize the lane/run exactly once after ALL episodes are ingested.
-        ingestor.finalize_lane_run(
-            run_id=run_id,
-            lane_attempt_id=lane_attempt["id"],
-            terminal_state="cancelled" if cancelled else "completed",
-            cancelled=cancelled,
-        )
-
-    @staticmethod
-    def _synthetic_crash_result(
-        work_item: PreparedWorkItem, *, cancelled: bool = False,
-    ) -> dict[str, Any]:
-        """A minimal result dict for a missing/crashed/cancelled episode.
-
-        Shaped so ``_result_to_dict``/``_result_outcome`` classify it correctly:
-        - cancelled → CANCELLED outcome (is_error=False, stop_reason=CANCELLED)
-          so reports/result_json reflect "cancelled", NOT "crashed".
-        - crash (default) → ERROR outcome (is_error=True, stop_reason=ERROR).
-        """
-        if cancelled:
-            return {
-                "id": getattr(work_item.task, "id", "unknown"),
-                "trial_id": work_item.trial_id,
-                "is_success": False,
-                "is_error": False,
-                "execution": {
-                    "error": None,
-                    "stop_reason": "CANCELLED",
-                },
-            }
-        return {
-            "id": getattr(work_item.task, "id", "unknown"),
-            "trial_id": work_item.trial_id,
-            "is_success": False,
-            "is_error": True,
-            "execution": {
-                "error": "Worker exited without reporting a result (WORKER_CRASH).",
-                "stop_reason": "ERROR",
-            },
-        }
-
 
 class MultiprocessRunExecutor(_RunExecutorBase):
     """Execute all episodes of a single lane across N processes (shards).
@@ -1471,9 +1528,9 @@ class MultiprocessRunExecutor(_RunExecutorBase):
     ``ParallelRunner`` (in-process for tests via ``child_runner_factory``; real
     spawn for production).
 
-    Results are reconciled by episode_key (plan order) via the SHARED
-    ``_reconcile_and_ingest`` helper so behaviour is identical to
-    ParallelRunExecutor: missing → WORKER_CRASH; unknown/duplicate → hard error.
+    Dictionary results are adapted into the shared ``LaneOutcomeCommitter`` so
+    behavior is identical to the serial and parallel single-lane executors:
+    missing → WORKER_CRASH; unknown/duplicate → hard error.
 
     The ``child_runner_factory`` is the in-process seam: when provided, shards
     run as asyncio tasks (deterministic tests, no real process); when None,
@@ -1629,13 +1686,16 @@ class MultiprocessRunExecutor(_RunExecutorBase):
 
         # (7) Reconcile results against expected episode_keys. result_dicts are
         # plain dicts (from ShardResultEnvelope.result_dict) carrying episode_key.
-        self._reconcile_and_ingest_dicts(
-            run_id=run_id,
-            lane_attempt=lane_attempt,
-            work_items=work_items,
-            result_dicts=result_dicts,
-            cancelled=token.cancelled,
-            event_sink=events,
+        LaneOutcomeCommitter(self.database).commit(
+            LaneOutcomeBatch(
+                run_id=run_id,
+                lane_attempt_id=lane_attempt["id"],
+                lane_artifact_root=lane_attempt["artifact_root"],
+                expected=_expected_lane_episodes(work_items),
+                observed=_dict_observations(result_dicts),
+                cancelled=token.cancelled,
+            ),
+            events=events,
         )
 
         # (8) If cancelled, mark the run cancelled and re-raise.
@@ -1643,150 +1703,6 @@ class MultiprocessRunExecutor(_RunExecutorBase):
             ResultIngestor(self.database).mark_run_cancelled(run_id)
             raise RunCancelled()
         return RunRepository(self.database).get(run_id)
-
-    def _reconcile_and_ingest_dicts(
-        self,
-        *,
-        run_id: str,
-        lane_attempt: dict[str, str],
-        work_items: list[PreparedWorkItem],
-        result_dicts: list[dict[str, Any]],
-        cancelled: bool,
-        event_sink: Any = None,
-    ) -> None:
-        """Reconcile plain-dict results (from ShardResultEnvelope) against the
-        expected episode_keys and ingest. Mirrors _reconcile_and_ingest but
-        works with dicts instead of EpisodeResult objects."""
-        expected_keys = [item.episode_key for item in work_items]
-        expected_set = set(expected_keys)
-
-        results_by_key: dict[str, dict[str, Any]] = {}
-        unknown_keys: list[str] = []
-        for rd in result_dicts:
-            key = rd.get("episode_key")
-            if key is None:
-                unknown_keys.append("<missing episode_key>")
-                continue
-            if key not in expected_set:
-                unknown_keys.append(key)
-                continue
-            if key in results_by_key:
-                raise RunDomainError(
-                    "EPISODE_RESULT_UNKNOWN",
-                    "The runner returned duplicate results for one episode.",
-                    status_code=500,
-                    details=[{"run_id": run_id, "episode_key": key, "duplicate": True}],
-                )
-            results_by_key[key] = rd
-        if unknown_keys:
-            raise RunDomainError(
-                "EPISODE_RESULT_UNKNOWN",
-                "The runner returned results for unknown episodes.",
-                status_code=500,
-                details=[{"run_id": run_id, "unknown_episode_keys": unknown_keys}],
-            )
-
-        ingestor = ResultIngestor(self.database)
-        for work_item in work_items:
-            key = work_item.episode_key
-            artifact_root = _episode_artifact_root(
-                lane_attempt["artifact_root"],
-                results_by_key.get(key),
-                repeat_n=1,
-                episode_key=key,
-            )
-            if key in results_by_key:
-                ingestor.ingest_episode_attempt(
-                    run_id=run_id,
-                    lane_attempt_id=lane_attempt["id"],
-                    episode_key=key,
-                    result=results_by_key[key],
-                    artifact_root=artifact_root,
-                    cancelled=cancelled,
-                )
-            else:
-                # Missing result → the worker crashed/exited before reporting,
-                # OR the run was cancelled before this episode ran. The label
-                # MUST match the cause: a user cancel is CANCELLED (not a
-                # crash), so the UI/reports distinguish "cancelled" from
-                # "crashed". error_code + terminal episode event follow suit.
-                synthetic = self._synthetic_crash_result(work_item, cancelled=cancelled)
-                if cancelled:
-                    missing_code = "CANCELLED"
-                    terminal_event_type = "episode.cancelled"
-                    terminal_outcome = "CANCELLED"
-                else:
-                    missing_code = "WORKER_CRASH"
-                    terminal_event_type = "episode.error"
-                    terminal_outcome = "ERROR"
-                ingestor.ingest_episode_attempt(
-                    run_id=run_id,
-                    lane_attempt_id=lane_attempt["id"],
-                    episode_key=key,
-                    result=synthetic,
-                    artifact_root=artifact_root,
-                    cancelled=cancelled,
-                    error_code_override=missing_code,
-                )
-                if event_sink is not None:
-                    try:
-                        event_sink.emit(ExecutionEvent(
-                            type=terminal_event_type,
-                            timestamp="",
-                            phase="execute",
-                            task_id=getattr(work_item.task, "id", None),
-                            trial_id=work_item.trial_id,
-                            episode_key=key,
-                            payload={
-                                "outcome": terminal_outcome,
-                                "error_code": missing_code,
-                                "steps": 0,
-                                "reason": "missing_result",
-                            },
-                        ))
-                    except Exception:  # noqa: BLE001
-                        pass
-
-        ingestor.finalize_lane_run(
-            run_id=run_id,
-            lane_attempt_id=lane_attempt["id"],
-            terminal_state="cancelled" if cancelled else "completed",
-            cancelled=cancelled,
-        )
-
-    @staticmethod
-    def _synthetic_crash_result(
-        work_item: PreparedWorkItem, *, cancelled: bool = False,
-    ) -> dict[str, Any]:
-        """A minimal result dict for a missing/crashed/cancelled episode.
-
-        Shaped so ``_result_to_dict``/``_result_outcome`` classify it correctly:
-        - cancelled → CANCELLED outcome (is_error=False, stop_reason=CANCELLED)
-          so reports/result_json reflect "cancelled", NOT "crashed".
-        - crash (default) → ERROR outcome (is_error=True, stop_reason=ERROR).
-        """
-        if cancelled:
-            return {
-                "id": getattr(work_item.task, "id", "unknown"),
-                "trial_id": work_item.trial_id,
-                "is_success": False,
-                "is_error": False,
-                "execution": {
-                    "error": None,
-                    "stop_reason": "CANCELLED",
-                },
-            }
-        return {
-            "id": getattr(work_item.task, "id", "unknown"),
-            "trial_id": work_item.trial_id,
-            "is_success": False,
-            "is_error": True,
-            "execution": {
-                "error": "Worker exited without reporting a result (WORKER_CRASH).",
-                "stop_reason": "ERROR",
-            },
-        }
-
 
 class PairedSerialRunExecutor(_RunExecutorBase):
     """Execute a 2-lane (baseline + candidate) run serially and compare pairs.
@@ -2451,7 +2367,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         Missing-episode reconciliation (P1.2): when the run was cancelled,
         expected episodes that have no outcome (never ran) are synthesized as
         CANCELLED attempts with an episode.cancelled event — mirroring the
-        parallel executor's _reconcile_and_ingest missing branch.
+        single-lane ``LaneOutcomeCommitter`` missing-result semantics.
         """
         ingested: dict[str, dict[str, Any]] = {}
         outcomes_by_key = {oc["episode_key"]: oc for oc in outcomes}
