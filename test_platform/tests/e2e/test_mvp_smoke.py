@@ -146,6 +146,304 @@ def test_deterministic_manual_sequence_crosses_public_run_and_replay_interfaces(
         )
 
 
+def test_deterministic_paired_comparison_classifies_regression_and_stable(tmp_path):
+    """TP-H07 REST tracer: a paired deterministic run yields one stable_pass
+    and one regression, with shared identity, ok integrity, and a failed gate."""
+    settings = PlatformSettings(
+        database_path=tmp_path / "platform.sqlite3",
+        runs_dir=tmp_path / "runs",
+    )
+    database = Database(settings)
+    app = create_app(
+        settings,
+        database=database,
+        adapter_registry=build_deterministic_target_registry(),
+        executor_resolver=build_deterministic_executor_resolver(
+            database,
+            settings,
+            enabled=True,
+        ),
+    )
+
+    with TestClient(app) as client:
+        workflow_version_id, task_ids = _seed_public_paired_workflow(client)
+        created = client.post(
+            "/api/platform/v1/runs",
+            headers={"Idempotency-Key": "tp-h07-paired-rest"},
+            json={
+                "workflow_version_id": workflow_version_id,
+                "name": "TP-H07 Paired REST",
+                "overrides": {
+                    "seed": 707,
+                    "execution": {
+                        "model_base_url": "http://deterministic.invalid/v1",
+                        "model_name": "deterministic",
+                    },
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+        run_id = created.json()["id"]
+        detail = _wait_for_state(client, run_id, "completed", timeout=30.0)
+
+        # Exactly two prepared episode identities.
+        identities = detail["episode_identities"]
+        assert len(identities) == 2
+
+        # Baseline + candidate attempts pair by episode_key.
+        attempts = detail["episode_attempts"]
+        by_key: dict[str, dict[str, str]] = {}
+        for attempt in attempts:
+            by_key.setdefault(attempt["episode_key"], {})[attempt["lane_key"]] = attempt
+        assert len(by_key) == 2
+        for episode_key, lanes in by_key.items():
+            assert set(lanes.keys()) == {"baseline", "candidate"}, (
+                f"episode {episode_key} missing a lane"
+            )
+
+        comparison = client.get(
+            f"/api/platform/v1/runs/{run_id}/comparison"
+        ).json()
+        pairs = comparison["pairs"]
+        assert len(pairs) == 2
+
+        # No duplicate or missing pair_keys.
+        pair_keys = [pair["pair_key"] for pair in pairs]
+        assert len(set(pair_keys)) == 2
+
+        # Classification multiset is exactly {stable_pass, regression}.
+        classifications = sorted(pair["classification"] for pair in pairs)
+        assert classifications == ["regression", "stable_pass"], classifications
+
+        # Every pair has OK integrity (API returns the enum value; the browser
+        # lowercases it for display).
+        for pair in pairs:
+            assert pair["integrity"]["status"].lower() == "ok", pair
+
+        # Each pair references the same episode_key for both lanes, and the
+        # three projection hashes (prepared + baseline actual + candidate actual)
+        # are equal — proving shared prepared identity.
+        identity_by_key = {ident["episode_key"]: ident for ident in identities}
+        for pair in pairs:
+            baseline_attempt_id = pair["baseline_episode_attempt_id"]
+            candidate_attempt_id = pair["candidate_episode_attempt_id"]
+            baseline_key = next(
+                a["episode_key"]
+                for a in attempts
+                if a.get("episode_attempt_id") == baseline_attempt_id
+            )
+            candidate_key = next(
+                a["episode_key"]
+                for a in attempts
+                if a.get("episode_attempt_id") == candidate_attempt_id
+            )
+            assert baseline_key == candidate_key, pair
+
+            integrity = pair["integrity"]
+            prepared_hash = pair["prepared"]["projection_hash"]
+            assert integrity["prepared_projection_hash"] == prepared_hash, pair
+            assert integrity["baseline_actual_projection_hash"] == prepared_hash, pair
+            assert integrity["candidate_actual_projection_hash"] == prepared_hash, pair
+
+            # The pair maps uniquely to an identity with an instance_seed.
+            shared_key = baseline_key
+            assert shared_key in identity_by_key, pair
+            assert identity_by_key[shared_key]["instance_seed"] is not None
+
+        report = client.get(f"/api/platform/v1/runs/{run_id}/report").json()
+        # Gate is failed because max_regressions=0 and there is 1 regression.
+        assert report["gate"]["verdict"] == "failed", report["gate"]
+        gate_reasons = report["gate"]["reasons"]
+        assert any(r["metric"] == "max_regressions" for r in gate_reasons), gate_reasons
+
+        # Coverage: every pair paired, none unpaired.
+        coverage = report["comparison"]["coverage"]
+        assert coverage["total_pairs"] == 2
+        assert coverage["paired_pairs"] == 2
+        assert coverage["unpaired_pairs"] == 0
+        assert coverage["coverage_rate"] == 1.0
+
+        # Regression count is 1 (note the plural key in classification_counts).
+        classification_counts = report["comparison"]["classification_counts"]
+        assert classification_counts.get("regressions", 0) == 1
+        assert classification_counts.get("stable_pass", 0) == 1
+
+
+def test_browser_observes_paired_baseline_candidate_comparison_and_replay(tmp_path):
+    with _running_browser_stack(tmp_path) as stack:
+        with httpx.Client(base_url=stack["api_url"], timeout=10.0) as client:
+            workflow_version_id, task_ids = _seed_public_paired_workflow(client)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            try:
+                page.goto(f"{stack['web_url']}/test-platform/runs")
+                created = page.evaluate(
+                    """
+                    async ({ workflowVersionId }) => {
+                      const response = await fetch('/api/platform/v1/runs', {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Idempotency-Key': 'tp-h07-paired-browser',
+                        },
+                        body: JSON.stringify({
+                          workflow_version_id: workflowVersionId,
+                          name: 'TP-H07 Paired Browser',
+                          overrides: {
+                            seed: 707,
+                            execution: {
+                              model_base_url: 'http://deterministic.invalid/v1',
+                              model_name: 'deterministic',
+                            },
+                          },
+                        }),
+                      });
+                      return { status: response.status, body: await response.json() };
+                    }
+                    """,
+                    {"workflowVersionId": workflow_version_id},
+                )
+                assert created["status"] == 201, created
+                run_id = created["body"]["id"]
+                page.goto(f"{stack['web_url']}/test-platform/runs/{run_id}")
+
+                expect(page.get_by_test_id("tp-run-state")).to_have_text(
+                    "completed", timeout=30_000
+                )
+
+                # Comparison panel renders both pairs with the expected
+                # classifications (regression + stable_pass). The comparison
+                # data loads asynchronously after the run completes.
+                comparison = page.get_by_test_id("tp-comparison")
+                expect(comparison).to_be_visible(timeout=10_000)
+                pair_rows = comparison.locator("[data-testid^='tp-comparison-pair-']")
+                expect(pair_rows).to_have_count(2, timeout=15_000)
+                classification_texts = sorted(
+                    row.locator("[data-testid='tp-pair-classification']").inner_text()
+                    for row in [pair_rows.nth(i) for i in range(2)]
+                )
+                assert classification_texts == ["regression", "stable_pass"], (
+                    classification_texts
+                )
+
+                # Every pair integrity reads OK (the API returns the enum value
+                # "OK"; the UI renders "OK (OK)" — status + reason).
+                for i in range(2):
+                    integrity_text = pair_rows.nth(i).locator(
+                        "[data-testid='tp-pair-integrity']"
+                    ).inner_text()
+                    assert "ok" in integrity_text.lower(), integrity_text
+
+                # Gate is failed because max_regressions=0 with one regression.
+                expect(page.get_by_test_id("tp-gate-verdict")).to_have_text("failed")
+                expect(page.get_by_test_id("tp-report-regressions")).to_have_text("1")
+
+                # Pair coverage is rendered in the comparison panel.
+                coverage_text = page.get_by_test_id(
+                    "tp-comparison-coverage"
+                ).inner_text(timeout=10_000)
+                assert "total_pairs: 2" in coverage_text, coverage_text
+                assert "paired_pairs: 2" in coverage_text, coverage_text
+                assert "unpaired_pairs: 0" in coverage_text, coverage_text
+                assert "coverage_rate: 1" in coverage_text, coverage_text
+
+                # Runtime delta is rendered (exact % varies with timing jitter).
+                runtime_delta = page.get_by_test_id("tp-report-runtime-delta")
+                expect(runtime_delta).to_be_visible()
+                assert runtime_delta.inner_text().strip() != "—"
+
+                # Replay defaults to candidate lane. Switch to baseline for the
+                # regression pair's episode, then back, without identity drift.
+                # Reload once the run is terminal so the snapshot carries the
+                # complete set of episode attempts (4 = 2 episodes x 2 lanes).
+                page.reload()
+                picker = page.get_by_label("Replay episode")
+                expect(picker.locator("option")).to_have_count(4, timeout=15_000)
+
+                options = picker.locator("option")
+                option_count = options.count()
+
+                def _parse_option(value):
+                    """Return (lane_key, episode_key) from a 'lane::episode::attempt' value."""
+                    parts = (value or "").split("::")
+                    if len(parts) < 3:
+                        return None, None
+                    return parts[0], parts[1]
+
+                # Find the candidate option whose outcome is FAIL (the regression
+                # pair's candidate attempt).
+                candidate_regression_value = None
+                regression_episode_key = None
+                for i in range(option_count):
+                    text = options.nth(i).inner_text()
+                    if "candidate" in text and "FAIL" in text:
+                        candidate_regression_value = options.nth(i).get_attribute("value")
+                        _, regression_episode_key = _parse_option(candidate_regression_value)
+                        break
+                assert candidate_regression_value is not None, "no candidate FAIL option"
+                assert regression_episode_key is not None
+
+                # Candidate is selected by default for the regression episode.
+                expect(picker).to_have_value(candidate_regression_value)
+
+                # Agent console shows candidate lane + the regression episode.
+                console = page.get_by_label("Replay console")
+                expect(console.locator("dd").filter(has_text="candidate")).to_be_visible()
+                expect(
+                    console.locator("dd").filter(has_text=regression_episode_key)
+                ).to_be_visible()
+
+                # Screenshot loads a candidate artifact.
+                def _screenshot_src():
+                    return page.get_by_test_id("tp-replay-screenshot").get_attribute("src")
+
+                expect(page.get_by_test_id("tp-replay-screenshot")).to_be_visible(timeout=10_000)
+                candidate_src = _screenshot_src()
+                assert candidate_src and "/artifacts/" in candidate_src
+
+                # Find the baseline option with the EXACT same episode_key.
+                baseline_regression_value = None
+                for i in range(option_count):
+                    value = options.nth(i).get_attribute("value") or ""
+                    lane_key, ep_key = _parse_option(value)
+                    if lane_key == "baseline" and ep_key == regression_episode_key:
+                        baseline_regression_value = value
+                        break
+                assert baseline_regression_value is not None, (
+                    "no baseline option for regression episode"
+                )
+
+                # Switch to baseline.
+                picker.select_option(baseline_regression_value)
+                expect(picker).to_have_value(baseline_regression_value)
+                # Agent console lane updated to baseline, episode unchanged.
+                expect(console.locator("dd").filter(has_text="baseline")).to_be_visible()
+                expect(
+                    console.locator("dd").filter(has_text=regression_episode_key)
+                ).to_be_visible()
+                # Screenshot loaded a different (baseline) artifact.
+                expect(page.get_by_test_id("tp-replay-screenshot")).to_be_visible(timeout=10_000)
+                baseline_src = _screenshot_src()
+                assert baseline_src and "/artifacts/" in baseline_src
+                assert baseline_src != candidate_src, (
+                    "screenshot src did not change after switching lanes"
+                )
+
+                # Switch back to candidate — no identity drift (same episode).
+                picker.select_option(candidate_regression_value)
+                expect(picker).to_have_value(candidate_regression_value)
+                expect(console.locator("dd").filter(has_text="candidate")).to_be_visible()
+                expect(
+                    console.locator("dd").filter(has_text=regression_episode_key)
+                ).to_be_visible()
+                expect(page.get_by_test_id("tp-replay-screenshot")).to_be_visible(timeout=10_000)
+                assert _screenshot_src() == candidate_src, "screenshot drifted after switching back"
+            finally:
+                browser.close()
+
+
 def test_browser_observes_ordered_manual_sequence_replay_and_sse_reconnect(tmp_path):
     with _running_browser_stack(tmp_path) as stack:
         with httpx.Client(base_url=stack["api_url"], timeout=10.0) as client:
@@ -375,6 +673,67 @@ def _manual_sequence_definition(task_ids, target_id):
     }
 
 
+def _paired_definition(task_ids, target_id):
+    """Two-lane baseline/candidate batch with a compare + gate node.
+
+    Plain batch (no ``linear_sequence``) so a compare node is legal. The
+    candidate lane carries a test-only ``failing_task_id`` so the deterministic
+    agent can produce one regression and one stable pair.
+    """
+    return {
+        "schema_version": 1,
+        "name": "Deterministic paired comparison",
+        "nodes": [
+            {
+                "id": "tasks",
+                "type": "task_selection",
+                "depends_on": [],
+                "config": {"task_ids": task_ids, "sample_n": 1},
+            },
+            {
+                "id": "matrix",
+                "type": "matrix",
+                "depends_on": ["tasks"],
+                "config": {
+                    "lanes": {
+                        "baseline": {
+                            "target_id": target_id,
+                            "role": "baseline",
+                        },
+                        "candidate": {
+                            "target_id": target_id,
+                            "failing_task_id": task_ids[1],
+                        },
+                    },
+                    "repeat_n": 1,
+                },
+            },
+            {
+                "id": "execute",
+                "type": "execute",
+                "depends_on": ["matrix"],
+                "config": {
+                    "agent": "deterministic",
+                    "parallel": 1,
+                    "processes": 1,
+                },
+            },
+            {
+                "id": "compare",
+                "type": "compare",
+                "depends_on": ["execute"],
+                "config": {},
+            },
+            {
+                "id": "gate",
+                "type": "gate",
+                "depends_on": ["compare"],
+                "config": {"thresholds": {"max_regressions": 0}},
+            },
+        ],
+    }
+
+
 def _wait_for_state(client, run_id, expected, timeout=10.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -496,6 +855,40 @@ def _seed_public_single_workflow(
     )
     assert published.status_code == 200, published.text
     return str(published.json()["workflow_version_id"])
+
+
+def _seed_public_paired_workflow(client: httpx.Client):
+    project = client.post(
+        "/api/platform/v1/projects",
+        json={"name": "Deterministic paired smoke"},
+    ).json()
+    target = client.post(
+        "/api/platform/v1/targets",
+        json={
+            "project_id": project["id"],
+            "name": "Deterministic paired simulator",
+            "config": _target_config(),
+        },
+    ).json()
+    health = client.post(f"/api/platform/v1/targets/{target['id']}/health")
+    assert health.status_code == 200, health.text
+    task_ids = [
+        item["task_base_id"] for item in client.get("/api/platform/v1/tasks").json()["items"][:2]
+    ]
+    assert len(task_ids) == 2
+    workflow = client.post(
+        f"/api/platform/v1/projects/{project['id']}/workflows",
+        json={
+            "name": "Deterministic paired comparison",
+            "definition": _paired_definition(task_ids, target["id"]),
+        },
+    )
+    assert workflow.status_code == 201, workflow.text
+    published = client.post(
+        f"/api/platform/v1/workflows/{workflow.json()['id']}/publish"
+    )
+    assert published.status_code == 200, published.text
+    return published.json()["workflow_version_id"], task_ids
 
 
 def _create_run_in_browser(

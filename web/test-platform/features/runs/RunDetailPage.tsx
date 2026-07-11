@@ -600,6 +600,19 @@ export function RunDetailPage() {
                   .join(', ')
               : 'No pairs yet.'}
           </p>
+          {report.status === 'loaded' && report.report.comparison?.coverage ? (
+            <p
+              className="tp-comparison-coverage"
+              data-testid="tp-comparison-coverage"
+            >
+              {['total_pairs', 'paired_pairs', 'unpaired_pairs', 'coverage_rate']
+                .filter((key) => key in report.report.comparison.coverage)
+                .map(
+                  (key) => `${key}: ${report.report.comparison.coverage[key]}`,
+                )
+                .join(', ')}
+            </p>
+          ) : null}
           <table>
             <thead>
               <tr>

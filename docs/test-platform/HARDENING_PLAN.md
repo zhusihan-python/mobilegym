@@ -514,6 +514,12 @@ python -m pytest -c test_platform/pytest.ini test_platform/tests/e2e/test_mvp_sm
 
 ## TP-H07: Add deterministic paired-comparison browser smoke
 
+Current evidence: [`evidence/2026-07-12-tp-h07-deterministic-paired-smoke.md`](evidence/2026-07-12-tp-h07-deterministic-paired-smoke.md).
+The deterministic paired batch yields one stable_pass and one regression with
+shared prepared identity, OK pair integrity, a failed `max_regressions: 0` gate,
+and browser replay that switches baseline/candidate lanes without identity drift.
+TP-H07 is complete.
+
 ### What to build
 
 Extend the deterministic acceptance harness with a paired baseline/candidate
@@ -523,16 +529,16 @@ the browser.
 
 ### Acceptance criteria
 
-- [ ] Both lanes execute the same prepared episode identities and seeds.
-- [ ] The deterministic fixture produces at least one regression and one stable
+- [x] Both lanes execute the same prepared episode identities and seeds.
+- [x] The deterministic fixture produces at least one regression and one stable
       result classification.
-- [ ] The browser displays both lane attempts, pair coverage, classifications,
+- [x] The browser displays both lane attempts, pair coverage, classifications,
       report deltas, and gate verdict.
-- [ ] Replay selects the candidate lane by default and can switch to the baseline
+- [x] Replay selects the candidate lane by default and can switch to the baseline
       attempt without identity drift.
-- [ ] The scenario uses the same test-only adapter and temporary public-service
+- [x] The scenario uses the same test-only adapter and temporary public-service
       composition as TP-H06.
-- [ ] No external model or target deployment is required.
+- [x] No external model or target deployment is required.
 
 ### Test seam
 

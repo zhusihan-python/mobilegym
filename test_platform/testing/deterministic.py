@@ -41,7 +41,13 @@ def build_deterministic_executor_resolver(
             settings,
             task_factory=DeterministicTaskFactory(),
             env_factory=lambda _lane: DeterministicEnvironment(slow=slow),
-            agent_factory=lambda _lane: DeterministicAgent(slow=slow),
+            agent_factory=lambda resolved_lane: DeterministicAgent(
+                slow=slow,
+                failing_task_id=str(
+                    getattr(resolved_lane, "runner_config", {}).get("failing_task_id")
+                    or ""
+                ) or None,
+            ),
         )
 
     return resolve
@@ -110,6 +116,19 @@ class DeterministicEnvironment:
         self.marker = "clean"
         self._agent_message: str | None = None
 
+    def reset_episode(self) -> None:
+        """Reset per-episode mutable state.
+
+        ``PairedSerialRunExecutor`` reuses one environment across episodes, so
+        the marker / step counter / agent message must be cleared at the
+        episode boundary (called from ``DeterministicTask.setup``, before the
+        executor's integrity ``get_state`` check). ``SerialRunExecutor`` builds
+        a fresh environment per episode, where this is a no-op.
+        """
+        self.marker = "clean"
+        self.step_count = 0
+        self._agent_message = None
+
     async def get_state(self, required_apps: list[str] | None = None) -> dict[str, Any]:
         return {
             "apps": {"fake": {"marker": self.marker}},
@@ -128,8 +147,13 @@ class DeterministicEnvironment:
         self.step_count += 1
         await asyncio.sleep(0.1 if self.slow else 0.5)
         if action.action_type == ActionType.COMPLETE:
-            self.marker = "mutated"
-            self._agent_message = str(action.data.get("return") or "")
+            message = str(action.data.get("return") or "")
+            self._agent_message = message
+            self.marker = (
+                "deterministic_failure"
+                if message == "deterministic_failure"
+                else "mutated"
+            )
             return StepResult(
                 observation=await self.get_observation(),
                 done=True,
@@ -156,17 +180,37 @@ class DeterministicEnvironment:
 class DeterministicAgent:
     name = "deterministic-test-agent"
 
-    def __init__(self, *, slow: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        slow: bool = False,
+        failing_task_id: str | None = None,
+    ) -> None:
         self.slow = slow
+        self.failing_task_id = failing_task_id
         self.history: list[Any] = []
+        self._instruction: str = ""
+        self._current_task_id: str = ""
 
     def reset(self, instruction: str) -> None:
+        self._instruction = instruction
+        # Instruction format: "Deterministic sequence step N: {task_base_id}".
+        self._current_task_id = instruction.rsplit(": ", 1)[-1] if instruction else ""
         self.history = [{"instruction": instruction}]
 
     def act(self, observation: Observation) -> Action:
         if self.slow:
             return Action(ActionType.CLICK, {"point": [10, 10]})
+        if self._should_fail():
+            return Action.complete("deterministic_failure")
         return Action.complete("deterministic completion")
+
+    def _should_fail(self) -> bool:
+        if self.failing_task_id is None:
+            # TP-H06 single-lane Manual Sequence: fail the second step.
+            return "sequence step 2" in self._instruction
+        # TP-H07 paired candidate: fail the lane's nominated task.
+        return self._current_task_id == self.failing_task_id
 
     def reset_history(self) -> None:
         self.history.clear()
@@ -212,6 +256,7 @@ class DeterministicTask:
         return f"Deterministic sequence step {step}: {self.task_base_id}"
 
     async def setup(self, env: DeterministicEnvironment) -> Observation:
+        env.reset_episode()
         observation = await env.get_observation()
         self.initial_marker = str(
             observation.state.get("apps", {}).get("fake", {}).get("marker")
@@ -224,7 +269,10 @@ class DeterministicTask:
     def evaluate(self, judge_input: Any) -> JudgeResult:
         if self.initial_marker != "clean":
             return JudgeResult.error("deterministic isolation violation")
-        if self.sequence_index == 1:
+        final_marker = str(
+            judge_input.apps.get("fake", {}).get("marker")
+        )
+        if final_marker == "deterministic_failure":
             return JudgeResult.fail("deterministic failure at sequence step 2")
         return JudgeResult.ok()
 

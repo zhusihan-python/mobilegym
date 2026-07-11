@@ -9,6 +9,7 @@ lerna-debug.log*
 .env
 
 __pycache__/
+.zcode/
 /runs
 
 # Local Test Platform hardening verification roots
