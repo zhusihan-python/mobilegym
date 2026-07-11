@@ -25,6 +25,12 @@ All docs here are in English. Pick a track:
 | Control service, runner integration, persistence, API, event, and frontend architecture | [`test-platform/TECHNICAL_ARCHITECTURE.md`](test-platform/TECHNICAL_ARCHITECTURE.md) |
 | Code-level contracts, schemas, algorithms, transaction boundaries, and test seams | [`test-platform/IMPLEMENTATION_DESIGN.md`](test-platform/IMPLEMENTATION_DESIGN.md) |
 | TDD-driven, independently verifiable vertical-slice development plan | [`test-platform/DEVELOPMENT_PLAN.md`](test-platform/DEVELOPMENT_PLAN.md) |
+| Post-MVP correctness, deterministic acceptance, model preflight, reporting, and diagnostics requirements | [`test-platform/HARDENING_PRD.md`](test-platform/HARDENING_PRD.md) |
+| Prioritized hardening milestones and agent-ready vertical task slices | [`test-platform/HARDENING_PLAN.md`](test-platform/HARDENING_PLAN.md) |
+| Deferred Test Platform product directions that are recorded but not yet specified | [`test-platform/PRODUCT_BACKLOG.md`](test-platform/PRODUCT_BACKLOG.md) |
+| Manual Sequence v1 product and execution contract | [`test-platform/MANUAL_SEQUENCE_V1.md`](test-platform/MANUAL_SEQUENCE_V1.md) |
+| Run Observatory replay and live-inspection design | [`test-platform/VS-15_RUN_OBSERVATORY_DESIGN.md`](test-platform/VS-15_RUN_OBSERVATORY_DESIGN.md) |
+| Local operation, legacy import, Run Explorer, and regression commands | [`test-platform/OPERATOR_GUIDE.md`](test-platform/OPERATOR_GUIDE.md) |
 
 ## Platform deep dive
 

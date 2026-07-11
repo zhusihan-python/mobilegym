@@ -95,7 +95,7 @@ def synthetic_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root_pkg = tmp_path / "fake_tasks_pkg"
     root_pkg.mkdir()
     # Make it importable under a unique prefix so we don't clash with real modules.
-    (root_pkg / "__init__.py").write_text("")
+    (root_pkg / "__init__.py").write_text("", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
 
     prefix = "fake_tasks_pkg"
@@ -116,15 +116,15 @@ def _make_suite(
 ) -> None:
     suite_dir = root / name
     suite_dir.mkdir()
-    (suite_dir / "__init__.py").write_text("")
+    (suite_dir / "__init__.py").write_text("", encoding="utf-8")
     if tasks_py is not None:
-        (suite_dir / "tasks.py").write_text(tasks_py)
+        (suite_dir / "tasks.py").write_text(tasks_py, encoding="utf-8")
     if defs:
         defs_dir = suite_dir / "defs"
         defs_dir.mkdir()
-        (defs_dir / "__init__.py").write_text("")
+        (defs_dir / "__init__.py").write_text("", encoding="utf-8")
         for fname, body in defs.items():
-            (defs_dir / f"{fname}.py").write_text(body)
+            (defs_dir / f"{fname}.py").write_text(body, encoding="utf-8")
 
 
 def _registry_for(prefix: str, root: Path) -> TaskRegistry:
@@ -174,7 +174,7 @@ class TestDiscovery:
         prefix, root = synthetic_root
         empty = root / "empty_suite"
         empty.mkdir()
-        (empty / "__init__.py").write_text("")
+        (empty / "__init__.py").write_text("", encoding="utf-8")
 
         tasks, defs, _ = _discover_suite_modules(roots=[(prefix, root)])
         assert "empty_suite" not in tasks
