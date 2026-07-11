@@ -27,6 +27,7 @@ const run: RunDetail = {
     completed_episodes: 1,
     completed_lane_episodes: 1,
   },
+  outcome_counts: { pass: 0, fail: 1, error: 0, cancelled: 0, incomplete: 1 },
   lanes: [
     {
       id: 'lane-1',

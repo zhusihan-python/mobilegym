@@ -11,6 +11,9 @@ lerna-debug.log*
 __pycache__/
 /runs
 
+# Local Test Platform hardening verification roots
+/.tp-h03-*/
+
 node_modules
 dist
 dist-ssr

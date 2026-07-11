@@ -1,2 +1,0 @@
-{"id": "fake.SampleTask", "suite": "fake", "task_name": "Choose sampled-1", "trial_id": 0, "stop_reason": "ERROR", "error_type": "exec", "error": "RuntimeError: worker crashed mid-episode", "start_time": "2026-07-11T20:21:45.123458", "end_time": "2026-07-11T20:21:45.126904"}
-{"id": "fake.SampleTask", "suite": "fake", "task_name": "Choose sampled-1", "trial_id": 1, "stop_reason": "ERROR", "error_type": "exec", "error": "RuntimeError: worker crashed mid-episode", "start_time": "2026-07-11T20:21:45.124520", "end_time": "2026-07-11T20:21:45.129146"}

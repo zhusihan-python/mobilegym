@@ -18,6 +18,7 @@ from test_platform.services.execution import (
     PairedParallelRunExecutor,
     PairedSerialRunExecutor,
 )
+from test_platform.services.completion import RunCompletionPipeline
 from test_platform.tests.integration.test_paired_parallel_run import (
     _build_paired_parallel_run,
 )
@@ -317,7 +318,12 @@ async def test_paired_commit_orders_lane_facts_before_comparison_and_run(
             candidate_env=_PairedEnv(label="candidate"),
         ).execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
+        RunCompletionPipeline(
+            database,
+            event_writer=EventWriter(database),
+        ).complete(run.id)
+        assert RunRepository(database).get(run.id).state == "completed"
         audit = database.connection.execute(
             "SELECT entity, COUNT(*) AS n FROM paired_commit_audit GROUP BY entity"
         ).fetchall()
@@ -365,3 +371,117 @@ async def test_paired_adapters_commit_the_same_candidate_crash_facts(tmp_path):
     assert serial["lane_states"] == ["completed", "failed"]
     assert serial["functional_summary"]["successes"] == 1
     assert serial["functional_summary"]["errors"] == 1
+
+
+@pytest.mark.asyncio
+async def test_paired_serial_agent_factory_failure_commits_terminal_grid(tmp_path):
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    try:
+        run = _build_paired_run(database, settings)
+        materialize_env = _PairedEnv(label="materialize")
+        baseline_env = _PairedEnv(label="baseline")
+        candidate_env = _PairedEnv(label="candidate")
+        envs = iter([materialize_env, baseline_env, candidate_env])
+
+        def agent_factory(lane):
+            if lane.lane_key == "candidate":
+                raise RuntimeError("candidate agent failed to start")
+            return _ScriptedAgent(succeed=True)
+
+        executor = PairedSerialRunExecutor(
+            database,
+            settings,
+            task_factory=_PairedTaskFactory(),
+            env_factory=lambda lane: next(envs),
+            agent_factory=agent_factory,
+        )
+
+        with pytest.raises(RuntimeError, match="candidate agent failed to start"):
+            await executor.execute_run(run.id)
+
+        report_input = ReportInputRepository(database).get_for_run(run.id)
+        assert sorted(
+            (
+                attempt["lane_key"],
+                attempt["outcome"],
+                attempt["error_code"],
+            )
+            for attempt in report_input.episode_attempts
+        ) == [
+            ("baseline", "PASS", None),
+            ("candidate", "ERROR", "WORKER_CRASH"),
+        ]
+        detail = RunRepository(database).get(run.id)
+        assert [lane["state"] for lane in detail.lane_attempts] == [
+            "completed",
+            "failed",
+        ]
+        assert report_input.comparison is not None
+        assert [
+            pair["classification"] for pair in report_input.comparison["pairs"]
+        ] == ["candidate_error"]
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_paired_parallel_agent_factory_failure_commits_terminal_grid(tmp_path):
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    try:
+        run = _build_paired_parallel_run(database, settings, repeat_n=1)
+        materialize_env = _PairedEnv(label="materialize")
+        baseline_env = _PairedEnv(label="baseline")
+        candidate_env = _PairedEnv(label="candidate")
+        env_by_lane = {"baseline": baseline_env, "candidate": candidate_env}
+        call_count = 0
+
+        def env_factory(lane):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return materialize_env
+            return env_by_lane[lane.lane_key]
+
+        def agent_factory(lane):
+            if lane.lane_key == "candidate":
+                raise RuntimeError("candidate agent failed to start")
+            return _ScriptedAgent(succeed=True)
+
+        executor = PairedParallelRunExecutor(
+            database,
+            settings,
+            task_factory=_PairedTaskFactory(),
+            env_factory=env_factory,
+            agent_factory=agent_factory,
+        )
+
+        with pytest.raises(RuntimeError, match="candidate agent failed to start"):
+            await executor.execute_run(run.id)
+
+        report_input = ReportInputRepository(database).get_for_run(run.id)
+        assert sorted(
+            (
+                attempt["lane_key"],
+                attempt["outcome"],
+                attempt["error_code"],
+            )
+            for attempt in report_input.episode_attempts
+        ) == [
+            ("baseline", "CANCELLED", "CANCELLED"),
+            ("candidate", "ERROR", "WORKER_CRASH"),
+        ]
+        detail = RunRepository(database).get(run.id)
+        assert [lane["state"] for lane in detail.lane_attempts] == [
+            "cancelled",
+            "failed",
+        ]
+        assert report_input.comparison is not None
+        assert [
+            pair["classification"] for pair in report_input.comparison["pairs"]
+        ] == ["candidate_error"]
+    finally:
+        database.close()

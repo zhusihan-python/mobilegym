@@ -17,6 +17,7 @@ function baseSnapshot(state = 'running'): RunDetail {
     state,
     fingerprint: 'fp',
     progress: { planned_episodes: 1, planned_lane_episodes: 1, completed_episodes: 0, completed_lane_episodes: 0 },
+    outcome_counts: { pass: 0, fail: 0, error: 0, cancelled: 0, incomplete: 1 },
     lanes: [],
     gate_verdict: null,
     created_at: '2026-07-04T00:00:00.000Z',
@@ -80,8 +81,25 @@ describe('reduceRunEvent', () => {
 
   it('reaches completed on run.completed', () => {
     let state = baseState();
-    state = reduceRunEvent(state, event('run.completed', 1));
+    state = reduceRunEvent(state, event('run.completed', 1, {
+      gate_verdict: 'failed',
+      outcome_counts: {
+        pass: 1,
+        fail: 0,
+        error: 1,
+        cancelled: 0,
+        incomplete: 0,
+      },
+    }));
     expect(state.snapshot.state).toBe('completed');
+    expect(state.snapshot.gate_verdict).toBe('failed');
+    expect(state.snapshot.outcome_counts).toEqual({
+      pass: 1,
+      fail: 0,
+      error: 1,
+      cancelled: 0,
+      incomplete: 0,
+    });
     expect(state.lastSequence).toBe(1);
   });
 

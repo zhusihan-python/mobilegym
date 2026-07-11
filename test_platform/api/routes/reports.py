@@ -20,7 +20,7 @@ class PromoteBaselineRequest(BaseModel):
 @router.get("/runs/{run_id}/report")
 def get_run_report(request: Request, run_id: str) -> dict[str, object]:
     try:
-        return ReportRepository(get_database(request)).get_or_create(run_id)
+        return ReportRepository(get_database(request)).get_or_repair(run_id)
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 
@@ -32,7 +32,7 @@ def export_run_report(
     format: str = "json",  # noqa: A002 - API query parameter name
 ) -> Response:
     try:
-        report = ReportRepository(get_database(request)).get_or_create(run_id)
+        report = ReportRepository(get_database(request)).get_or_repair(run_id)
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 

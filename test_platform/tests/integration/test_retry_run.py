@@ -10,6 +10,8 @@ from test_platform.config import PlatformSettings
 from test_platform.persistence.database import Database
 from test_platform.domain.runs import RunDomainError
 from test_platform.domain.task_catalog import TaskCatalogSnapshot
+from test_platform.execution.event_writer import EventWriter
+from test_platform.services.completion import RunCompletionPipeline
 from test_platform.services.execution import ParallelRunExecutor
 from test_platform.services.runs import (
     FakeRunSupervisor,
@@ -652,6 +654,10 @@ async def test_retry_execution_runs_only_selected_failed_and_error_episodes(tmp_
             (rows[2]["id"],),
         )
         database.connection.commit()
+        RunCompletionPipeline(
+            database,
+            event_writer=EventWriter(database),
+        ).complete(run.id)
 
         retry = RunService(
             database,
@@ -757,6 +763,10 @@ async def test_paired_retry_execution_runs_only_selected_episode_pair_on_current
             (candidate_trial_1["id"],),
         )
         database.connection.commit()
+        RunCompletionPipeline(
+            database,
+            event_writer=EventWriter(database),
+        ).complete(run.id)
 
         retry = RunService(
             database,

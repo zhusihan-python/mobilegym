@@ -250,7 +250,7 @@ async def test_paired_serial_run_pass_pass_is_stable_pass(tmp_path):
             agent_factory=lambda lane: agent_by_lane[lane.lane_key],
         ).execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         # Two episode_attempts rows (one per lane).
         attempts = database.connection.execute(
             "SELECT lane_key, outcome FROM episode_attempts JOIN lane_attempts "
@@ -423,7 +423,7 @@ async def test_paired_serial_run_lane_only_finalize_then_finalize_run(tmp_path):
             agent_factory=lambda lane: agent_by_lane[lane.lane_key],
         ).execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         # All lane_attempts are completed.
         lane_states = database.connection.execute(
             "SELECT state FROM lane_attempts"
@@ -539,7 +539,7 @@ def test_supervisor_routes_two_lane_run_to_paired_path(tmp_path):
         detail = asyncio.run(
             executor.execute_run(run.id, token=ct)
         )
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
     finally:
         database.close()
 

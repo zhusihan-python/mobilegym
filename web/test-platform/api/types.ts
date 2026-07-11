@@ -50,6 +50,13 @@ export type RunSummary = {
     completed_episodes: number;
     completed_lane_episodes: number;
   };
+  outcome_counts: {
+    pass: number;
+    fail: number;
+    error: number;
+    cancelled: number;
+    incomplete: number;
+  };
   lanes: Array<{
     id: string;
     lane_key: string;

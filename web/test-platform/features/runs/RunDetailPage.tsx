@@ -91,7 +91,11 @@ export function RunDetailPage() {
           runId,
           (event) => {
             if (!liveRef.current) return;
-            liveRef.current = reduceRunEvent(liveRef.current, event);
+            const next = reduceRunEvent(liveRef.current, event);
+            liveRef.current = next;
+            if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') {
+              setState({ status: 'loaded', run: next.snapshot });
+            }
             setLiveVersion((v) => v + 1);
           },
           () => {
@@ -231,6 +235,13 @@ export function RunDetailPage() {
   const plannedEpisodes = run.progress.planned_episodes;
   const plannedLaneEpisodes = run.progress.planned_lane_episodes;
   const completedLaneEpisodes = run.progress.completed_lane_episodes ?? 0;
+  const outcomeCounts = run.outcome_counts ?? {
+    pass: 0,
+    fail: 0,
+    error: 0,
+    cancelled: 0,
+    incomplete: run.progress.planned_lane_episodes,
+  };
   // VS-09 Contract 9: paired runs use lane-scoped progress
   // (completed_lane_episodes / planned_lane_episodes). The live dedup set is
   // lane-aware too, so it lines up with the lane-episode denominator.
@@ -346,7 +357,38 @@ export function RunDetailPage() {
             {followupMessage}
           </p>
         ) : null}
-        <dl className="tp-run-facts">
+        <dl
+          className="tp-run-facts"
+          data-testid="tp-run-completion-facts"
+        >
+          <div>
+            <dt>Execution</dt>
+            <dd>{run.state}</dd>
+          </div>
+          <div>
+            <dt>Verdict</dt>
+            <dd>{run.gate_verdict ?? 'pending'}</dd>
+          </div>
+          <div>
+            <dt>Pass</dt>
+            <dd data-count="pass">{outcomeCounts.pass}</dd>
+          </div>
+          <div>
+            <dt>Fail</dt>
+            <dd data-count="fail">{outcomeCounts.fail}</dd>
+          </div>
+          <div>
+            <dt>Error</dt>
+            <dd data-count="error">{outcomeCounts.error}</dd>
+          </div>
+          <div>
+            <dt>Cancelled</dt>
+            <dd data-count="cancelled">{outcomeCounts.cancelled}</dd>
+          </div>
+          <div>
+            <dt>Incomplete</dt>
+            <dd data-count="incomplete">{outcomeCounts.incomplete}</dd>
+          </div>
           <div>
             <dt>Plan</dt>
             <dd>{run.progress.planned_episodes} planned episodes</dd>

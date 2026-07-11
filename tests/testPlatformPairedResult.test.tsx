@@ -22,6 +22,7 @@ function pairedSnapshot(state = 'running'): RunDetail {
       completed_episodes: 0,
       completed_lane_episodes: 0,
     },
+    outcome_counts: { pass: 0, fail: 0, error: 0, cancelled: 0, incomplete: 2 },
     lanes: [
       { id: 'lane-b', lane_key: 'baseline', role: 'baseline', target_id: 't1', target_revision_id: 'rev1' },
       { id: 'lane-c', lane_key: 'candidate', role: 'candidate', target_id: 't2', target_revision_id: 'rev2' },

@@ -16,6 +16,7 @@ function baseSnapshot(state = 'running'): RunDetail {
     state,
     fingerprint: 'fp',
     progress: { planned_episodes: 4, planned_lane_episodes: 4, completed_episodes: 0, completed_lane_episodes: 0 },
+    outcome_counts: { pass: 0, fail: 0, error: 0, cancelled: 0, incomplete: 4 },
     lanes: [],
     gate_verdict: null,
     created_at: '2026-07-04T00:00:00.000Z',

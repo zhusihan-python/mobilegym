@@ -25,6 +25,13 @@ const run = {
     planned_lane_episodes: 3,
     completed_episodes: 3,
   },
+  outcome_counts: {
+    pass: 1,
+    fail: 1,
+    error: 1,
+    cancelled: 0,
+    incomplete: 0,
+  },
   lanes: [
     {
       id: 'lane-1',
@@ -83,7 +90,7 @@ const run = {
     },
   ],
   run_plan: {},
-  gate_verdict: null,
+  gate_verdict: 'failed',
   created_at: '2026-07-03T00:00:03.000Z',
   started_at: '2026-07-03T00:00:04.000Z',
   ended_at: '2026-07-03T00:00:05.000Z',
@@ -140,6 +147,21 @@ describe('Test Platform serial run detail', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
+    const completionFacts = within(screen.getByTestId('tp-run-completion-facts'));
+    expect(completionFacts.getByText('Execution')).toBeTruthy();
+    expect(completionFacts.getByText('completed')).toBeTruthy();
+    expect(completionFacts.getByText('Verdict')).toBeTruthy();
+    expect(completionFacts.getByText('failed')).toBeTruthy();
+    expect(completionFacts.getByText('Pass')).toBeTruthy();
+    expect(completionFacts.getByText('1', { selector: '[data-count="pass"]' })).toBeTruthy();
+    expect(completionFacts.getByText('Fail')).toBeTruthy();
+    expect(completionFacts.getByText('1', { selector: '[data-count="fail"]' })).toBeTruthy();
+    expect(completionFacts.getByText('Error')).toBeTruthy();
+    expect(completionFacts.getByText('1', { selector: '[data-count="error"]' })).toBeTruthy();
+    expect(completionFacts.getByText('Cancelled')).toBeTruthy();
+    expect(completionFacts.getByText('0', { selector: '[data-count="cancelled"]' })).toBeTruthy();
+    expect(completionFacts.getByText('Incomplete')).toBeTruthy();
+    expect(completionFacts.getByText('0', { selector: '[data-count="incomplete"]' })).toBeTruthy();
     // The completed counter shows "completed / planned" (VS-07 parallel progress).
     expect(screen.getByTestId('tp-completed-episodes').textContent).toBe('3');
     const episodeAttempts = within(screen.getByTestId('tp-episode-attempts'));

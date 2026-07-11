@@ -490,7 +490,7 @@ async def _missing_executor_snapshot(tmp_path, mode: str, monkeypatch) -> dict[s
             if event.payload.get("reason") == "missing_result"
         )
         functional = build_functional_report(
-            ReportInputRepository(database).get_for_run(run.id)
+            ReportInputRepository(database).get_for_completion(run.id)
         )
         return {
             "attempts": [dict(row) for row in attempts],
@@ -635,7 +635,7 @@ async def _observed_executor_snapshot(tmp_path, mode: str, monkeypatch) -> dict[
             for attempt in attempts
         ]
         functional = build_functional_report(
-            ReportInputRepository(database).get_for_run(run.id)
+            ReportInputRepository(database).get_for_completion(run.id)
         )
         terminal_events = sorted(
             (

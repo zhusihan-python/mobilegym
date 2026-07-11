@@ -1,8 +1,0 @@
-{
-  "task_id": "fake.SampleTask",
-  "task_name": "Choose materialize-sampled-1",
-  "trial_id": 2,
-  "agent": "fake-agent",
-  "max_steps": 15,
-  "episode_key": "fake.SampleTask|i0|s180474622|r1|t2"
-}

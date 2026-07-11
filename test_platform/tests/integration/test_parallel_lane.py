@@ -247,7 +247,7 @@ async def test_parallel_multi_episode_run_ingests_results_in_plan_order(tmp_path
         )
         detail = await executor.execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         keys = _episode_keys(database, run.id)
         assert len(keys) == 4
 
@@ -321,8 +321,8 @@ async def test_parallel_worker_crash_yields_worker_crash_error_code(tmp_path):
         )
         detail = await executor.execute_run(run.id)
 
-        # The run still completes (reconciliation fills missing/error episodes).
-        assert detail.state == "completed"
+        # Execution still reaches completion handoff (reconciliation fills errors).
+        assert detail.state == "evaluating"
         rows = database.connection.execute(
             "SELECT error_code, outcome FROM episode_attempts ea "
             "JOIN episodes e ON e.id = ea.episode_id WHERE e.run_id = ?",
@@ -392,7 +392,7 @@ async def test_parallel_missing_result_gets_worker_crash(tmp_path):
         )
         detail = await executor.execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         row = database.connection.execute(
             "SELECT ea.error_code, ea.outcome FROM episode_attempts ea "
             "JOIN episodes e ON e.id = ea.episode_id "

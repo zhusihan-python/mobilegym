@@ -102,7 +102,12 @@ export function reduceRunEvent(state: RunLiveState, event: RunEvent): RunLiveSta
       next.snapshot = { ...state.snapshot, state: 'cancelled' };
       break;
     case 'run.completed':
-      next.snapshot = { ...state.snapshot, state: 'completed' };
+      next.snapshot = {
+        ...state.snapshot,
+        state: 'completed',
+        gate_verdict: stringPayload(event, 'gate_verdict') ?? state.snapshot.gate_verdict,
+        outcome_counts: outcomeCountsPayload(event) ?? state.snapshot.outcome_counts,
+      };
       break;
     case 'run.failed':
       next.snapshot = { ...state.snapshot, state: 'failed' };
@@ -381,4 +386,20 @@ export function countEpisodes(snapshot: RunDetail): EpisodeCounts {
     else if (outcome === 'CANCELLED') counts.cancelled += 1;
   }
   return counts;
+}
+
+
+function outcomeCountsPayload(event: RunEvent): RunDetail['outcome_counts'] | null {
+  const value = event.payload.outcome_counts;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const counts = value as Record<string, unknown>;
+  const keys = ['pass', 'fail', 'error', 'cancelled', 'incomplete'] as const;
+  if (!keys.every((key) => typeof counts[key] === 'number')) return null;
+  return {
+    pass: Number(counts.pass),
+    fail: Number(counts.fail),
+    error: Number(counts.error),
+    cancelled: Number(counts.cancelled),
+    incomplete: Number(counts.incomplete),
+  };
 }

@@ -331,7 +331,7 @@ async def test_multiprocess_multi_episode_run_ingests_results_in_plan_order(tmp_
         )
         detail = await executor.execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         rows = database.connection.execute(
             "SELECT ea.state, ea.outcome, e.episode_key, e.trial_id "
             "FROM episode_attempts ea JOIN episodes e ON e.id = ea.episode_id "
@@ -619,8 +619,8 @@ async def test_multiprocess_shard_crash_yields_worker_crash(tmp_path):
         )
         detail = await executor.execute_run(run.id, events=sink)
 
-        # The run still completes (reconciliation fills missing episodes).
-        assert detail.state == "completed"
+        # Execution still reaches completion handoff (reconciliation fills missing episodes).
+        assert detail.state == "evaluating"
         rows = database.connection.execute(
             "SELECT e.episode_key, e.trial_id, ea.error_code, ea.outcome, ea.result_json "
             "FROM episode_attempts ea "
@@ -654,7 +654,7 @@ async def test_multiprocess_shard_crash_yields_worker_crash(tmp_path):
             assert terminal_events[0].payload["outcome"] == "ERROR"
             assert terminal_events[0].payload["error_code"] == "WORKER_CRASH"
 
-        report_input = ReportInputRepository(database).get_for_run(run.id)
+        report_input = ReportInputRepository(database).get_for_completion(run.id)
         functional = build_functional_report(report_input)
         assert functional["summary"]["successes"] == 1
         assert functional["summary"]["errors"] == 1

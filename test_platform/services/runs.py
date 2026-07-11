@@ -34,6 +34,7 @@ from test_platform.persistence.repositories import (
     TargetRepository,
     WorkflowRepository,
 )
+from test_platform.services.completion import RunCompletionPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ class RunSupervisor:
         broker: SSEBroker | None = None,
         clock: Callable[[], str] | None = None,
         token_factory: Callable[[], Any] | None = None,
+        completion_pipeline: Any | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
@@ -149,6 +151,11 @@ class RunSupervisor:
         self._executor = executor  # retained for backward-compat introspection
         self._broker = broker or SSEBroker()
         self._event_writer = EventWriter(database, self._broker)
+        self._owns_completion_pipeline = completion_pipeline is None
+        self._completion_pipeline = completion_pipeline or RunCompletionPipeline(
+            database,
+            event_writer=self._event_writer,
+        )
         self._tokens: dict[str, Any] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -162,6 +169,11 @@ class RunSupervisor:
     def bind_broker(self, broker: SSEBroker) -> None:
         self._broker = broker
         self._event_writer = EventWriter(self._database, broker)
+        if self._owns_completion_pipeline:
+            self._completion_pipeline = RunCompletionPipeline(
+                self._database,
+                event_writer=self._event_writer,
+            )
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -369,7 +381,21 @@ class RunSupervisor:
             # Emit the terminal run.* event exactly once (the executor does NOT emit
             # run.* terminal events — only the supervisor does, to avoid duplicates).
             if terminal_event == "run.completed":
-                self._emit_terminal(run_id, "run.completed")
+                try:
+                    completion = self._completion_pipeline.complete(run_id)
+                except Exception:  # noqa: BLE001 - completion failure is terminal
+                    logger.exception("Run %s failed during completion", run_id)
+                    await self._mark_run_failed(run_id)
+                else:
+                    self._emit_terminal(
+                        run_id,
+                        "run.completed",
+                        {
+                            "report_id": completion.report_id,
+                            "gate_verdict": completion.gate_verdict,
+                            "outcome_counts": completion.outcome_counts,
+                        },
+                    )
             # run.cancelled / run.failed are emitted inside _mark_run_cancelled /
             # _mark_run_failed respectively.
         finally:
@@ -565,11 +591,16 @@ class RunSupervisor:
 
         return episode_key_resolver
 
-    def _emit_terminal(self, run_id: str, event_type: str) -> None:
+    def _emit_terminal(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
         self._event_writer.emit(
             run_id,
             event_type,
-            {},
+            payload or {},
             entity_type="run",
             entity_id=run_id,
         )

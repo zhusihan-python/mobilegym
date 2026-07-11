@@ -659,6 +659,7 @@ class RunRepository:
                 "completed_episodes": int(counts["completed_episodes"]),
                 "completed_lane_episodes": int(counts["completed_lane_episodes"]),
             },
+            outcome_counts=_run_outcome_counts(self.database, str(row["id"])),
             lanes=[dict(lane) for lane in lane_rows],
             gate_verdict=str(gate_row["verdict"]) if gate_row is not None else None,
             created_at=row["created_at"],
@@ -680,6 +681,20 @@ class ReportInputRepository:
         self.database = database
 
     def get_for_run(self, run_id: str) -> ReportInput:
+        return self._get_for_run(run_id, attempt_states=("completed", "failed"))
+
+    def get_for_completion(self, run_id: str) -> ReportInput:
+        return self._get_for_run(
+            run_id,
+            attempt_states=("evaluating", "reporting", "completed"),
+        )
+
+    def _get_for_run(
+        self,
+        run_id: str,
+        *,
+        attempt_states: tuple[str, ...],
+    ) -> ReportInput:
         run = self.database.connection.execute(
             """
             SELECT id, project_id, workflow_version_id, run_plan_json,
@@ -692,17 +707,18 @@ class ReportInputRepository:
         if run is None:
             raise RunNotFound(run_id)
 
+        placeholders = ", ".join("?" for _state in attempt_states)
         run_attempt = self.database.connection.execute(
-            """
+            f"""
             SELECT id, run_id, attempt_no, reason, state, started_at, ended_at,
                    error_code, created_at
             FROM run_attempts
             WHERE run_id = ?
-              AND state IN ('completed', 'failed')
+              AND state IN ({placeholders})
             ORDER BY attempt_no DESC, id DESC
             LIMIT 1
             """,
-            (run_id,),
+            (run_id, *attempt_states),
         ).fetchone()
         if run_attempt is None:
             raise RunNotFound(run_id)
@@ -1012,8 +1028,51 @@ class ReportRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
+    def get(self, run_id: str) -> dict[str, Any]:
+        row = self.database.connection.execute(
+            """
+            SELECT report_json
+            FROM reports
+            WHERE run_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise RunDomainError(
+                "REPORT_NOT_FOUND",
+                "The run report was not found.",
+                status_code=404,
+                details=[{"run_id": run_id}],
+            )
+        return json.loads(row["report_json"])
+
     def get_or_create(self, run_id: str) -> dict[str, Any]:
         report_input = ReportInputRepository(self.database).get_for_run(run_id)
+        return self._get_or_create(report_input)
+
+    def get_or_repair(self, run_id: str) -> dict[str, Any]:
+        try:
+            return self.get(run_id)
+        except RunDomainError as exc:
+            if exc.code != "REPORT_NOT_FOUND":
+                raise
+        detail = RunRepository(self.database).get(run_id)
+        if detail.state not in {"completed", "failed"}:
+            raise RunDomainError(
+                "REPORT_NOT_READY",
+                "The run report is not available before terminal completion.",
+                status_code=409,
+                details=[{"run_id": run_id, "state": detail.state}],
+            )
+        return self.get_or_create(run_id)
+
+    def create_for_completion(self, run_id: str) -> dict[str, Any]:
+        report_input = ReportInputRepository(self.database).get_for_completion(run_id)
+        return self._get_or_create(report_input)
+
+    def _get_or_create(self, report_input: ReportInput) -> dict[str, Any]:
         existing = self._find_existing(report_input)
         if existing is not None:
             return existing
@@ -1024,12 +1083,13 @@ class ReportRepository:
             report_id=report_id,
             created_at=now,
             report_input=report_input,
-            thresholds=_frozen_gate_thresholds(self.database, run_id),
+            thresholds=_frozen_gate_thresholds(self.database, report_input.run_id),
         )
         gate = report["gate"]
         connection = self.database.connection
         with self.database._lock:  # noqa: SLF100
             connection.execute("BEGIN IMMEDIATE")
+            persistence_phase = "report"
             try:
                 connection.execute(
                     """
@@ -1049,6 +1109,7 @@ class ReportRepository:
                         now,
                     ),
                 )
+                persistence_phase = "gate"
                 connection.execute(
                     """
                     INSERT INTO quality_gate_results (
@@ -1070,15 +1131,21 @@ class ReportRepository:
                     ),
                 )
                 connection.commit()
-            except sqlite3.IntegrityError:
+            except sqlite3.IntegrityError as exc:
                 connection.rollback()
                 existing = self._find_existing(report_input)
                 if existing is not None:
                     return existing
-                raise
-            except Exception:
+                raise _report_persistence_error(
+                    persistence_phase,
+                    report_input.run_id,
+                ) from exc
+            except Exception as exc:
                 connection.rollback()
-                raise
+                raise _report_persistence_error(
+                    persistence_phase,
+                    report_input.run_id,
+                ) from exc
         return report
 
     def _find_existing(self, report_input: ReportInput) -> dict[str, Any] | None:
@@ -1836,6 +1903,65 @@ def _json_or_empty_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _run_outcome_counts(database: Database, run_id: str) -> dict[str, int]:
+    planned_row = database.connection.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM episodes WHERE run_id = ?) AS episodes,
+          (SELECT COUNT(*) FROM lanes WHERE run_id = ?) AS lanes
+        """,
+        (run_id, run_id),
+    ).fetchone()
+    planned = int(planned_row["episodes"]) * int(planned_row["lanes"])
+    run_attempt = database.connection.execute(
+        """
+        SELECT id
+        FROM run_attempts
+        WHERE run_id = ?
+        ORDER BY attempt_no DESC, created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    outcomes: list[str] = []
+    if run_attempt is not None:
+        rows = database.connection.execute(
+            """
+            SELECT ea.outcome
+            FROM episode_attempts AS ea
+            JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+            JOIN (
+              SELECT episode_id, lane_attempt_id, MAX(attempt_no) AS attempt_no
+              FROM episode_attempts
+              GROUP BY episode_id, lane_attempt_id
+            ) AS latest
+              ON latest.episode_id = ea.episode_id
+             AND latest.lane_attempt_id = ea.lane_attempt_id
+             AND latest.attempt_no = ea.attempt_no
+            WHERE la.run_attempt_id = ?
+            """,
+            (run_attempt["id"],),
+        ).fetchall()
+        outcomes = [str(item["outcome"] or "").upper() for item in rows]
+
+    counts = {
+        "pass": sum(outcome in {"PASS", "SUCCESS"} for outcome in outcomes),
+        "fail": sum(outcome in {"FAIL", "FAILED"} for outcome in outcomes),
+        "error": sum(outcome == "ERROR" for outcome in outcomes),
+        "cancelled": sum(outcome == "CANCELLED" for outcome in outcomes),
+        "incomplete": 0,
+    }
+    counts["incomplete"] = max(
+        0,
+        planned
+        - counts["pass"]
+        - counts["fail"]
+        - counts["error"]
+        - counts["cancelled"],
+    )
+    return counts
+
+
 def _json_or_empty_array(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -1874,6 +2000,22 @@ def _build_report_payload(
     }
     report["gate"] = evaluate_gates(report, thresholds)
     return report
+
+
+def _report_persistence_error(phase: str, run_id: str) -> RunDomainError:
+    if phase == "gate":
+        return RunDomainError(
+            "QUALITY_GATE_PERSISTENCE_FAILED",
+            "The quality-gate result could not be persisted.",
+            status_code=500,
+            details=[{"run_id": run_id, "phase": phase}],
+        )
+    return RunDomainError(
+        "REPORT_PERSISTENCE_FAILED",
+        "The run report could not be persisted.",
+        status_code=500,
+        details=[{"run_id": run_id, "phase": phase}],
+    )
 
 
 def _frozen_gate_thresholds(database: Database, run_id: str) -> dict[str, Any]:

@@ -147,7 +147,9 @@ export function RunsPage() {
           <thead>
             <tr>
               <th>Name</th>
-              <th>State</th>
+              <th>Execution</th>
+              <th>Verdict</th>
+              <th>Outcomes</th>
               <th>Created</th>
             </tr>
           </thead>
@@ -159,6 +161,14 @@ export function RunsPage() {
                   {run.imported ? <span className="tp-kicker"> imported</span> : null}
                 </td>
                 <td>{run.state}</td>
+                <td>{run.gate_verdict ?? 'pending'}</td>
+                <td>
+                  <span>{run.outcome_counts.pass} pass</span>{' '}
+                  <span>{run.outcome_counts.fail} fail</span>{' '}
+                  <span>{run.outcome_counts.error} error</span>{' '}
+                  <span>{run.outcome_counts.cancelled} cancelled</span>{' '}
+                  <span>{run.outcome_counts.incomplete} incomplete</span>
+                </td>
                 <td>{run.created_at}</td>
               </tr>
             ))}

@@ -110,7 +110,7 @@ async def test_paired_parallel_run_pairs_by_key_not_arrival_order(tmp_path):
             candidate_env=_PairedEnv(label="candidate"),
         ).execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         # 2 episodes × 2 lanes = 4 episode_attempts.
         attempts = database.connection.execute(
             "SELECT COUNT(*) AS n FROM episode_attempts"
@@ -188,8 +188,13 @@ async def test_paired_parallel_sibling_failure_cancels_other_lane(tmp_path):
             async def get_state(self, required_apps=None):
                 raise RuntimeError("lane crashed during setup")
 
+        class _DelayedSiblingEnv(_PairedEnv):
+            async def get_state(self, required_apps=None):
+                await asyncio.sleep(0.1)
+                return await super().get_state(required_apps=required_apps)
+
         crashing_env = _CrashingEnv(label="candidate")
-        baseline_env = _PairedEnv(label="baseline")
+        baseline_env = _DelayedSiblingEnv(label="baseline")
 
         executor = _make_executor(
             database,

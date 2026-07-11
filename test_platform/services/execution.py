@@ -730,6 +730,7 @@ class LaneOutcomeBatch:
     cancelled: bool
     repeat_n: int = 1
     terminal_state: str | None = None
+    run_terminal_state: str | None = None
     finalize_run: bool = True
 
 
@@ -815,7 +816,7 @@ class LaneOutcomeCommitter:
                 if batch.finalize_run:
                     self._ingestor._finalize_run_uncommitted(
                         run_id=batch.run_id,
-                        terminal_state=terminal_state,
+                        terminal_state=batch.run_terminal_state or terminal_state,
                     )
                 connection.commit()
             except Exception:
@@ -1290,6 +1291,7 @@ class SerialRunExecutor(_RunExecutorBase):
                 observed=_serial_observations(expected, results),
                 cancelled=cancelled,
                 repeat_n=config.repeat_n,
+                run_terminal_state="cancelled" if cancelled else "evaluating",
             ),
             events=events,
         )
@@ -1521,6 +1523,9 @@ class ParallelRunExecutor(_RunExecutorBase):
                 expected=expected,
                 observed=_object_observations(results),
                 cancelled=token.cancelled,
+                run_terminal_state=(
+                    "cancelled" if token.cancelled else "evaluating"
+                ),
             ),
             events=events,
         )
@@ -1707,6 +1712,9 @@ class MultiprocessRunExecutor(_RunExecutorBase):
                 expected=_expected_lane_episodes(work_items),
                 observed=_dict_observations(result_dicts),
                 cancelled=token.cancelled,
+                run_terminal_state=(
+                    "cancelled" if token.cancelled else "evaluating"
+                ),
             ),
             events=events,
         )
@@ -2191,8 +2199,8 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             episodes = _selected_episodes_for_attempt(self.database, run_id, plan)
 
             # (4) Run baseline lane, then candidate lane (serial).
-            baseline_agent = self.agent_factory(baseline_lane)
             try:
+                baseline_agent = self.agent_factory(baseline_lane)
                 baseline_outcomes = await self._run_lane(
                     run_id=run_id,
                     lane=baseline_lane,
@@ -2209,8 +2217,8 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 token.cancel()
 
             if lane_exception is None:
-                candidate_agent = self.agent_factory(candidate_lane)
                 try:
+                    candidate_agent = self.agent_factory(candidate_lane)
                     candidate_outcomes = await self._run_lane(
                         run_id=run_id,
                         lane=candidate_lane,
@@ -2388,7 +2396,7 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             else "completed"
         )
         run_terminal_state = (
-            "failed" if execution_failed else "cancelled" if cancelled else "completed"
+            "failed" if execution_failed else "cancelled" if cancelled else "evaluating"
         )
 
         baseline_ingested = self._commit_lane_outcomes(
@@ -2897,68 +2905,85 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
                 writer, run_id, candidate_lane, candidate_attempt, episode_key_resolver
             )
             episodes = _selected_episodes_for_attempt(self.database, run_id, plan)
-            baseline_agent = self.agent_factory(baseline_lane)
-            candidate_agent = self.agent_factory(candidate_lane)
+            try:
+                baseline_agent = self.agent_factory(baseline_lane)
+            except RunCancelled:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - persist lane facts first
+                sibling_exception = exc
+                failed_lane_key = baseline_lane.lane_key
+                token.cancel()
 
-            # (4) Run BOTH lanes concurrently (Contract C). Wrap each lane so a
-            # non-cancel exception cancels the token IMMEDIATELY (Contract 8),
-            # letting the sibling lane observe the cancel via Controller.run's
-            # per-step token check and drain cleanly. gather(return_exceptions=True)
-            # then awaits both to completion.
-            async def _lane_with_cancel(coro):
+            if sibling_exception is None:
                 try:
-                    return await coro
+                    candidate_agent = self.agent_factory(candidate_lane)
                 except RunCancelled:
                     raise
-                except BaseException as exc:  # noqa: BLE001
-                    # Sibling failure: cancel the token so the OTHER lane drains.
+                except BaseException as exc:  # noqa: BLE001 - persist lane facts first
+                    sibling_exception = exc
+                    failed_lane_key = candidate_lane.lane_key
                     token.cancel()
-                    raise
 
-            baseline_task_coro = _lane_with_cancel(
-                self._run_lane_parallel(
-                    run_id=run_id,
-                    lane=baseline_lane,
-                    lane_attempt=baseline_attempt,
-                    prepared_by_key=prepared_by_key,
-                    episodes=episodes,
-                    token=token,
-                    event_sink=baseline_sink,
-                    agent=baseline_agent,
-                )
-            )
-            candidate_task_coro = _lane_with_cancel(
-                self._run_lane_parallel(
-                    run_id=run_id,
-                    lane=candidate_lane,
-                    lane_attempt=candidate_attempt,
-                    prepared_by_key=prepared_by_key,
-                    episodes=episodes,
-                    token=token,
-                    event_sink=candidate_sink,
-                    agent=candidate_agent,
-                )
-            )
-            results = await asyncio.gather(
-                baseline_task_coro, candidate_task_coro, return_exceptions=True
-            )
-            # Contract 8: surface the sibling exception (after both lanes
-            # drained). The other lane was cancelled via the token and its env
-            # closed in its finally block.
-            for index, result in enumerate(results):
-                if isinstance(result, BaseException) and not isinstance(result, RunCancelled):
-                    sibling_exception = result
-                    failed_lane_key = (
-                        baseline_lane.lane_key
-                        if index == 0
-                        else candidate_lane.lane_key
+            if sibling_exception is None:
+                # (4) Run BOTH lanes concurrently (Contract C). Wrap each lane so a
+                # non-cancel exception cancels the token IMMEDIATELY (Contract 8),
+                # letting the sibling lane observe the cancel via Controller.run's
+                # per-step token check and drain cleanly. gather(return_exceptions=True)
+                # then awaits both to completion.
+                async def _lane_with_cancel(coro):
+                    try:
+                        return await coro
+                    except RunCancelled:
+                        raise
+                    except BaseException as exc:  # noqa: BLE001
+                        # Sibling failure: cancel the token so the OTHER lane drains.
+                        token.cancel()
+                        raise
+
+                baseline_task_coro = _lane_with_cancel(
+                    self._run_lane_parallel(
+                        run_id=run_id,
+                        lane=baseline_lane,
+                        lane_attempt=baseline_attempt,
+                        prepared_by_key=prepared_by_key,
+                        episodes=episodes,
+                        token=token,
+                        event_sink=baseline_sink,
+                        agent=baseline_agent,
                     )
-                    token.cancel()
-                    break
-            if not isinstance(results[0], BaseException):
-                baseline_outcomes = results[0]
-            if not isinstance(results[1], BaseException):
-                candidate_outcomes = results[1]
+                )
+                candidate_task_coro = _lane_with_cancel(
+                    self._run_lane_parallel(
+                        run_id=run_id,
+                        lane=candidate_lane,
+                        lane_attempt=candidate_attempt,
+                        prepared_by_key=prepared_by_key,
+                        episodes=episodes,
+                        token=token,
+                        event_sink=candidate_sink,
+                        agent=candidate_agent,
+                    )
+                )
+                results = await asyncio.gather(
+                    baseline_task_coro, candidate_task_coro, return_exceptions=True
+                )
+                # Contract 8: surface the sibling exception (after both lanes
+                # drained). The other lane was cancelled via the token and its env
+                # closed in its finally block.
+                for index, result in enumerate(results):
+                    if isinstance(result, BaseException) and not isinstance(result, RunCancelled):
+                        sibling_exception = result
+                        failed_lane_key = (
+                            baseline_lane.lane_key
+                            if index == 0
+                            else candidate_lane.lane_key
+                        )
+                        token.cancel()
+                        break
+                if not isinstance(results[0], BaseException):
+                    baseline_outcomes = results[0]
+                if not isinstance(results[1], BaseException):
+                    candidate_outcomes = results[1]
         except RunCancelled:
             token.cancel()
 

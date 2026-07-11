@@ -39,7 +39,14 @@ def evaluate_gates(report: dict[str, Any], thresholds: dict[str, Any]) -> dict[s
                 }
             )
 
-    verdict = "error" if has_missing else "failed" if reasons else "passed"
+    if not thresholds:
+        verdict = "not_configured"
+    elif has_missing:
+        verdict = "error"
+    elif reasons:
+        verdict = "failed"
+    else:
+        verdict = "passed"
     return {
         "schema_version": 1,
         "verdict": verdict,

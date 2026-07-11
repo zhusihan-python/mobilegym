@@ -286,7 +286,8 @@ python -m pytest -c test_platform/pytest.ini \
 
 Current evidence: [`evidence/2026-07-11-tp-h03-paired-lane-outcome-commit.md`](evidence/2026-07-11-tp-h03-paired-lane-outcome-commit.md)
 (`Complete`: paired serial and parallel adapters share the canonical committer;
-failure/cancellation parity, ordering guards, focused, and full regressions pass).
+lane execution and Agent-start failure/cancellation parity, ordering guards,
+focused, and full regressions pass).
 
 ### What to build
 
@@ -333,6 +334,11 @@ python -m pytest -c test_platform/pytest.ini \
 
 ## TP-H04: Complete runs with durable reports and verdicts
 
+Current evidence: [`evidence/2026-07-11-tp-h04-run-completion.md`](evidence/2026-07-11-tp-h04-run-completion.md).
+The completion pipeline, immediate report/gate availability, lifecycle failure
+semantics, event ownership, and run list/detail completion facts are implemented.
+TP-H04 is complete.
+
 ### What to build
 
 Introduce `RunCompletionPipeline` so successful execution proceeds through
@@ -342,22 +348,22 @@ and detail surfaces.
 
 ### Acceptance criteria
 
-- [ ] A run cannot enter `completed` before its report and gate result commit.
-- [ ] A newly completed run has a non-null gate verdict without a prior report
+- [x] A run cannot enter `completed` before its report and gate result commit.
+- [x] A newly completed run has a non-null gate verdict without a prior report
       GET request.
-- [ ] A report with no configured thresholds has verdict `not_configured`, not
+- [x] A report with no configured thresholds has verdict `not_configured`, not
       `passed`.
-- [ ] Completion is idempotent for the same immutable report input.
-- [ ] Report or gate failure produces a stable lifecycle error while preserving
+- [x] Completion is idempotent for the same immutable report input.
+- [x] Report or gate failure produces a stable lifecycle error while preserving
       episode attempts and raw artifacts.
-- [ ] Run list and Run Detail display lifecycle state and gate verdict as
+- [x] Run list and Run Detail display lifecycle state and gate verdict as
       separate labelled facts.
-- [ ] Terminal pass, fail, error, cancelled, and incomplete counts are visible
+- [x] Terminal pass, fail, error, cancelled, and incomplete counts are visible
       without opening the full report panel.
-- [ ] Existing report GET remains a read operation with an idempotent repair
+- [x] Existing report GET remains a read operation with an idempotent repair
       fallback for historical rows.
-- [ ] Run, report, gate, and failure events are persisted before live fanout.
-- [ ] `RunSupervisor` remains the only terminal run-event owner and emits exactly
+- [x] Run, report, gate, and failure events are persisted before live fanout.
+- [x] `RunSupervisor` remains the only terminal run-event owner and emits exactly
       one terminal run event after the completion result is durable.
 
 ### Test seam

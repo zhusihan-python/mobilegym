@@ -49,6 +49,7 @@ class RunSummary:
     state: str
     fingerprint: str
     progress: dict[str, int]
+    outcome_counts: dict[str, int]
     lanes: list[dict[str, Any]]
     gate_verdict: str | None
     created_at: str

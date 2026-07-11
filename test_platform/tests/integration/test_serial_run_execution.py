@@ -324,7 +324,7 @@ async def test_serial_run_execution_materializes_executes_ingests_and_writes_lan
             agent_factory=lambda lane: agent,
         ).execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         assert materialize_env.sample_count == 1
         assert execute_env.sample_count == 0
         assert agent.instructions == ["Choose materialize-sampled-1"]
@@ -385,7 +385,7 @@ async def test_serial_run_execution_runs_manual_sequence_in_order_and_continues_
             agent_factory=lambda lane: agent,
         ).execute_run(run.id)
 
-        assert detail.state == "completed"
+        assert detail.state == "evaluating"
         assert [item["task_base_id"] for item in detail.episode_identities] == [
             "fake.ZFailFirstTask",
             "fake.APassSecondTask",

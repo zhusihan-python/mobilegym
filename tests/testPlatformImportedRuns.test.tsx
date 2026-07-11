@@ -27,6 +27,7 @@ const importedRun: RunDetail = {
     completed_episodes: 1,
     completed_lane_episodes: 1,
   },
+  outcome_counts: { pass: 1, fail: 0, error: 0, cancelled: 0, incomplete: 0 },
   lanes: [
     {
       id: 'lane-imported',

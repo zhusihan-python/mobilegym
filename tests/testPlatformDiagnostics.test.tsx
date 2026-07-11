@@ -33,6 +33,7 @@ const run: RunDetail = {
     completed_episodes: 1,
     completed_lane_episodes: 1,
   },
+  outcome_counts: { pass: 1, fail: 0, error: 0, cancelled: 0, incomplete: 0 },
   lanes: [
     { id: 'lane-c', lane_key: 'candidate', role: 'candidate', target_id: 'target-c', target_revision_id: 'rev-c' },
   ],

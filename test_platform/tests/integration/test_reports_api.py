@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 
 from test_platform.api.app import create_app
 from test_platform.config import PlatformSettings
+from test_platform.execution.event_writer import EventWriter
+from test_platform.services.completion import RunCompletionPipeline
 from test_platform.tests.integration.test_report_input import _seed_reportable_paired_run
 
 
@@ -100,3 +102,54 @@ def test_promote_baseline_rejects_non_completed_run(tmp_path):
 
     assert promoted.status_code == 409
     assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INVALID_RUN_STATE"
+
+
+def test_completed_run_api_already_has_report_verdict_and_outcome_counts(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_reportable_paired_run(database)
+        database.connection.execute(
+            "UPDATE runs SET state = 'evaluating', ended_at = NULL WHERE id = ?",
+            (run_id,),
+        )
+        database.connection.execute(
+            "UPDATE run_attempts SET state = 'evaluating', ended_at = NULL "
+            "WHERE id = 'attempt3'"
+        )
+        database.connection.execute(
+            "UPDATE lane_attempts SET state = 'completed' "
+            "WHERE run_attempt_id = 'attempt3'"
+        )
+        database.connection.commit()
+
+        RunCompletionPipeline(
+            database,
+            event_writer=EventWriter(database),
+        ).complete(run_id)
+        report_count_before_get = database.connection.execute(
+            "SELECT COUNT(*) FROM reports WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0]
+
+        run_response = client.get(f"/api/platform/v1/runs/{run_id}")
+        report_response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+
+        assert run_response.status_code == 200
+        assert run_response.json()["state"] == "completed"
+        assert run_response.json()["gate_verdict"] == "not_configured"
+        assert run_response.json()["outcome_counts"] == {
+            "pass": 1,
+            "fail": 0,
+            "error": 1,
+            "cancelled": 0,
+            "incomplete": 2,
+        }
+        assert report_response.status_code == 200
+        assert report_response.json()["gate"]["verdict"] == "not_configured"
+        assert report_count_before_get == 1
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM reports WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0] == 1
