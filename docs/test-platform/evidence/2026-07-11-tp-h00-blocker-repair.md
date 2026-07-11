@@ -5,10 +5,11 @@
 | Field | Value |
 |---|---|
 | Scope | Repair blockers discovered by TP-H00 |
-| Status | Complete; both required Python suites pass in the repaired working tree |
+| Status | Complete; both required Python suites pass from declared dependencies in a clean environment |
 | Base revision | `c61fedda8dd4c7604ce10681f6cabd23aa9d675f` |
+| Repair commit | `972fba6` |
 | Branch | `main` |
-| Recorded at | `2026-07-11T16:51:46+08:00` |
+| Recorded at | `2026-07-11T17:09:00+08:00` |
 | Live model required | No |
 
 This record supplements, but does not rewrite, the failed baseline captured for
@@ -31,17 +32,18 @@ platform-independent.
 
 ## Verification
 
-The isolated Python 3.11 environment used for TP-H00 contained versions that
-satisfy the repaired dependency declaration. `pip check` passed, and an offline
-`pip install --no-index -r bench_env/requirements.txt` reported every
-requirement satisfied.
+A new isolated Python 3.11 environment was created after repair commit
+`972fba6`. Its dependencies were installed and resolved only from
+`test_platform/requirements-dev.txt` and `bench_env/requirements.txt`.
+Re-running `pip install` against both declarations reported every requirement
+satisfied, and `pip check` passed.
 
 | Command / seam | Result |
 |---|---|
 | Import `TargetRepository` under Python 3.11 | PASS |
 | `pytest ... bench_env/tests/common/test_registry.py -q` with locale encoding `cp936` and UTF-8 mode disabled | PASS: 15 tests in 1.66 s |
-| `pytest -c bench_env/tests/pytest.ini bench_env/tests/common -m "not live" -q` | PASS: 226 tests in 33.61 s |
-| `pytest -c test_platform/pytest.ini test_platform/tests -q` | PASS: 267 tests in 63.56 s; one existing Starlette/httpx2 deprecation warning |
+| `pytest -c bench_env/tests/pytest.ini bench_env/tests/common -m "not live" -q` | PASS: 226 tests in 33.73 s |
+| `pytest -c test_platform/pytest.ini test_platform/tests -q` | PASS: 267 tests in 65.56 s; one existing Starlette/httpx2 deprecation warning |
 
 The Test Platform suite used a short writable pytest `--basetemp` under the
 workspace. A first run from the much longer task-isolation path produced Windows
@@ -51,10 +53,8 @@ path-length limitation, not a product failure.
 
 ## Worktree hygiene
 
-The sandbox approval service rejected automatic cleanup of the generated
-`.tp-h00-tmp-1655/` pytest directory. It is untracked test output and must not be
-staged or committed. Delete it manually before committing the repair.
-
-The pre-existing user-owned `.agents/` directory was not modified. No secrets,
-credentials, private endpoints, or absolute local-machine paths are recorded in
-this evidence.
+All generated pytest temporary directories were removed after verification. The
+only remaining untracked content was the pre-existing user-owned `.agents/`
+directory, which was not modified or committed. No secrets, credentials,
+private endpoints, or absolute local-machine paths are recorded in this
+evidence.

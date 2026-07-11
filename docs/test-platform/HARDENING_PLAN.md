@@ -119,10 +119,10 @@ flowchart TD
 
 Current evidence: [`evidence/2026-07-11-tp-h00-regression-baseline.md`](evidence/2026-07-11-tp-h00-regression-baseline.md)
 and [`evidence/2026-07-11-tp-h00-blocker-repair.md`](evidence/2026-07-11-tp-h00-blocker-repair.md).
-The unmodified base revision failed its baseline; the subsequently authorized
-working-tree repair resolves the discovered blockers, with 267 Test Platform
-tests and 226 `bench_env` common tests passing. The repair must be committed and
-reproduced from declared dependencies before TP-H01 begins.
+The unmodified base revision failed its baseline. Repair commit `972fba6`
+resolves the discovered blockers and was reproduced in a new Python 3.11
+environment installed only from declared dependencies: 267 Test Platform tests
+and 226 `bench_env` common tests passed. TP-H00 is complete.
 
 ### What to build
 
