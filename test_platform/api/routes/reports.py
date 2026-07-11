@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from test_platform.api.dependencies import get_database
 from test_platform.api.errors import ApiError
 from test_platform.domain.reports.export import export_report_html, export_report_json
 from test_platform.domain.runs import RunDomainError
 from test_platform.persistence.repositories import BaselineRepository, ReportRepository
+from test_platform.services.baselines import BaselineEligibility
 
 
 router = APIRouter(prefix="/api/platform/v1")
 
 
 class PromoteBaselineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     lane_key: str | None = None
 
 
@@ -70,6 +73,21 @@ def promote_run_baseline(
         return BaselineRepository(get_database(request)).promote(
             run_id,
             lane_key=body.lane_key if body is not None else None,
+        )
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.get("/runs/{run_id}/baseline/eligibility")
+def get_baseline_eligibility(
+    request: Request,
+    run_id: str,
+    lane_key: str | None = None,
+) -> dict[str, object]:
+    try:
+        return BaselineEligibility(get_database(request)).evaluate(
+            run_id,
+            lane_key=lane_key,
         )
     except RunDomainError as exc:
         raise _run_error(exc) from exc

@@ -3,6 +3,7 @@ import type {
   ApiErrorDetail,
   ArtifactItem,
   Baseline,
+  BaselineEligibility,
   CancelRunResponse,
   CollectionResponse,
   Comparison,
@@ -213,6 +214,16 @@ export function promoteBaseline(runId: string, laneKey?: string): Promise<Baseli
     method: 'POST',
     body: JSON.stringify({ lane_key: laneKey ?? null }),
   });
+}
+
+export function getBaselineEligibility(
+  runId: string,
+  laneKey?: string,
+): Promise<BaselineEligibility> {
+  const query = laneKey ? `?lane_key=${encodeURIComponent(laneKey)}` : '';
+  return apiFetch<BaselineEligibility>(
+    `/runs/${encodeURIComponent(runId)}/baseline/eligibility${query}`,
+  );
 }
 
 export function cancelRun(runId: string, idempotencyKey?: string): Promise<CancelRunResponse> {

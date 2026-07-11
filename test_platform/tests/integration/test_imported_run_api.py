@@ -108,9 +108,17 @@ def test_imported_run_api_preserves_source_and_blocks_strict_baseline(tmp_path):
         assert report.status_code == 200
         assert report.json()["provenance"]["imported"]["source_name"] == "20260706_legacy"
 
+        eligibility = client.get(
+            f"/api/platform/v1/runs/{imported['id']}/baseline/eligibility"
+        )
         baseline = client.post(f"/api/platform/v1/runs/{imported['id']}/baseline")
+        assert eligibility.status_code == 200
+        assert eligibility.json()["eligible"] is False
+        assert "STRICT_PROVENANCE_INCOMPLETE" in [
+            reason["code"] for reason in eligibility.json()["reasons"]
+        ]
         assert baseline.status_code == 409
-        assert baseline.json()["error"]["code"] == "BASELINE_PROMOTION_IMPORTED_PROVENANCE_MISSING"
+        assert baseline.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
 
 
 def test_import_run_rejects_unknown_project(tmp_path):

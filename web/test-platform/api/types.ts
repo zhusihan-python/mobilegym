@@ -366,6 +366,26 @@ export type Baseline = {
   created_at: string;
 };
 
+export type BaselineEligibility = {
+  run_id: string;
+  run_attempt_id: string | null;
+  lane_key: string | null;
+  eligible: boolean;
+  counts: {
+    planned: number;
+    pass: number;
+    fail: number;
+    error: number;
+    cancelled: number;
+    incomplete: number;
+  };
+  reasons: Array<{
+    code: string;
+    message: string;
+    details: Record<string, unknown>;
+  }>;
+};
+
 export type CancelRunResponse = {
   run_id: string;
   cancel_requested: boolean;

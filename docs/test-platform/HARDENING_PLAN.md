@@ -399,6 +399,10 @@ npx vitest run --config vitest.platform.config.ts \
 
 ## TP-H05: Enforce strict selected-lane baseline eligibility
 
+Current evidence: [`evidence/2026-07-11-tp-h05-strict-baseline-eligibility.md`](evidence/2026-07-11-tp-h05-strict-baseline-eligibility.md).
+The selected-lane eligibility read model, strict promotion guard, structured
+reasons, and eligibility-aware promotion UI are implemented. TP-H05 is complete.
+
 ### What to build
 
 Evaluate strict baseline eligibility for the lane selected for promotion. Return
@@ -408,20 +412,20 @@ success.
 
 ### Acceptance criteria
 
-- [ ] Eligibility requires a completed run attempt, durable report, complete
+- [x] Eligibility requires a completed run attempt, durable report, complete
       strict provenance, complete selected-lane episode grid, and successful
       outcomes for every selected-lane episode.
-- [ ] A single-lane run containing FAIL, ERROR, CANCELLED, or incomplete work is
+- [x] A single-lane run containing FAIL, ERROR, CANCELLED, or incomplete work is
       rejected with structured reasons.
-- [ ] Every planned episode in the selected lane has terminal outcome `PASS`;
+- [x] Every planned episode in the selected lane has terminal outcome `PASS`;
       no configured quality threshold may relax this strict-baseline rule.
-- [ ] A successful baseline lane may be promoted even when the candidate lane
+- [x] A successful baseline lane may be promoted even when the candidate lane
       causes the paired-run gate to fail.
-- [ ] An unsuccessful selected lane cannot be promoted even when the overall
+- [x] An unsuccessful selected lane cannot be promoted even when the overall
       gate configuration is empty or passes.
-- [ ] The UI disables promotion or displays the exact rejection reasons.
-- [ ] Imported runs with missing strict provenance remain ineligible.
-- [ ] There is no force or override flag for strict baseline promotion.
+- [x] The UI disables promotion or displays the exact rejection reasons.
+- [x] Imported runs with missing strict provenance remain ineligible.
+- [x] There is no force or override flag for strict baseline promotion.
 
 ### Test seam
 

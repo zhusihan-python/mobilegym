@@ -5,6 +5,7 @@ import {
   ApiError,
   cancelRun,
   getComparison,
+  getBaselineEligibility,
   getDiagnostics,
   getReport,
   getReportExport,
@@ -15,7 +16,14 @@ import {
   retryRun,
   streamRunEvents,
 } from '../../api/client';
-import type { ArtifactItem, Comparison, RunDetail, RunDiagnostics, RunReport } from '../../api/types';
+import type {
+  ArtifactItem,
+  BaselineEligibility,
+  Comparison,
+  RunDetail,
+  RunDiagnostics,
+  RunReport,
+} from '../../api/types';
 import { RunObservatory } from './RunObservatory';
 import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
@@ -42,6 +50,11 @@ type DiagnosticsState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'loaded'; diagnostics: RunDiagnostics; artifacts: ArtifactItem[] }
+  | { status: 'error'; message: string };
+
+type BaselineEligibilityState =
+  | { status: 'loading' }
+  | { status: 'loaded'; value: BaselineEligibility }
   | { status: 'error'; message: string };
 
 const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
@@ -670,6 +683,35 @@ export function RunDetailPage() {
 function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
   const [regressionsOnly, setRegressionsOnly] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const defaultLaneKey =
+    run.lanes.find((lane) => lane.role === 'baseline')?.lane_key ??
+    run.lanes[0]?.lane_key ??
+    '';
+  const [selectedLaneKey, setSelectedLaneKey] = useState(defaultLaneKey);
+  const [eligibility, setEligibility] = useState<BaselineEligibilityState>({
+    status: 'loading',
+  });
+
+  useEffect(() => {
+    if (report.status !== 'loaded' || !selectedLaneKey) return;
+    let active = true;
+    setEligibility({ status: 'loading' });
+    getBaselineEligibility(run.id, selectedLaneKey)
+      .then((value) => {
+        if (active) setEligibility({ status: 'loaded', value });
+      })
+      .catch((error) => {
+        if (active) {
+          setEligibility({
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Eligibility check failed.',
+          });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [report.status, run.id, selectedLaneKey]);
 
   if (!REPORTABLE_RUN_STATES.has(run.state)) {
     return (
@@ -726,7 +768,7 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
   };
 
   const promote = () => {
-    promoteBaseline(run.id)
+    promoteBaseline(run.id, selectedLaneKey)
       .then((baseline) => {
         setMessage(`Promoted baseline for ${baseline.lane_key}.`);
       })
@@ -754,10 +796,41 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
           <button type="button" onClick={() => exportReport('html')}>
             Printable HTML
           </button>
-          <button type="button" onClick={promote}>
+          <label htmlFor="tp-baseline-lane">Baseline lane</label>
+          <select
+            id="tp-baseline-lane"
+            value={selectedLaneKey}
+            onChange={(event) => setSelectedLaneKey(event.target.value)}
+          >
+            {run.lanes.map((lane) => (
+              <option key={lane.id} value={lane.lane_key}>
+                {lane.lane_key}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={promote}
+            disabled={eligibility.status !== 'loaded' || !eligibility.value.eligible}
+          >
             Promote baseline
           </button>
         </div>
+      </div>
+
+      <div data-testid="tp-baseline-eligibility">
+        {eligibility.status === 'loading' ? <p>Checking strict baseline eligibility...</p> : null}
+        {eligibility.status === 'error' ? <p>{eligibility.message}</p> : null}
+        {eligibility.status === 'loaded' && eligibility.value.eligible ? (
+          <p>Eligible for strict baseline promotion.</p>
+        ) : null}
+        {eligibility.status === 'loaded' && !eligibility.value.eligible ? (
+          <ul>
+            {eligibility.value.reasons.map((reason) => (
+              <li key={reason.code}>{reason.message}</li>
+            ))}
+          </ul>
+        ) : null}
       </div>
 
       <dl className="tp-run-facts">

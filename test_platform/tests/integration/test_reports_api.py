@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from test_platform.api.app import create_app
 from test_platform.config import PlatformSettings
 from test_platform.execution.event_writer import EventWriter
 from test_platform.services.completion import RunCompletionPipeline
+from test_platform.services.execution import SerialRunExecutor
 from test_platform.tests.integration.test_report_input import _seed_reportable_paired_run
+from test_platform.tests.integration.test_serial_run_execution import (
+    _ExecutableFakeEnv,
+    _ExecutableTaskFactory,
+    _FakeAgent,
+)
+from test_platform.tests.integration.test_single_lane_materialization import _create_run
 
 
 def _settings(tmp_path):
@@ -82,14 +90,183 @@ def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_export.text
 
         promoted = client.post(f"/api/platform/v1/runs/{run_id}/baseline")
+        assert promoted.status_code == 409
+        assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
+        assert [
+            reason["code"]
+            for reason in promoted.json()["error"]["details"][0]["reasons"]
+        ] == ["SELECTED_LANE_INCOMPLETE", "SELECTED_LANE_OUTCOME_NOT_PASS"]
+
+
+def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _make_completed_reportable_run(client)
+        database.connection.execute(
+            "UPDATE episode_attempts SET outcome = 'PASS' WHERE id = 'ea_base_ep0'"
+        )
+        database.connection.executemany(
+            """
+            INSERT INTO episode_attempts (
+              id, episode_id, lane_attempt_id, attempt_no, state, outcome,
+              error_code, result_json, artifact_root, started_at, ended_at, created_at
+            )
+            VALUES (?, 'ep1', ?, 1, 'completed', 'PASS', NULL, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "ea_base_ep1",
+                    "attempt3_baseline",
+                    json.dumps({"is_success": True}),
+                    "artifacts/base1",
+                    "2026-07-11T00:00:00.000Z",
+                    "2026-07-11T00:00:01.000Z",
+                    "2026-07-11T00:00:01.000Z",
+                ),
+                (
+                    "ea_cand_ep1",
+                    "attempt3_candidate",
+                    json.dumps({"is_success": True}),
+                    "artifacts/cand1",
+                    "2026-07-11T00:00:00.000Z",
+                    "2026-07-11T00:00:01.000Z",
+                    "2026-07-11T00:00:01.000Z",
+                ),
+            ],
+        )
+        database.connection.commit()
+
+        report = client.get(f"/api/platform/v1/runs/{run_id}/report")
+        assert report.status_code == 200
+        assert report.json()["gate"]["verdict"] == "failed"
+
+        baseline_eligibility = client.get(
+            f"/api/platform/v1/runs/{run_id}/baseline/eligibility?lane_key=baseline"
+        )
+        candidate_eligibility = client.get(
+            f"/api/platform/v1/runs/{run_id}/baseline/eligibility?lane_key=candidate"
+        )
+
+        assert baseline_eligibility.status_code == 200
+        assert baseline_eligibility.json()["eligible"] is True
+        assert baseline_eligibility.json()["reasons"] == []
+        assert candidate_eligibility.status_code == 200
+        assert candidate_eligibility.json()["eligible"] is False
+        assert [reason["code"] for reason in candidate_eligibility.json()["reasons"]] == [
+            "SELECTED_LANE_OUTCOME_NOT_PASS"
+        ]
+        assert candidate_eligibility.json()["counts"] == {
+            "planned": 2,
+            "pass": 1,
+            "fail": 0,
+            "error": 1,
+            "cancelled": 0,
+            "incomplete": 0,
+        }
+
+        promoted = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"lane_key": "baseline"},
+        )
+        rejected = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"lane_key": "candidate"},
+        )
+
         assert promoted.status_code == 201
-        baseline = promoted.json()
-        assert baseline["run_id"] == run_id
-        assert baseline["workflow_version_id"] == "wv1"
-        assert baseline["run_plan_hash"] == "sha256:plan"
-        assert baseline["task_source_digest"] == "<script>alert(1)</script>"
-        assert baseline["lane_key"] == "candidate"
-        assert baseline["target_revision_id"] == "trev_cand"
+        assert promoted.json()["lane_key"] == "baseline"
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
+        assert rejected.json()["error"]["details"][0]["reasons"] == [
+            {
+                "code": "SELECTED_LANE_OUTCOME_NOT_PASS",
+                "message": "Every selected-lane episode must have outcome PASS.",
+                "details": {"error": 1},
+            }
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "reason_code", "count_key", "gate_verdict"),
+    [
+        ("FAIL", "SELECTED_LANE_OUTCOME_NOT_PASS", "fail", "not_configured"),
+        ("ERROR", "SELECTED_LANE_OUTCOME_NOT_PASS", "error", "passed"),
+        ("CANCELLED", "SELECTED_LANE_OUTCOME_NOT_PASS", "cancelled", "passed"),
+        (None, "SELECTED_LANE_INCOMPLETE", "incomplete", "passed"),
+    ],
+)
+async def test_single_lane_non_pass_work_is_never_strict_baseline_eligible(
+    tmp_path,
+    outcome,
+    reason_code,
+    count_key,
+    gate_verdict,
+):
+    settings = _settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run = _create_run(database, settings, repeat_n=1)
+        envs = iter([
+            _ExecutableFakeEnv(label="materialize"),
+            _ExecutableFakeEnv(label="execute"),
+        ])
+        await SerialRunExecutor(
+            database,
+            settings,
+            task_factory=_ExecutableTaskFactory(),
+            env_factory=lambda lane: next(envs),
+            agent_factory=lambda lane: _FakeAgent(),
+        ).execute_run(run.id)
+        if outcome is None:
+            database.connection.execute(
+                "DELETE FROM episode_attempts WHERE episode_id IN "
+                "(SELECT id FROM episodes WHERE run_id = ?)",
+                (run.id,),
+            )
+        else:
+            database.connection.execute(
+                "UPDATE episode_attempts SET outcome = ?, state = ? WHERE episode_id IN "
+                "(SELECT id FROM episodes WHERE run_id = ?)",
+                (outcome, "cancelled" if outcome == "CANCELLED" else "completed", run.id),
+            )
+        plan_row = database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run.id,),
+        ).fetchone()
+        run_plan = json.loads(plan_row["run_plan_json"])
+        if gate_verdict == "passed":
+            run_plan["gates"] = {"min_success_rate": 0}
+        database.connection.execute(
+            "UPDATE runs SET run_plan_json = ? WHERE id = ?",
+            (json.dumps(run_plan, sort_keys=True), run.id),
+        )
+        database.connection.commit()
+        RunCompletionPipeline(
+            database,
+            event_writer=EventWriter(database),
+        ).complete(run.id)
+
+        eligibility = client.get(
+            f"/api/platform/v1/runs/{run.id}/baseline/eligibility?lane_key=candidate"
+        )
+        report = client.get(f"/api/platform/v1/runs/{run.id}/report")
+        promoted = client.post(
+            f"/api/platform/v1/runs/{run.id}/baseline",
+            json={"lane_key": "candidate"},
+        )
+
+        assert eligibility.status_code == 200
+        assert report.json()["gate"]["verdict"] == gate_verdict
+        assert eligibility.json()["eligible"] is False
+        assert eligibility.json()["counts"][count_key] == 1
+        assert reason_code in [reason["code"] for reason in eligibility.json()["reasons"]]
+        assert promoted.status_code == 409
+        assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
 
 
 def test_promote_baseline_rejects_non_completed_run(tmp_path):
@@ -101,7 +278,25 @@ def test_promote_baseline_rejects_non_completed_run(tmp_path):
         promoted = client.post(f"/api/platform/v1/runs/{run_id}/baseline")
 
     assert promoted.status_code == 409
-    assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INVALID_RUN_STATE"
+    assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
+    assert promoted.json()["error"]["details"][0]["reasons"][0]["code"] == (
+        "REPORT_NOT_PERSISTED"
+    )
+
+
+def test_baseline_promotion_has_no_force_override(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        client.get(f"/api/platform/v1/runs/{run_id}/report")
+
+        response = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"lane_key": "candidate", "force": True},
+        )
+
+    assert response.status_code == 422
 
 
 def test_completed_run_api_already_has_report_verdict_and_outcome_counts(tmp_path):

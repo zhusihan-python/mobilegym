@@ -1636,53 +1636,24 @@ class BaselineRepository:
         self.database = database
 
     def promote(self, run_id: str, *, lane_key: str | None = None) -> dict[str, Any]:
-        report = ReportRepository(self.database).get_or_create(run_id)
-        run_row = self.database.connection.execute(
-            "SELECT state FROM runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        attempt_row = self.database.connection.execute(
-            "SELECT state FROM run_attempts WHERE id = ?",
-            (report["run_attempt_id"],),
-        ).fetchone()
-        if (
-            run_row is None
-            or attempt_row is None
-            or run_row["state"] != "completed"
-            or attempt_row["state"] != "completed"
-        ):
+        from test_platform.services.baselines import BaselineEligibility
+
+        eligibility = BaselineEligibility(self.database).evaluate(
+            run_id,
+            lane_key=lane_key,
+        )
+        if not eligibility["eligible"]:
             raise RunDomainError(
-                "BASELINE_PROMOTION_INVALID_RUN_STATE",
-                "Only completed runs can be promoted as baselines.",
+                "BASELINE_PROMOTION_INELIGIBLE",
+                "The selected lane is not eligible for strict baseline promotion.",
                 status_code=409,
-                details=[
-                    {
-                        "run_id": run_id,
-                        "run_state": run_row["state"] if run_row is not None else None,
-                        "run_attempt_state": (
-                            attempt_row["state"] if attempt_row is not None else None
-                        ),
-                    }
-                ],
+                details=[eligibility],
             )
 
+        report = ReportRepository(self.database).get(run_id)
         provenance = report["provenance"]
-        imported = provenance.get("imported")
-        if isinstance(imported, dict) and imported.get("provenance_missing"):
-            raise RunDomainError(
-                "BASELINE_PROMOTION_IMPORTED_PROVENANCE_MISSING",
-                "Imported runs with missing provenance cannot be promoted as strict baselines.",
-                status_code=409,
-                details=[
-                    {
-                        "run_id": run_id,
-                        "provenance_missing": imported.get("provenance_missing"),
-                        "source_path": imported.get("source_path"),
-                    }
-                ],
-            )
         target_revision_ids = provenance.get("target_revision_ids") or {}
-        selected_lane_key = lane_key or _default_baseline_lane_key(target_revision_ids)
+        selected_lane_key = eligibility["lane_key"]
         target_revision_id = target_revision_ids.get(selected_lane_key)
         if target_revision_id is None:
             raise RunDomainError(

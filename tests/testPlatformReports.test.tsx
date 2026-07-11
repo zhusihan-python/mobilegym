@@ -151,8 +151,8 @@ const baseline: Baseline = {
   run_plan_hash: 'sha256:run-plan',
   task_source_digest: 'sha256:tasks',
   target_revision_ids: { baseline: 'rev-b', candidate: 'rev-c' },
-  lane_key: 'candidate',
-  target_revision_id: 'rev-c',
+  lane_key: 'baseline',
+  target_revision_id: 'rev-b',
   created_at: '2026-07-06T00:00:12.000Z',
 };
 
@@ -414,6 +414,25 @@ describe('Test Platform reports UI', () => {
           url.searchParams.get('format') === 'html' ? 'text/html' : 'application/json',
         );
       }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/baseline/eligibility`) {
+        const laneKey = url.searchParams.get('lane_key');
+        return jsonResponse({
+          run_id: run.id,
+          run_attempt_id: report.run_attempt_id,
+          lane_key: laneKey,
+          eligible: laneKey === 'baseline',
+          counts: laneKey === 'baseline'
+            ? { planned: 2, pass: 2, fail: 0, error: 0, cancelled: 0, incomplete: 0 }
+            : { planned: 2, pass: 1, fail: 0, error: 1, cancelled: 0, incomplete: 0 },
+          reasons: laneKey === 'baseline'
+            ? []
+            : [{
+                code: 'SELECTED_LANE_OUTCOME_NOT_PASS',
+                message: 'Every selected-lane episode must have outcome PASS.',
+                details: { error: 1 },
+              }],
+        });
+      }
       if (url.pathname === `/api/platform/v1/runs/${run.id}/baseline` && method === 'POST') {
         return jsonResponse(baseline, 201);
       }
@@ -435,6 +454,23 @@ describe('Test Platform reports UI', () => {
     expect(screen.getByTestId('tp-report-pair-pair-regression')).toBeTruthy();
     expect(screen.queryByTestId('tp-report-pair-pair-stable')).toBeNull();
 
+    expect(await screen.findByText('Eligible for strict baseline promotion.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Baseline lane'), {
+      target: { value: 'candidate' },
+    });
+    expect(await screen.findByText('Every selected-lane episode must have outcome PASS.')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Promote baseline' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText('Baseline lane'), {
+      target: { value: 'baseline' },
+    });
+    await waitFor(() => {
+      expect(
+        (screen.getByRole('button', { name: 'Promote baseline' }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+
     fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
     fireEvent.click(screen.getByRole('button', { name: 'Promote baseline' }));
 
@@ -445,10 +481,13 @@ describe('Test Platform reports UI', () => {
       );
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining(`/runs/${run.id}/baseline`),
-        expect.objectContaining({ method: 'POST' }),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ lane_key: 'baseline' }),
+        }),
       );
     });
-    expect(await screen.findByText('Promoted baseline for candidate.')).toBeTruthy();
+    expect(await screen.findByText('Promoted baseline for baseline.')).toBeTruthy();
   });
 
   it('groups manual sequence report items under the ordered sequence', async () => {
