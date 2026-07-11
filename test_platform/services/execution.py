@@ -716,6 +716,8 @@ class LaneExpectedEpisode:
 class LaneObservedResult:
     episode_key: str | None
     result: Any
+    error_code_override: str | None = None
+    terminal_event: ExecutionEvent | None = None
 
 
 @dataclass(frozen=True)
@@ -727,6 +729,8 @@ class LaneOutcomeBatch:
     observed: tuple[LaneObservedResult, ...]
     cancelled: bool
     repeat_n: int = 1
+    terminal_state: str | None = None
+    finalize_run: bool = True
 
 
 class LaneOutcomeCommitter:
@@ -744,7 +748,7 @@ class LaneOutcomeCommitter:
     ) -> tuple[dict[str, Any], ...]:
         observed_by_key = self._validate_and_index(batch)
         committed: list[dict[str, Any]] = []
-        missing_events: list[tuple[LaneExpectedEpisode, str, str, str]] = []
+        committed_events: list[ExecutionEvent] = []
         connection = self.database.connection
 
         with self.database._lock:  # noqa: SLF100 - one atomic lane outcome commit
@@ -768,8 +772,11 @@ class LaneOutcomeCommitter:
                                 result=result,
                                 artifact_root=artifact_root,
                                 cancelled=_result_is_cancelled(result),
+                                error_code_override=observation.error_code_override,
                             )
                         )
+                        if observation.terminal_event is not None:
+                            committed_events.append(observation.terminal_event)
                         continue
 
                     synthetic, outcome, error_code, event_type = (
@@ -789,32 +796,33 @@ class LaneOutcomeCommitter:
                             error_code_override=error_code,
                         )
                     )
-                    missing_events.append(
-                        (expected, outcome, error_code, event_type)
+                    committed_events.append(
+                        self._missing_event(
+                            expected=expected,
+                            outcome=outcome,
+                            error_code=error_code,
+                            event_type=event_type,
+                        )
                     )
 
-                terminal_state = "cancelled" if batch.cancelled else "completed"
+                terminal_state = batch.terminal_state or (
+                    "cancelled" if batch.cancelled else "completed"
+                )
                 self._ingestor._finalize_lane_only_uncommitted(
                     lane_attempt_id=batch.lane_attempt_id,
                     terminal_state=terminal_state,
                 )
-                self._ingestor._finalize_run_uncommitted(
-                    run_id=batch.run_id,
-                    terminal_state=terminal_state,
-                )
+                if batch.finalize_run:
+                    self._ingestor._finalize_run_uncommitted(
+                        run_id=batch.run_id,
+                        terminal_state=terminal_state,
+                    )
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
 
-        for expected, outcome, error_code, event_type in missing_events:
-            self._emit_missing(
-                events,
-                expected=expected,
-                outcome=outcome,
-                error_code=error_code,
-                event_type=event_type,
-            )
+        self._emit_committed(events, committed_events)
         return tuple(committed)
 
     @staticmethod
@@ -902,35 +910,40 @@ class LaneOutcomeCommitter:
         )
 
     @staticmethod
-    def _emit_missing(
-        events: EventSink | None,
+    def _missing_event(
         *,
         expected: LaneExpectedEpisode,
         outcome: str,
         error_code: str,
         event_type: str,
+    ) -> ExecutionEvent:
+        return ExecutionEvent(
+            type=event_type,
+            timestamp="",
+            phase="execute",
+            task_id=expected.task_id,
+            trial_id=expected.trial_id,
+            episode_key=expected.episode_key,
+            payload={
+                "outcome": outcome,
+                "error_code": error_code,
+                "steps": 0,
+                "reason": "missing_result",
+            },
+        )
+
+    @staticmethod
+    def _emit_committed(
+        events: EventSink | None,
+        committed_events: list[ExecutionEvent],
     ) -> None:
         if events is None:
             return
-        try:
-            events.emit(
-                ExecutionEvent(
-                    type=event_type,
-                    timestamp="",
-                    phase="execute",
-                    task_id=expected.task_id,
-                    trial_id=expected.trial_id,
-                    episode_key=expected.episode_key,
-                    payload={
-                        "outcome": outcome,
-                        "error_code": error_code,
-                        "steps": 0,
-                        "reason": "missing_result",
-                    },
-                )
-            )
-        except Exception:  # noqa: BLE001 - event failure must not break ingestion
-            pass
+        for event in committed_events:
+            try:
+                events.emit(event)
+            except Exception:  # noqa: BLE001 - event failure must not break ingestion
+                pass
 
 
 def _expected_lane_episodes(
@@ -2139,11 +2152,12 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         candidate_outcomes: list[dict[str, Any]] = []
         # Pre-set defaults so the finalize path works even if cancellation
         # fires during materialization (before lanes/sinks/ingestor are built).
-        ingestor = ResultIngestor(self.database)
         baseline_attempt: dict[str, str] | None = None
         candidate_attempt: dict[str, str] | None = None
         baseline_sink: Any = NullEventSink()
         candidate_sink: Any = NullEventSink()
+        lane_exception: BaseException | None = None
+        failed_lane_key: str | None = None
         try:
             prepared = await PairedMaterializer(
                 self.database,
@@ -2174,47 +2188,57 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 writer, run_id, candidate_lane, candidate_attempt, episode_key_resolver
             )
 
-            ingestor = ResultIngestor(self.database)
-            run_attempt_id = self._run_attempt_id(run_id)
             episodes = _selected_episodes_for_attempt(self.database, run_id, plan)
 
             # (4) Run baseline lane, then candidate lane (serial).
             baseline_agent = self.agent_factory(baseline_lane)
-            baseline_outcomes = await self._run_lane(
-                run_id=run_id,
-                lane=baseline_lane,
-                lane_attempt=baseline_attempt,
-                prepared_by_key=prepared_by_key,
-                episodes=episodes,
-                token=token,
-                event_sink=baseline_sink,
-                agent=baseline_agent,
-            )
-            candidate_agent = self.agent_factory(candidate_lane)
-            candidate_outcomes = await self._run_lane(
-                run_id=run_id,
-                lane=candidate_lane,
-                lane_attempt=candidate_attempt,
-                prepared_by_key=prepared_by_key,
-                episodes=episodes,
-                token=token,
-                event_sink=candidate_sink,
-                agent=candidate_agent,
-            )
+            try:
+                baseline_outcomes = await self._run_lane(
+                    run_id=run_id,
+                    lane=baseline_lane,
+                    lane_attempt=baseline_attempt,
+                    prepared_by_key=prepared_by_key,
+                    episodes=episodes,
+                    token=token,
+                    event_sink=baseline_sink,
+                    agent=baseline_agent,
+                )
+            except BaseException as exc:  # noqa: BLE001 - persist lane facts first
+                lane_exception = exc
+                failed_lane_key = baseline_lane.lane_key
+                token.cancel()
+
+            if lane_exception is None:
+                candidate_agent = self.agent_factory(candidate_lane)
+                try:
+                    candidate_outcomes = await self._run_lane(
+                        run_id=run_id,
+                        lane=candidate_lane,
+                        lane_attempt=candidate_attempt,
+                        prepared_by_key=prepared_by_key,
+                        episodes=episodes,
+                        token=token,
+                        event_sink=candidate_sink,
+                        agent=candidate_agent,
+                    )
+                except BaseException as exc:  # noqa: BLE001 - persist lane facts first
+                    lane_exception = exc
+                    failed_lane_key = candidate_lane.lane_key
+                    token.cancel()
         except RunCancelled:
             token.cancel()
             cancelled = True
             # P1 fix: PRESERVE already-collected outcomes — do NOT clear them.
             # Earlier completed episodes are valid results; only the episodes
             # that never ran (or were mid-cancel) are missing. Those are
-            # synthesized as CANCELLED below in _ingest_lane_outcomes via the
+            # synthesized as CANCELLED below by LaneOutcomeCommitter via the
             # cancelled=True path + missing-episode reconciliation.
 
         # P1 fix: _run_lane now catches RunCancelled internally and returns
         # partial outcomes (does NOT propagate). Detect cancellation via
         # token.cancelled — covers cancel during materialize, between episodes,
         # or mid-step (Controller.run returns CANCELLED result, token is set).
-        if token.cancelled:
+        if token.cancelled and lane_exception is None:
             cancelled = True
 
         # Also detect cancellation from result stop_reason (Controller.run
@@ -2239,77 +2263,20 @@ class PairedSerialRunExecutor(_RunExecutorBase):
                 if cancelled:
                     break
 
-        # If cancellation fired during materialization, the lane attempts were
-        # never resolved from the DB. Resolve them now so finalize can run.
-        if baseline_attempt is None or candidate_attempt is None:
-            lane_attempts = self._lane_attempts_by_key(run_id)
-            plan_fallback = self._load_plan(run_id)
-            bl, cl = self._paired_lanes(run_id)
-            baseline_attempt = lane_attempts[bl.lane_key]
-            candidate_attempt = lane_attempts[cl.lane_key]
-
-        # Resolve episodes for missing-episode reconciliation (P1.2). If cancel
-        # fired during materialize, episodes wasn't set — load from plan.
-        if not locals().get("episodes"):
-            plan_fallback = self._load_plan(run_id)
-            episodes = _selected_episodes_for_attempt(self.database, run_id, plan_fallback)
-
-        # (5) Ingest episode_attempts per lane. PAIRING_VIOLATION lanes get an
-        # ERROR episode_attempt + episode.error event (Contract 8).
-        baseline_ingested = self._ingest_lane_outcomes(
-            ingestor=ingestor,
+        self._commit_paired_terminal_facts(
             run_id=run_id,
-            lane_attempt=baseline_attempt,
-            outcomes=baseline_outcomes,
-            event_sink=baseline_sink,
+            writer=writer,
+            baseline_outcomes=baseline_outcomes,
+            candidate_outcomes=candidate_outcomes,
+            episodes=episodes if "episodes" in locals() else [],
             cancelled=cancelled,
-            expected_episodes=episodes,
-        )
-        candidate_ingested = self._ingest_lane_outcomes(
-            ingestor=ingestor,
-            run_id=run_id,
-            lane_attempt=candidate_attempt,
-            outcomes=candidate_outcomes,
-            event_sink=candidate_sink,
-            cancelled=cancelled,
-            expected_episodes=episodes,
+            failed_lane_key=failed_lane_key,
         )
 
-        # (6) Per-lane finalize_lane_only (Contract 2).
-        terminal_lane_state = "cancelled" if cancelled else "completed"
-        ingestor.finalize_lane_only(
-            lane_attempt_id=baseline_attempt["id"],
-            terminal_state=terminal_lane_state,
-        )
-        ingestor.finalize_lane_only(
-            lane_attempt_id=candidate_attempt["id"],
-            terminal_state=terminal_lane_state,
-        )
-
-        # (7) Pair join + classification + comparison persistence (Contracts 1,4,8).
-        if not cancelled:
-            self._record_comparison(
-                run_id=run_id,
-                run_attempt_id=run_attempt_id,
-                baseline_lane=baseline_lane,
-                candidate_lane=candidate_lane,
-                baseline_lane_id=baseline_attempt["lane_id"],
-                candidate_lane_id=candidate_attempt["lane_id"],
-                baseline_ingested=baseline_ingested,
-                candidate_ingested=candidate_ingested,
-                baseline_outcomes=baseline_outcomes,
-                candidate_outcomes=candidate_outcomes,
-            )
-
-        # (8) finalize_run once after the comparison (Contract 2).
-        ingestor.finalize_run(
-            run_id=run_id,
-            terminal_state=terminal_lane_state,
-            cancelled=cancelled,
-        )
-
+        if lane_exception is not None:
+            raise lane_exception
         if cancelled:
-            ingestor.mark_run_cancelled(run_id)
+            ResultIngestor(self.database).mark_run_cancelled(run_id)
             raise RunCancelled()
         return RunRepository(self.database).get(run_id)
 
@@ -2347,128 +2314,188 @@ class PairedSerialRunExecutor(_RunExecutorBase):
             episode_key_resolver=episode_key_resolver,
         )
 
-    def _ingest_lane_outcomes(
+    def _commit_paired_terminal_facts(
         self,
         *,
-        ingestor: "ResultIngestor",
+        run_id: str,
+        writer: Any,
+        baseline_outcomes: list[dict[str, Any]],
+        candidate_outcomes: list[dict[str, Any]],
+        episodes: list[Any],
+        cancelled: bool,
+        failed_lane_key: str | None,
+    ) -> None:
+        """Commit both lane grids, comparison, then the run in canonical order."""
+        baseline_lane, candidate_lane = self._paired_lanes(run_id)
+        lane_attempts = self._lane_attempts_by_key(run_id)
+        baseline_attempt = lane_attempts[baseline_lane.lane_key]
+        candidate_attempt = lane_attempts[candidate_lane.lane_key]
+        if not episodes:
+            plan = self._load_plan(run_id)
+            episodes = _selected_episodes_for_attempt(self.database, run_id, plan)
+
+        episode_key_resolver = self._make_episode_key_resolver(run_id)
+        baseline_sink = self._build_lane_sink(
+            writer,
+            run_id,
+            baseline_lane,
+            baseline_attempt,
+            episode_key_resolver,
+        )
+        candidate_sink = self._build_lane_sink(
+            writer,
+            run_id,
+            candidate_lane,
+            candidate_attempt,
+            episode_key_resolver,
+        )
+
+        execution_failed = failed_lane_key is not None
+        baseline_missing_cancelled = cancelled or (
+            execution_failed and failed_lane_key != baseline_lane.lane_key
+        )
+        candidate_missing_cancelled = cancelled or (
+            execution_failed and failed_lane_key != candidate_lane.lane_key
+        )
+        baseline_observed_complete = (
+            len({outcome["episode_key"] for outcome in baseline_outcomes})
+            == len(episodes)
+            and all(
+                not _result_is_cancelled(outcome["result"])
+                for outcome in baseline_outcomes
+            )
+        )
+        candidate_observed_complete = (
+            len({outcome["episode_key"] for outcome in candidate_outcomes})
+            == len(episodes)
+            and all(
+                not _result_is_cancelled(outcome["result"])
+                for outcome in candidate_outcomes
+            )
+        )
+        baseline_terminal_state = (
+            "failed"
+            if failed_lane_key == baseline_lane.lane_key
+            else "cancelled"
+            if baseline_missing_cancelled and not baseline_observed_complete
+            else "completed"
+        )
+        candidate_terminal_state = (
+            "failed"
+            if failed_lane_key == candidate_lane.lane_key
+            else "cancelled"
+            if candidate_missing_cancelled and not candidate_observed_complete
+            else "completed"
+        )
+        run_terminal_state = (
+            "failed" if execution_failed else "cancelled" if cancelled else "completed"
+        )
+
+        baseline_ingested = self._commit_lane_outcomes(
+            run_id=run_id,
+            lane_attempt=baseline_attempt,
+            outcomes=baseline_outcomes,
+            event_sink=baseline_sink,
+            missing_cancelled=baseline_missing_cancelled,
+            terminal_state=baseline_terminal_state,
+            expected_episodes=episodes,
+        )
+        candidate_ingested = self._commit_lane_outcomes(
+            run_id=run_id,
+            lane_attempt=candidate_attempt,
+            outcomes=candidate_outcomes,
+            event_sink=candidate_sink,
+            missing_cancelled=candidate_missing_cancelled,
+            terminal_state=candidate_terminal_state,
+            expected_episodes=episodes,
+        )
+
+        self._record_comparison(
+            run_id=run_id,
+            run_attempt_id=self._run_attempt_id(run_id),
+            baseline_lane=baseline_lane,
+            candidate_lane=candidate_lane,
+            baseline_lane_id=baseline_attempt["lane_id"],
+            candidate_lane_id=candidate_attempt["lane_id"],
+            baseline_ingested=baseline_ingested,
+            candidate_ingested=candidate_ingested,
+            baseline_outcomes=baseline_outcomes,
+            candidate_outcomes=candidate_outcomes,
+        )
+
+        ResultIngestor(self.database).finalize_run(
+            run_id=run_id,
+            terminal_state=run_terminal_state,
+            cancelled=cancelled,
+        )
+
+    def _commit_lane_outcomes(
+        self,
+        *,
         run_id: str,
         lane_attempt: dict[str, str],
         outcomes: list[dict[str, Any]],
         event_sink: EventSink,
-        cancelled: bool,
-        expected_episodes: list[Any] | None = None,
+        missing_cancelled: bool,
+        terminal_state: str,
+        expected_episodes: list[Any],
     ) -> dict[str, dict[str, Any]]:
-        """Ingest one lane's episode outcomes. Returns pair_key → ingested dict.
-
-        Per-episode cancellation (P1.1): a run-level ``cancelled`` flag does NOT
-        relabel already-completed results. Only results whose stop_reason is
-        CANCELLED (or missing episodes synthesized below) use cancelled=True.
-
-        Missing-episode reconciliation (P1.2): when the run was cancelled,
-        expected episodes that have no outcome (never ran) are synthesized as
-        CANCELLED attempts with an episode.cancelled event — mirroring the
-        single-lane ``LaneOutcomeCommitter`` missing-result semantics.
-        """
-        ingested: dict[str, dict[str, Any]] = {}
-        outcomes_by_key = {oc["episode_key"]: oc for oc in outcomes}
-
-        # Ingest actual outcomes with per-result cancellation.
+        """Adapt one paired lane into the canonical outcome commit interface."""
+        observed: list[LaneObservedResult] = []
         for outcome in outcomes:
-            pair_key = outcome["pair_key"]
             is_violation = outcome["integrity_status"].is_violation
-            artifact_root = _episode_artifact_root(
-                lane_attempt["artifact_root"],
-                outcome["result"],
-                repeat_n=1,
-                episode_key=outcome["episode_key"],
+            terminal_event = None
+            if is_violation:
+                result_dict = _result_to_dict(outcome["result"])
+                terminal_event = ExecutionEvent(
+                    type="episode.error",
+                    timestamp="",
+                    phase="execute",
+                    task_id=str(result_dict.get("id") or "unknown"),
+                    trial_id=outcome.get("trial_id", 0),
+                    episode_key=outcome["episode_key"],
+                    payload={
+                        "outcome": "ERROR",
+                        "error_code": "PAIRING_VIOLATION",
+                        "stop_reason": "PAIRING_VIOLATION",
+                        "reason": outcome.get("integrity_reason"),
+                    },
+                )
+            observed.append(
+                LaneObservedResult(
+                    episode_key=outcome["episode_key"],
+                    result=outcome["result"],
+                    error_code_override=(
+                        "PAIRING_VIOLATION" if is_violation else None
+                    ),
+                    terminal_event=terminal_event,
+                )
             )
-            error_code_override = "PAIRING_VIOLATION" if is_violation else None
-            # P1.1: per-episode cancel — only this result's own stop_reason
-            # determines cancelled, NOT the run-level flag. A baseline episode
-            # that PASSed before candidate cancellation keeps PASS.
-            result_cancelled = _result_is_cancelled(outcome["result"])
-            summary = ingestor.ingest_episode_attempt(
+
+        committed = LaneOutcomeCommitter(self.database).commit(
+            LaneOutcomeBatch(
                 run_id=run_id,
                 lane_attempt_id=lane_attempt["id"],
-                episode_key=outcome["episode_key"],
-                result=outcome["result"],
-                artifact_root=artifact_root,
-                cancelled=result_cancelled,
-                error_code_override=error_code_override,
-            )
-            ingested[pair_key] = summary
-            # Emit a terminal episode event for PAIRING_VIOLATION (Contract 8).
-            if is_violation:
-                try:
-                    event_sink.emit(ExecutionEvent(
-                        type="episode.error",
-                        timestamp="",
-                        phase="execute",
-                        task_id=getattr(outcome["result"], "id", None)
-                            or outcome["result"].get("id"),
-                        trial_id=outcome.get("trial_id", 0),
-                        episode_key=outcome["episode_key"],
-                        payload={
-                            "outcome": "ERROR",
-                            "error_code": "PAIRING_VIOLATION",
-                            "stop_reason": "PAIRING_VIOLATION",
-                            "reason": outcome.get("integrity_reason"),
-                        },
-                    ))
-                except Exception:  # noqa: BLE001
-                    pass
-
-        # P1.2: missing-episode reconciliation for cancelled runs.
-        if cancelled and expected_episodes is not None:
-            for episode in expected_episodes:
-                if episode.episode_key in outcomes_by_key:
-                    continue  # already ingested above
-                # This episode never ran (cancel before it started). Synthesize
-                # a CANCELLED attempt so the lane has a complete episode grid.
-                artifact_root = _episode_artifact_root(
-                    lane_attempt["artifact_root"],
-                    None,
-                    repeat_n=1,
-                    episode_key=episode.episode_key,
-                )
-                synthetic = {
-                    "id": episode.task_base_id,
-                    "trial_id": episode.trial_id,
-                    "is_success": False,
-                    "is_error": False,
-                    "execution": {"error": None, "stop_reason": "CANCELLED"},
-                    "episode_key": episode.episode_key,
-                }
-                summary = ingestor.ingest_episode_attempt(
-                    run_id=run_id,
-                    lane_attempt_id=lane_attempt["id"],
-                    episode_key=episode.episode_key,
-                    result=synthetic,
-                    artifact_root=artifact_root,
-                    cancelled=True,
-                    error_code_override="CANCELLED",
-                )
-                ingested[episode.pair_key] = summary
-                # Emit episode.cancelled for the UI's completed-count.
-                try:
-                    event_sink.emit(ExecutionEvent(
-                        type="episode.cancelled",
-                        timestamp="",
-                        phase="execute",
+                lane_artifact_root=lane_attempt["artifact_root"],
+                expected=tuple(
+                    LaneExpectedEpisode(
+                        episode_key=episode.episode_key,
                         task_id=episode.task_base_id,
                         trial_id=episode.trial_id,
-                        episode_key=episode.episode_key,
-                        payload={
-                            "outcome": "CANCELLED",
-                            "error_code": "CANCELLED",
-                            "steps": 0,
-                            "reason": "missing_result",
-                        },
-                    ))
-                except Exception:  # noqa: BLE001
-                    pass
-
-        return ingested
+                    )
+                    for episode in expected_episodes
+                ),
+                observed=tuple(observed),
+                cancelled=missing_cancelled,
+                terminal_state=terminal_state,
+                finalize_run=False,
+            ),
+            events=event_sink,
+        )
+        return {
+            episode.pair_key: summary
+            for episode, summary in zip(expected_episodes, committed, strict=True)
+        }
 
     def _record_comparison(
         self,
@@ -2491,7 +2518,12 @@ class PairedSerialRunExecutor(_RunExecutorBase):
         # Index outcomes by pair_key for integrity lookup.
         baseline_by_pair = {o["pair_key"]: o for o in baseline_outcomes}
         candidate_by_pair = {o["pair_key"]: o for o in candidate_outcomes}
-        pair_keys = sorted(set(baseline_by_pair) | set(candidate_by_pair))
+        pair_keys = sorted(
+            set(baseline_ingested)
+            | set(candidate_ingested)
+            | set(baseline_by_pair)
+            | set(candidate_by_pair)
+        )
 
         repo = ComparisonRepository(self.database)
         comparison_id = repo.record_comparison(
@@ -2827,7 +2859,6 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
                 status_code=500,
             )
 
-        ingestor = ResultIngestor(self.database)
         baseline_outcomes: list[dict[str, Any]] = []
         candidate_outcomes: list[dict[str, Any]] = []
         baseline_attempt: dict[str, str] | None = None
@@ -2835,6 +2866,7 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         baseline_sink: Any = NullEventSink()
         candidate_sink: Any = NullEventSink()
         sibling_exception: BaseException | None = None
+        failed_lane_key: str | None = None
         episodes: list = []
         try:
             prepared = await PairedMaterializer(
@@ -2913,9 +2945,14 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             # Contract 8: surface the sibling exception (after both lanes
             # drained). The other lane was cancelled via the token and its env
             # closed in its finally block.
-            for result in results:
+            for index, result in enumerate(results):
                 if isinstance(result, BaseException) and not isinstance(result, RunCancelled):
                     sibling_exception = result
+                    failed_lane_key = (
+                        baseline_lane.lane_key
+                        if index == 0
+                        else candidate_lane.lane_key
+                    )
                     token.cancel()
                     break
             if not isinstance(results[0], BaseException):
@@ -2925,80 +2962,20 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
         except RunCancelled:
             token.cancel()
 
-        cancelled = token.cancelled
         # P1 fix: sibling failure is NOT cancellation. It's an execution failure.
         # Lanes/run finalize to "failed", not "cancelled". The supervisor's
         # _mark_run_failed handles the terminal run.failed event.
         sibling_failed = sibling_exception is not None
+        cancelled = token.cancelled and not sibling_failed
 
-        # Resolve lane attempts / episodes if materialization failed mid-way.
-        if baseline_attempt is None or candidate_attempt is None:
-            lane_attempts = self._lane_attempts_by_key(run_id)
-            bl, cl = self._paired_lanes(run_id)
-            baseline_attempt = lane_attempts[bl.lane_key]
-            candidate_attempt = lane_attempts[cl.lane_key]
-        if not episodes:
-            plan_fallback = self._load_plan(run_id)
-            episodes = _selected_episodes_for_attempt(self.database, run_id, plan_fallback)
-
-        # (5) Ingest per lane (reuse the serial paired helper).
-        # On sibling failure, completed outcomes keep their real outcome (per-episode
-        # cancel logic in _ingest_lane_outcomes handles CANCELLED stop_reason only).
-        baseline_ingested = self._ingest_lane_outcomes(
-            ingestor=ingestor,
+        self._commit_paired_terminal_facts(
             run_id=run_id,
-            lane_attempt=baseline_attempt,
-            outcomes=baseline_outcomes,
-            event_sink=baseline_sink,
+            writer=writer,
+            baseline_outcomes=baseline_outcomes,
+            candidate_outcomes=candidate_outcomes,
+            episodes=episodes,
             cancelled=cancelled,
-            expected_episodes=episodes,
-        )
-        candidate_ingested = self._ingest_lane_outcomes(
-            ingestor=ingestor,
-            run_id=run_id,
-            lane_attempt=candidate_attempt,
-            outcomes=candidate_outcomes,
-            event_sink=candidate_sink,
-            cancelled=cancelled,
-            expected_episodes=episodes,
-        )
-
-        # (6) Per-lane finalize_lane_only.
-        if sibling_failed:
-            terminal_lane_state = "failed"
-        elif cancelled:
-            terminal_lane_state = "cancelled"
-        else:
-            terminal_lane_state = "completed"
-        ingestor.finalize_lane_only(
-            lane_attempt_id=baseline_attempt["id"],
-            terminal_state=terminal_lane_state,
-        )
-        ingestor.finalize_lane_only(
-            lane_attempt_id=candidate_attempt["id"],
-            terminal_state=terminal_lane_state,
-        )
-
-        # (7) Pair join + classification + comparison (path-level integrity).
-        if not cancelled and not sibling_failed:
-            self._record_comparison(
-                run_id=run_id,
-                run_attempt_id=self._run_attempt_id(run_id),
-                baseline_lane=baseline_lane,
-                candidate_lane=candidate_lane,
-                baseline_lane_id=baseline_attempt["lane_id"],
-                candidate_lane_id=candidate_attempt["lane_id"],
-                baseline_ingested=baseline_ingested,
-                candidate_ingested=candidate_ingested,
-                baseline_outcomes=baseline_outcomes,
-                candidate_outcomes=candidate_outcomes,
-            )
-
-        # (8) finalize_run once after the comparison.
-        ingestor.finalize_run(
-            run_id=run_id,
-            terminal_state=terminal_lane_state,
-            cancelled=cancelled,
+            failed_lane_key=failed_lane_key,
         )
 
         if sibling_exception is not None:
@@ -3007,7 +2984,7 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             # Do NOT call mark_run_cancelled — that would conflict with failed.
             raise sibling_exception
         if cancelled:
-            ingestor.mark_run_cancelled(run_id)
+            ResultIngestor(self.database).mark_run_cancelled(run_id)
             raise RunCancelled()
         return RunRepository(self.database).get(run_id)
 
@@ -3035,7 +3012,12 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
 
         baseline_by_pair = {o["pair_key"]: o for o in baseline_outcomes}
         candidate_by_pair = {o["pair_key"]: o for o in candidate_outcomes}
-        pair_keys = sorted(set(baseline_by_pair) | set(candidate_by_pair))
+        pair_keys = sorted(
+            set(baseline_ingested)
+            | set(candidate_ingested)
+            | set(baseline_by_pair)
+            | set(candidate_by_pair)
+        )
 
         repo = ComparisonRepository(self.database)
         comparison_id = repo.record_comparison(
@@ -3070,13 +3052,17 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             # tolerance only applies to the task's declared apps, not all
             # target metadata apps.
             pair_task_app_ids = (b_out or {}).get("task_app_ids") or (c_out or {}).get("task_app_ids")
-            report = compare_paired_states(
-                baseline_state=b_raw,
-                candidate_state=c_raw,
-                policy=policy,
-                baseline_apps=baseline_apps,
-                candidate_apps=candidate_apps,
-                task_app_ids=pair_task_app_ids,
+            report = (
+                compare_paired_states(
+                    baseline_state=b_raw,
+                    candidate_state=c_raw,
+                    policy=policy,
+                    baseline_apps=baseline_apps,
+                    candidate_apps=candidate_apps,
+                    task_app_ids=pair_task_app_ids,
+                )
+                if b_out is not None and c_out is not None
+                else None
             )
 
             integrity = IntegrityStatus.OK
@@ -3090,7 +3076,7 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
             elif c_out is not None and c_out["integrity_status"].is_violation:
                 integrity = c_out["integrity_status"]
                 integrity_reason = c_out.get("integrity_reason") or integrity.value
-            elif report.is_violation:
+            elif report is not None and report.is_violation:
                 integrity = IntegrityStatus.PROJECTION_MISMATCH
                 integrity_reason = "projection_mismatch"
 
@@ -3106,7 +3092,11 @@ class PairedParallelRunExecutor(PairedSerialRunExecutor):
                 else None,
                 "baseline_actual_projection_hash": (b_out or {}).get("actual_projection_hash"),
                 "candidate_actual_projection_hash": (c_out or {}).get("actual_projection_hash"),
-                "path_diffs": [d.to_dict() for d in report.path_diffs],
+                "path_diffs": (
+                    [d.to_dict() for d in report.path_diffs]
+                    if report is not None
+                    else []
+                ),
             }
             delta_json = {
                 "baseline_outcome": b_outcome,

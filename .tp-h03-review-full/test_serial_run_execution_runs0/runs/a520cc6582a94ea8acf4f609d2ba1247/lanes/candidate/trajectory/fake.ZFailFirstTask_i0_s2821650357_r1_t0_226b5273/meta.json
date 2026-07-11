@@ -1,0 +1,8 @@
+{
+  "task_id": "fake.ZFailFirstTask",
+  "task_name": "fake.ZFailFirstTask choose materialize-z-sampled-1",
+  "trial_id": 0,
+  "agent": "fake-agent",
+  "max_steps": 15,
+  "episode_key": "fake.ZFailFirstTask|i0|s2821650357|r1|t0"
+}

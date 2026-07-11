@@ -1,0 +1,11 @@
+{
+  "start_time": "2026-07-11T20:23:07.013491",
+  "agent": "fake-agent",
+  "model_name": "fake-model",
+  "repeat_n": 1,
+  "save_trajectory": true,
+  "coord_space": "norm_0_1000",
+  "has_pil": true,
+  "platform_run_id": "160c9d099a554137a00ad4c6a07d46b1",
+  "lane_key": "baseline"
+}

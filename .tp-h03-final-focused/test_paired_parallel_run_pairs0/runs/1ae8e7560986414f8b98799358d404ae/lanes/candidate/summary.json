@@ -1,0 +1,19 @@
+{
+  "start_time": "2026-07-11T20:23:22.357055",
+  "end_time": "2026-07-11T20:23:22.388279",
+  "total_tasks": 1,
+  "total_episodes": 2,
+  "repeat_n": 1,
+  "success": 2,
+  "failed": 0,
+  "error": 0,
+  "success_rate": 1.0,
+  "avg_steps": 1.0,
+  "avg_runtime_s": 0.00736236572265625,
+  "success_tasks": [
+    "fake.SampleTask",
+    "fake.SampleTask"
+  ],
+  "failed_tasks": [],
+  "error_tasks": []
+}

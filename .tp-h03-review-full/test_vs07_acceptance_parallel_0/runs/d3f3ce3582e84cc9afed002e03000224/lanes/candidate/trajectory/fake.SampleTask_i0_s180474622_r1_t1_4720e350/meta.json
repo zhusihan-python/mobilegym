@@ -1,0 +1,8 @@
+{
+  "task_id": "fake.DemoTask",
+  "task_name": "Demo task",
+  "trial_id": 1,
+  "agent": "demo-agent",
+  "max_steps": 15,
+  "episode_key": "fake.SampleTask|i0|s180474622|r1|t1"
+}

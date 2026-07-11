@@ -284,6 +284,10 @@ python -m pytest -c test_platform/pytest.ini \
 
 ## TP-H03: Unify paired-lane outcome commit
 
+Current evidence: [`evidence/2026-07-11-tp-h03-paired-lane-outcome-commit.md`](evidence/2026-07-11-tp-h03-paired-lane-outcome-commit.md)
+(`Complete`: paired serial and parallel adapters share the canonical committer;
+failure/cancellation parity, ordering guards, focused, and full regressions pass).
+
 ### What to build
 
 Adapt paired serial and paired parallel execution to the canonical
@@ -293,17 +297,17 @@ finalization.
 
 ### Acceptance criteria
 
-- [ ] Baseline and candidate lanes use the same episode outcome semantics as
+- [x] Baseline and candidate lanes use the same episode outcome semantics as
       single-lane executors.
-- [ ] A sibling failure or cancellation produces a complete, correctly labelled
+- [x] A sibling failure or cancellation produces a complete, correctly labelled
       episode grid for both lanes.
-- [ ] Per-lane finalization occurs once per lane.
-- [ ] Comparison creation occurs only after both lanes have canonical terminal
+- [x] Per-lane finalization occurs once per lane.
+- [x] Comparison creation occurs only after both lanes have canonical terminal
       facts.
-- [ ] Run finalization occurs once after comparison persistence.
-- [ ] Pair integrity, prepared projection hashes, and classification outputs do
+- [x] Run finalization occurs once after comparison persistence.
+- [x] Pair integrity, prepared projection hashes, and classification outputs do
       not change for successful existing fixtures.
-- [ ] Serial and parallel paired adapters produce equivalent comparison facts
+- [x] Serial and parallel paired adapters produce equivalent comparison facts
       for equivalent observations.
 
 ### Test seam
@@ -320,6 +324,7 @@ and show the same error classification, pair coverage, and terminal lane facts.
 
 ```bash
 python -m pytest -c test_platform/pytest.ini \
+  test_platform/tests/integration/test_paired_lane_outcome_committer.py \
   test_platform/tests/integration/test_paired_serial_run.py \
   test_platform/tests/integration/test_paired_parallel_run.py \
   test_platform/tests/unit/test_pair_integrity.py \

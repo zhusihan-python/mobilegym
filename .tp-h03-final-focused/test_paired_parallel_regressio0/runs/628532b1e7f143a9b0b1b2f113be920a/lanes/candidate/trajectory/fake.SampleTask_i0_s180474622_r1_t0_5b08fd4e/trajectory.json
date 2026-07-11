@@ -1,0 +1,242 @@
+[
+  {
+    "step": 1,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 2,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 3,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 4,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 5,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 6,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 7,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 8,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 9,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 10,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 11,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 12,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 13,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 14,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 15,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "NOOP",
+    "action_data": {},
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  }
+]

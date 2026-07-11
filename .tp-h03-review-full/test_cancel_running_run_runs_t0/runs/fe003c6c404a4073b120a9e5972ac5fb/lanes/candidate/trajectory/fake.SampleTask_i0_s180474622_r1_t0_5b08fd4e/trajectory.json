@@ -1,0 +1,65 @@
+[
+  {
+    "step": 1,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "CLICK",
+    "action_data": {
+      "point": [
+        0,
+        0
+      ]
+    },
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 2,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "CLICK",
+    "action_data": {
+      "point": [
+        0,
+        0
+      ]
+    },
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  },
+  {
+    "step": 3,
+    "route": {
+      "app": "fake",
+      "path": "/"
+    },
+    "action_type": "CLICK",
+    "action_data": {
+      "point": [
+        0,
+        0
+      ]
+    },
+    "thought": "",
+    "explain": "",
+    "summary": "",
+    "screenshot": "",
+    "screenshot_annotated": null,
+    "model_response_path": null,
+    "model_prompt_path": null
+  }
+]

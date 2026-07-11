@@ -1,0 +1,8 @@
+{
+  "task_id": "fake.APassSecondTask",
+  "task_name": "fake.APassSecondTask choose materialize-a-sampled-1",
+  "trial_id": 0,
+  "agent": "fake-agent",
+  "max_steps": 15,
+  "episode_key": "fake.APassSecondTask|i0|s1953251730|r1|t0"
+}
