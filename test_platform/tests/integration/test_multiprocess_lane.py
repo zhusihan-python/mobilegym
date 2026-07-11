@@ -14,6 +14,7 @@ Mirrors test_parallel_lane.py's fakes + _create_run helper.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -22,8 +23,13 @@ from bench_env.env.base import Action, ActionType, Observation, StepResult
 from bench_env.runner.base import EpisodeResult, ExecutionResult
 from bench_env.runner.events import ExecutionEvent
 from bench_env.runner.work_spec import EpisodeWorkSpec
+from bench_env.task.judge import JudgeResult
+from test_platform.domain.reports.functional import build_functional_report
+from test_platform.domain.reports.sequence import build_sequence_report
+from test_platform.domain.retry_resume import select_retry_lane_episodes
 from test_platform.domain.runs import RunDomainError
 from test_platform.persistence.database import Database
+from test_platform.persistence.repositories import ReportInputRepository
 from test_platform.services.execution import MultiprocessRunExecutor
 from test_platform.tests.integration.test_single_lane_materialization import (
     _create_run,
@@ -63,6 +69,14 @@ class _Stopwatch:
 
     def summary(self) -> str:
         return "fake"
+
+
+class _CapturingSink:
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    def emit(self, event: ExecutionEvent) -> None:
+        self.events.append(event)
 
 
 class _ParallelFakeEnv:
@@ -237,7 +251,6 @@ def _make_in_process_factory(env_pool_factory, agent_factory, lane, registry):
     from bench_env.runner.multiprocess import QueueEventSink
     from bench_env.runner.serial import PreparedWorkItem
     from bench_env.runner.work_spec import reconstruct_task
-    from bench_env.task.judge import JudgeResult
     from bench_env.env.base import ActionType
 
     def factory(shard_spec, work_specs, event_sink, cancellation_token):
@@ -435,6 +448,7 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
         token = CancellationToken()
         materialize_env = _MaterializeEnv()
         registry = _FakeTaskFactory()
+        sink = _CapturingSink()
         lane_ns = type("Lane", (), {"runner_config": {"processes": 2, "parallel": 2}})()
 
         # A child that completes only the first episode, then observes cancel.
@@ -448,13 +462,18 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
                     results.append(EpisodeResult(
                         task_id=ws.task_base_id, task_name=ws.task_base_id,
                         suite="fake",
-                        execution=ExecutionResult(
-                            steps=1, trace=[], runtime_s=0.01, finished=True,
-                            truncated=False, stop_reason=ActionType.COMPLETE,
-                        ),
-                        trial_id=ws.trial_id, apps=["fake"], max_steps=ws.max_steps,
+                            execution=ExecutionResult(
+                                steps=1, trace=[], runtime_s=0.01, finished=True,
+                                truncated=False, stop_reason=ActionType.COMPLETE,
+                            ),
+                            judge=JudgeResult.ok(),
+                            trial_id=ws.trial_id, apps=["fake"], max_steps=ws.max_steps,
                         episode_key=ws.episode_key,
                     ))
+                    if i == 0:
+                        # Hold the child after one completed result so the
+                        # cancellation deterministically leaves missing work.
+                        await asyncio.sleep(0.2)
                 return results
 
             return _run()
@@ -474,7 +493,10 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
             token.cancel()
 
         try:
-            await asyncio.gather(executor.execute_run(run.id, token=token), _cancel_soon())
+            await asyncio.gather(
+                executor.execute_run(run.id, token=token, events=sink),
+                _cancel_soon(),
+            )
         except RunCancelled:
             pass
 
@@ -487,11 +509,13 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
         # CANCELLED (outcome + error_code), NOT WORKER_CRASH. A user cancel is not
         # a crash — conflating them corrupts reports.
         attempts = database.connection.execute(
-            "SELECT outcome, error_code, result_json FROM episode_attempts"
+            "SELECT e.episode_key, ea.outcome, ea.error_code, ea.result_json "
+            "FROM episode_attempts ea "
+            "JOIN episodes e ON e.id = ea.episode_id"
         ).fetchall()
         assert len(attempts) > 0
-        import json as _json
 
+        synthetic_cancelled = []
         for att in attempts:
             if att["outcome"] == "CANCELLED":
                 assert att["error_code"] == "CANCELLED", (
@@ -502,7 +526,7 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
                 # WORKER_CRASH. (Episodes that ran to completion before the
                 # cancel land have their real stop_reason; only the synthetic
                 # missing ones must avoid WORKER_CRASH.)
-                rd = _json.loads(att["result_json"]) if att["result_json"] else {}
+                rd = json.loads(att["result_json"]) if att["result_json"] else {}
                 assert "WORKER_CRASH" not in str(rd), (
                     "cancelled result_json must not carry WORKER_CRASH"
                 )
@@ -515,25 +539,52 @@ async def test_multiprocess_user_cancel_labels_episodes_cancelled(tmp_path):
                 assert rd.get("is_error") is not True, (
                     "cancelled result must not be flagged is_error=True"
                 )
+                if exec_d.get("stop_reason") == "CANCELLED":
+                    synthetic_cancelled.append(att)
             # No episode should carry WORKER_CRASH when the run was user-cancelled.
             assert att["error_code"] != "WORKER_CRASH", (
                 "user-cancelled run must not produce WORKER_CRASH episodes"
             )
+
+        assert synthetic_cancelled, "fixture must produce synthetic missing cancellations"
+        for att in synthetic_cancelled:
+            terminal_events = [
+                event
+                for event in sink.events
+                if event.episode_key == att["episode_key"]
+                and event.payload.get("reason") == "missing_result"
+            ]
+            assert len(terminal_events) == 1
+            assert terminal_events[0].type == "episode.cancelled"
+            assert terminal_events[0].payload["outcome"] == "CANCELLED"
+            assert terminal_events[0].payload["error_code"] == "CANCELLED"
     finally:
         database.close()
 
 
 @pytest.mark.asyncio
 async def test_multiprocess_shard_crash_yields_worker_crash(tmp_path):
-    """A shard that raises leaves missing episodes → WORKER_CRASH."""
+    """A missing shard result is consistently ERROR / WORKER_CRASH everywhere."""
 
     settings = _settings(tmp_path)
     database = Database(settings)
     database.initialize()
     try:
-        run = _create_run(database, settings, repeat_n=2)
+        run = _create_run(database, settings, repeat_n=2, parallel=2, processes=2)
+        database.connection.execute(
+            """
+            UPDATE episodes
+            SET sequence_index = trial_id,
+                sequence_group_id = 'manual_sequence'
+            WHERE run_id = ?
+            """,
+            (run.id,),
+        )
+        database.connection.commit()
         materialize_env = _MaterializeEnv()
         registry = _FakeTaskFactory()
+
+        sink = _CapturingSink()
 
         # Child factory that crashes for one shard (rank 0) and completes the other.
         def factory(shard_spec, work_specs, event_sink, cancellation_token):
@@ -548,6 +599,7 @@ async def test_multiprocess_shard_crash_yields_worker_crash(tmp_path):
                             steps=1, trace=[], runtime_s=0.01, finished=True,
                             truncated=False, stop_reason=ActionType.COMPLETE,
                         ),
+                        judge=JudgeResult.ok(),
                         trial_id=ws.trial_id, apps=["fake"], max_steps=ws.max_steps,
                         episode_key=ws.episode_key,
                     )
@@ -565,19 +617,71 @@ async def test_multiprocess_shard_crash_yields_worker_crash(tmp_path):
             agent_factory=lambda lane: _CompletingAgent(),
             env_factory=lambda lane: materialize_env,
         )
-        detail = await executor.execute_run(run.id)
+        detail = await executor.execute_run(run.id, events=sink)
 
         # The run still completes (reconciliation fills missing episodes).
         assert detail.state == "completed"
         rows = database.connection.execute(
-            "SELECT error_code, outcome FROM episode_attempts ea "
+            "SELECT e.episode_key, e.trial_id, ea.error_code, ea.outcome, ea.result_json "
+            "FROM episode_attempts ea "
             "JOIN episodes e ON e.id = ea.episode_id WHERE e.run_id = ?",
             (run.id,),
         ).fetchall()
         assert len(rows) == 2
-        error_codes = [r["error_code"] for r in rows]
-        # At least one episode surfaced WORKER_CRASH from the crashed shard.
-        assert "WORKER_CRASH" in error_codes
+        crashed = [row for row in rows if row["error_code"] == "WORKER_CRASH"]
+        passed = [row for row in rows if row["outcome"] == "PASS"]
+        assert len(crashed) == 1
+        assert len(passed) == 1
+        assert passed[0]["error_code"] is None
+        for crash in crashed:
+            assert crash["outcome"] == "ERROR"
+            result = json.loads(crash["result_json"])
+            assert result["is_success"] is False
+            assert result["is_error"] is True
+            assert result["execution"] == {
+                "error": "Worker exited without reporting a result (WORKER_CRASH).",
+                "stop_reason": "ERROR",
+            }
+
+            terminal_events = [
+                event
+                for event in sink.events
+                if event.episode_key == crash["episode_key"]
+                and event.payload.get("reason") == "missing_result"
+            ]
+            assert len(terminal_events) == 1
+            assert terminal_events[0].type == "episode.error"
+            assert terminal_events[0].payload["outcome"] == "ERROR"
+            assert terminal_events[0].payload["error_code"] == "WORKER_CRASH"
+
+        report_input = ReportInputRepository(database).get_for_run(run.id)
+        functional = build_functional_report(report_input)
+        assert functional["summary"]["successes"] == 1
+        assert functional["summary"]["errors"] == 1
+        assert functional["summary"]["failures"] == 0
+        assert functional["summary"]["incomplete"] == 0
+
+        sequence = build_sequence_report(report_input)
+        assert len(sequence["groups"]) == 1
+        assert sequence["groups"][0]["summary"]["successes"] == 1
+        assert sequence["groups"][0]["summary"]["errors"] == 1
+        assert sequence["groups"][0]["summary"]["failures"] == 0
+        assert sequence["groups"][0]["summary"]["incomplete"] == 0
+
+        selected = select_retry_lane_episodes(
+            report_input.planned_lane_episodes,
+            report_input.episode_attempts,
+        )
+        assert len(selected) == 1
+        selected_by_key = {item["episode_key"]: item for item in selected}
+        for crash in crashed:
+            assert selected_by_key[crash["episode_key"]] == {
+                "episode_key": crash["episode_key"],
+                "lane_key": "candidate",
+                "sequence_index": crash["trial_id"],
+                "sequence_group_id": "manual_sequence",
+                "reason": "retry_error",
+            }
     finally:
         database.close()
 
@@ -591,13 +695,6 @@ async def test_multiprocess_shard_fatal_carries_exitcode(tmp_path):
     database.initialize()
     try:
         run = _create_run(database, settings, repeat_n=2)
-
-        class _CapturingSink:
-            def __init__(self) -> None:
-                self.events: list[ExecutionEvent] = []
-
-            def emit(self, event: ExecutionEvent) -> None:
-                self.events.append(event)
 
         sink = _CapturingSink()
         materialize_env = _MaterializeEnv()

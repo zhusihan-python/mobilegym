@@ -50,7 +50,22 @@ def _catalog():
     )
 
 
-def _create_run(database: Database, settings: PlatformSettings, *, repeat_n: int = 2):
+def _create_run(
+    database: Database,
+    settings: PlatformSettings,
+    *,
+    repeat_n: int = 2,
+    parallel: int = 1,
+    processes: int | None = None,
+):
+    execute_config = {
+        "parallel": parallel,
+        "agent": "fake",
+        "model_name": "fake-model",
+    }
+    if processes is not None:
+        execute_config["processes"] = processes
+
     project = ProjectRepository(database).create("Materialization")
     target = TargetRepository(database).create(
         project_id=project.id,
@@ -114,7 +129,7 @@ def _create_run(database: Database, settings: PlatformSettings, *, repeat_n: int
                     "id": "execute",
                     "type": "execute",
                     "depends_on": ["matrix"],
-                    "config": {"parallel": 1, "agent": "fake", "model_name": "fake-model"},
+                    "config": execute_config,
                 },
             ],
         },

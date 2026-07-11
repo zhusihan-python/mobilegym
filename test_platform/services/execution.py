@@ -1776,16 +1776,16 @@ class MultiprocessRunExecutor(_RunExecutorBase):
                     "stop_reason": "CANCELLED",
                 },
             }
-            return {
-                "id": getattr(work_item.task, "id", "unknown"),
-                "trial_id": work_item.trial_id,
-                "is_success": False,
-                "is_error": True,
-                "execution": {
-                    "error": "Worker exited without reporting a result (WORKER_CRASH).",
-                    "stop_reason": "ERROR",
-                },
-            }
+        return {
+            "id": getattr(work_item.task, "id", "unknown"),
+            "trial_id": work_item.trial_id,
+            "is_success": False,
+            "is_error": True,
+            "execution": {
+                "error": "Worker exited without reporting a result (WORKER_CRASH).",
+                "stop_reason": "ERROR",
+            },
+        }
 
 
 class PairedSerialRunExecutor(_RunExecutorBase):

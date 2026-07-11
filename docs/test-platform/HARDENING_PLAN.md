@@ -169,6 +169,10 @@ npm run lint
 
 ## TP-H01: Correct multi-process missing-result outcomes
 
+Current evidence: [`evidence/2026-07-11-tp-h01-multiprocess-missing-result.md`](evidence/2026-07-11-tp-h01-multiprocess-missing-result.md)
+(`Complete`: the canonical missing-result matrix and full Test Platform
+regression pass).
+
 ### What to build
 
 Correct the non-cancelled multi-process missing-result path so an absent shard
@@ -178,16 +182,16 @@ user-cancellation path as `CANCELLED`.
 
 ### Acceptance criteria
 
-- [ ] A non-cancelled missing shard result persists `outcome=ERROR` and
+- [x] A non-cancelled missing shard result persists `outcome=ERROR` and
       `error_code=WORKER_CRASH`.
-- [ ] Its result body declares an execution error and contains a stable stop
+- [x] Its result body declares an execution error and contains a stable stop
       reason.
-- [ ] Functional and sequence reports count it as an error, not a failure or
+- [x] Functional and sequence reports count it as an error, not a failure or
       incomplete episode.
-- [ ] Retry selection labels it `retry_error`.
-- [ ] A user-cancelled missing shard result remains `CANCELLED` and is never
+- [x] Retry selection labels it `retry_error`.
+- [x] A user-cancelled missing shard result remains `CANCELLED` and is never
       labelled `WORKER_CRASH`.
-- [ ] The regression test asserts outcome, error code, result body, report
+- [x] The regression test asserts outcome, error code, result body, report
       counts, event type, and follow-up selection together.
 
 ### Test seam
