@@ -175,6 +175,16 @@ class RunSupervisor:
                 event_writer=self._event_writer,
             )
 
+    def emit_recovery_failures(self, run_ids: list[str]) -> None:
+        """Persist terminal recovery events after startup reconciliation."""
+
+        for run_id in run_ids:
+            self._emit_terminal(
+                run_id,
+                "run.failed",
+                {"error_code": "SERVICE_RESTARTED", "recovered": True},
+            )
+
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._broker.bind_loop(self._loop)
@@ -1246,7 +1256,11 @@ class RunService:
             """
         ).fetchall()
         if not active_lane_attempts:
-            return {"recovered_runs": 0, "service_restarted_episodes": 0}
+            return {
+                "recovered_runs": 0,
+                "recovered_run_ids": [],
+                "service_restarted_episodes": 0,
+            }
 
         ingestor = ResultIngestor(self.database)
         recovered_run_ids: set[str] = set()
@@ -1345,6 +1359,7 @@ class RunService:
 
         return {
             "recovered_runs": len(recovered_run_ids),
+            "recovered_run_ids": sorted(recovered_run_ids),
             "service_restarted_episodes": restarted_episodes,
         }
 

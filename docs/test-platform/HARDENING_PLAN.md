@@ -449,6 +449,11 @@ npx vitest run --config vitest.platform.config.ts tests/testPlatformReports.test
 
 ## TP-H06: Add deterministic operational browser smoke
 
+Current evidence: [`evidence/2026-07-11-tp-h06-deterministic-browser-smoke.md`](evidence/2026-07-11-tp-h06-deterministic-browser-smoke.md).
+The explicitly enabled deterministic composition and real API/Vite/browser
+smoke cover Manual Sequence, replay, cancellation, recovery, Resume eligibility,
+and SSE reconnect. TP-H06 is complete.
+
 ### What to build
 
 Add a test-only deterministic execution adapter and the missing end-to-end smoke
@@ -460,27 +465,27 @@ eligibility through public interfaces.
 
 ### Acceptance criteria
 
-- [ ] The deterministic adapter is available only in tests or explicitly
+- [x] The deterministic adapter is available only in tests or explicitly
       enabled development startup.
-- [ ] It crosses production runner-event, attempt, artifact, replay, report, and
+- [x] It crosses production runner-event, attempt, artifact, replay, report, and
       gate seams rather than directly seeding final database rows.
-- [ ] The smoke creates a three-step Manual Sequence and preserves the authored
+- [x] The smoke creates a three-step Manual Sequence and preserves the authored
       task order.
-- [ ] Each step starts from isolated state.
-- [ ] At least one deterministic pass and one deterministic fail or error are
+- [x] Each step starts from isolated state.
+- [x] At least one deterministic pass and one deterministic fail or error are
       represented without aborting later sequence steps.
-- [ ] The browser observes live progress, opens a screenshot replay, reads judge
+- [x] The browser observes live progress, opens a screenshot replay, reads judge
       evidence, and sees all three sequence report rows in order.
-- [ ] A deterministic slow run can be cancelled through the public interface;
+- [x] A deterministic slow run can be cancelled through the public interface;
       browser and worker resources close and terminal state remains cancelled.
-- [ ] A non-terminal run present at service restart is reconciled with a stable
+- [x] A non-terminal run present at service restart is reconciled with a stable
       service-restarted error and becomes eligible for the documented Resume
       path.
-- [ ] SSE reconnect resumes after the last durable sequence without double
+- [x] SSE reconnect resumes after the last durable sequence without double
       counting terminal work.
-- [ ] No external model, API key, network service, or pre-existing run directory
+- [x] No external model, API key, network service, or pre-existing run directory
       is required.
-- [ ] Production startup cannot select the deterministic adapter accidentally.
+- [x] Production startup cannot select the deterministic adapter accidentally.
 
 ### Test seam
 

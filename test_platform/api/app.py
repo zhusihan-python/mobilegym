@@ -60,11 +60,15 @@ def create_app(
         app.state.supervisor = platform_supervisor
         app.state.sse_broker = platform_broker
         platform_database.initialize()
-        RunService(
+        recovery = RunService(
             platform_database,
             settings,
             supervisor=platform_supervisor,
         ).reconcile_startup()
+        if hasattr(platform_supervisor, "emit_recovery_failures"):
+            platform_supervisor.emit_recovery_failures(
+                list(recovery.get("recovered_run_ids") or [])
+            )
         platform_broker.bind_loop(asyncio.get_running_loop())
         # Bind the broker to the running loop and start the supervisor if it
         # exposes the async lifecycle (the real RunSupervisor does; the fake one

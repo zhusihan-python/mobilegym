@@ -1471,6 +1471,7 @@ function generateLabel(filename, type) {
 }
 
 export default defineConfig(({ mode }) => {
+  const testPlatformApiTarget = process.env.TEST_PLATFORM_API_URL || 'http://127.0.0.1:8787';
   return {
     // 默认根路径部署（mobilegym.dev/、本地 dev、bench_env 都用 '/'）。
     // demo 分支的 GitHub Pages 部署把模拟器放在 /sim/ 子路径，通过
@@ -1482,11 +1483,11 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true as const,
       proxy: {
         '/api/platform/v1': {
-          target: 'http://127.0.0.1:8787',
+          target: testPlatformApiTarget,
           changeOrigin: true,
         },
         '/health': {
-          target: 'http://127.0.0.1:8787',
+          target: testPlatformApiTarget,
           changeOrigin: true,
         },
       },
