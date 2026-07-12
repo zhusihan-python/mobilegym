@@ -880,6 +880,52 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
 
       {message ? <p className="tp-kicker">{message}</p> : null}
 
+      {data.reliability && data.reliability.tasks.length > 0 ? (
+        <div data-testid="tp-report-reliability">
+          <h3>Reliability</h3>
+          <dl>
+            <div>
+              <dt>Pass@1</dt>
+              <dd>{data.reliability.summary.pass_at_1 ?? '—'}</dd>
+            </div>
+            <div>
+              <dt>Flaky tasks</dt>
+              <dd>{data.reliability.summary.flaky_tasks}</dd>
+            </div>
+            <div>
+              <dt>Insufficient trials</dt>
+              <dd>{data.reliability.summary.insufficient_trials_tasks}</dd>
+            </div>
+          </dl>
+          <table>
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>Task</th>
+                <th>Pass@1</th>
+                <th>Valid</th>
+                <th>Success</th>
+                <th>Failure</th>
+                <th>Flakiness</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.reliability.tasks.map((task) => (
+                <tr key={`${task.lane_key}:${task.materialization_key}`}>
+                  <td>{task.lane_key}</td>
+                  <td className="tp-mono">{task.task_id}</td>
+                  <td>{task.pass_at_k['1'] ?? '—'}</td>
+                  <td>{task.counts.valid}</td>
+                  <td>{task.counts.success}</td>
+                  <td>{task.counts.failure}</td>
+                  <td>{task.flakiness ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
       {sequenceGroups.length > 0 ? (
         <div className="tp-report-sequences" data-testid="tp-report-sequences">
           {sequenceGroups.map((group) => (

@@ -296,6 +296,33 @@ export type RunReport = {
       }>;
     }>;
   };
+  reliability?: {
+    schema_version: number;
+    summary: {
+      total_materializations: number;
+      pass_at_1: number | null;
+      flaky_tasks: number;
+      insufficient_trials_tasks: number;
+    };
+    tasks: Array<{
+      lane_key: string;
+      materialization_key: string;
+      task_id: string;
+      counts: {
+        planned: number;
+        attempted: number;
+        valid: number;
+        success: number;
+        failure: number;
+        error: number;
+        cancelled: number;
+        missing: number;
+      };
+      pass_at_k: Record<string, number | null>;
+      flakiness: 'flaky' | 'stable' | 'insufficient_trials' | null;
+    }>;
+    pass_k_values: number[];
+  };
   gate: GateResult;
   created_at: string;
 };

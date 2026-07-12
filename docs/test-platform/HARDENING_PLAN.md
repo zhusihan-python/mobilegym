@@ -716,21 +716,26 @@ and repeated trials. Reuse the benchmark framework's canonical unbiased Pass@k
 estimator, report valid and invalid trial denominators, and annotate flakiness
 only with sufficient evidence.
 
+Current evidence: [`evidence/2026-07-13-tp-h11-reliability.md`](evidence/2026-07-13-tp-h11-reliability.md).
+Trials group by `materialization_key`, Pass@k reuses the canonical unbiased
+estimator, flakiness requires sufficient evidence, schema version bumped to 2,
+UI and export include reliability. TP-H11 is complete.
+
 ### Acceptance criteria
 
-- [ ] Trials group by stable materialization identity and never by display order.
-- [ ] Pass@k values match the benchmark framework's canonical estimator.
-- [ ] Valid successes and functional failures contribute to Pass@k; error,
+- [x] Trials group by stable materialization identity and never by display order.
+- [x] Pass@k values match the benchmark framework's canonical estimator.
+- [x] Valid successes and functional failures contribute to Pass@k; error,
       cancelled, and missing trials are reported separately.
-- [ ] Per-task output includes planned, attempted, valid, success, failure,
+- [x] Per-task output includes planned, attempted, valid, success, failure,
       error, cancelled, and missing counts.
-- [ ] Flakiness requires at least two valid trials with both success and
+- [x] Flakiness requires at least two valid trials with both success and
       functional failure.
-- [ ] Single-trial workflows return an explicit insufficient-trials state rather
+- [x] Single-trial workflows return an explicit insufficient-trials state rather
       than a misleading flakiness result.
-- [ ] The report schema version advances and existing report versions remain
+- [x] The report schema version advances and existing report versions remain
       readable and exportable.
-- [ ] Report UI and export show aggregate and per-task reliability results.
+- [x] Report UI and export show aggregate and per-task reliability results.
 
 ### Test seam
 

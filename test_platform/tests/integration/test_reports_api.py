@@ -64,6 +64,9 @@ def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
         assert report["provenance"]["run_id"] == run_id
         assert report["functional"]["summary"]["planned_lane_episodes"] == 4
         assert report["comparison"]["classification_counts"]["candidate_errors"] == 1
+        assert report["schema_version"] == 2
+        assert "reliability" in report
+        assert "tasks" in report["reliability"]
         assert report["gate"]["verdict"] == "failed"
         assert report["gate"]["thresholds"] == {
             "max_candidate_errors": 0,
@@ -348,3 +351,60 @@ def test_completed_run_api_already_has_report_verdict_and_outcome_counts(tmp_pat
             "SELECT COUNT(*) FROM reports WHERE run_id = ?",
             (run_id,),
         ).fetchone()[0] == 1
+
+
+def test_legacy_schema_v1_report_remains_readable_and_exportable(tmp_path):
+    """A report persisted with schema_version=1 (pre-TP-H11) must remain
+    readable via GET and exportable, even though new reports use version 2."""
+    app = create_app(_settings(tmp_path))
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        db = client.app.state.database
+
+        # Overwrite the cached report with a legacy v1 payload.
+        legacy_report = {
+            "id": "legacy-report",
+            "schema_version": 1,
+            "run_id": run_id,
+            "run_attempt_id": "attempt3",
+            "functional": {"summary": {}},
+            "gate": {"verdict": "passed", "thresholds": {}, "observed": {}, "reasons": []},
+            "created_at": "2026-07-01T00:00:00Z",
+        }
+        db.connection.execute(
+            "DELETE FROM reports WHERE run_id = ?", (run_id,)
+        )
+        db.connection.execute(
+            """
+            INSERT INTO reports (id, run_id, run_attempt_id, schema_version,
+                                 input_hash, report_json, created_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                "legacy-report",
+                run_id,
+                "attempt3",
+                "sha256:legacy",
+                _canonical_json(legacy_report),
+                "2026-07-01T00:00:00Z",
+            ),
+        )
+        db.connection.commit()
+
+        # GET must return the legacy report (readable).
+        report_response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+        assert report_response.status_code == 200
+        body = report_response.json()
+        assert body["schema_version"] == 1
+
+        # JSON export must work.
+        export_response = client.get(
+            f"/api/platform/v1/runs/{run_id}/report/export?format=json"
+        )
+        assert export_response.status_code == 200
+        assert "passed" in export_response.text
+
+
+def _canonical_json(value):
+    import json
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))

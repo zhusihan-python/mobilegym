@@ -31,6 +31,7 @@ from test_platform.domain.reports.functional import build_functional_report
 from test_platform.domain.reports.gates import evaluate_gates
 from test_platform.domain.reports.input import ReportInput
 from test_platform.domain.reports.performance import build_performance_report
+from test_platform.domain.reports.reliability import build_reliability_report
 from test_platform.domain.reports.sequence import build_sequence_report
 from test_platform.domain.runs import RunDetail, RunDomainError, RunNotFound, RunSummary
 from test_platform.domain.targets import (
@@ -860,6 +861,7 @@ class ReportInputRepository:
         rows = self.database.connection.execute(
             """
             SELECT ea.id, ea.episode_id, e.episode_key, e.pair_key,
+                   e.materialization_key,
                    ea.lane_attempt_id, la.lane_id, l.lane_key, ea.attempt_no,
                    ea.state, ea.outcome, ea.error_code, ea.result_json,
                    ea.artifact_root, ea.started_at, ea.ended_at, ea.created_at
@@ -1172,7 +1174,7 @@ class ReportRepository:
             FROM reports
             WHERE run_id = ?
               AND run_attempt_id = ?
-              AND schema_version = 1
+              AND schema_version = 2
               AND input_hash = ?
             ORDER BY created_at DESC, id DESC
             LIMIT 1
@@ -1973,9 +1975,10 @@ def _build_report_payload(
     performance = build_performance_report(report_input)
     comparison = build_comparison_report(report_input)
     sequence = build_sequence_report(report_input)
+    reliability = build_reliability_report(report_input)
     report = {
         "id": report_id,
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": report_input.run_id,
         "run_attempt_id": report_input.run_attempt_id,
         "input_hash": report_input.input_hash,
@@ -1984,6 +1987,7 @@ def _build_report_payload(
         "performance": performance,
         "comparison": comparison,
         "sequence": sequence,
+        "reliability": reliability,
         "created_at": created_at,
     }
     report["gate"] = evaluate_gates(report, thresholds)
@@ -2046,6 +2050,7 @@ def _map_report_episode_attempt(row: sqlite3.Row) -> dict[str, Any]:
         "episode_id": str(row["episode_id"]),
         "episode_key": str(row["episode_key"]),
         "pair_key": str(row["pair_key"]),
+        "materialization_key": str(row["materialization_key"]),
         "lane_attempt_id": str(row["lane_attempt_id"]),
         "lane_id": str(row["lane_id"]),
         "lane_key": str(row["lane_key"]),
@@ -2143,6 +2148,7 @@ def _planned_lane_episodes(
                 "episode_id": episode["episode_id"],
                 "episode_key": episode["episode_key"],
                 "pair_key": episode["pair_key"],
+                "materialization_key": episode["materialization_key"],
                 "task_base_id": episode["task_base_id"],
                 "task_id": episode["task_id"],
                 "lane_id": lane["lane_id"],

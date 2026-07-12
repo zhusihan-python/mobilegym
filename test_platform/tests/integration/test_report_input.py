@@ -267,6 +267,7 @@ def test_report_input_selects_latest_terminal_raw_rows_and_planned_incompletes(t
         assert selected_attempts["ea_base_ep0"]["lane_attempt_id"] == "attempt3_baseline"
         assert selected_attempts["ea_base_ep0"]["attempt_no"] == 1
         assert selected_attempts["ea_base_ep0"]["outcome"] == "SUCCESS"
+        assert "materialization_key" in selected_attempts["ea_base_ep0"]
         assert selected_attempts["ea_base_ep0"]["error_code"] is None
         assert selected_attempts["ea_base_ep0"]["result_json"]["execution"]["runtime_s"] == 10.5
 

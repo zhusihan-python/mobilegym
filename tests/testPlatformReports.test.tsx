@@ -139,6 +139,42 @@ const report: RunReport = {
       },
     ],
   },
+  reliability: {
+    schema_version: 1,
+    summary: {
+      total_materializations: 2,
+      pass_at_1: 0.75,
+      flaky_tasks: 1,
+      insufficient_trials_tasks: 0,
+    },
+    tasks: [
+      {
+        lane_key: 'baseline',
+        materialization_key: 'task.alpha|i0|s1|r1',
+        task_id: 'task.alpha',
+        counts: { planned: 3, attempted: 3, valid: 3, success: 3, failure: 0, error: 0, cancelled: 0, missing: 0 },
+        pass_at_k: { '1': 1.0, '2': 1.0, '5': 1.0 },
+        flakiness: 'stable' as const,
+      },
+      {
+        lane_key: 'candidate',
+        materialization_key: 'task.alpha|i0|s1|r1',
+        task_id: 'task.alpha',
+        counts: { planned: 3, attempted: 3, valid: 3, success: 2, failure: 1, error: 0, cancelled: 0, missing: 0 },
+        pass_at_k: { '1': 0.6667, '2': 1.0, '5': 1.0 },
+        flakiness: 'flaky' as const,
+      },
+      {
+        lane_key: 'candidate',
+        materialization_key: 'task.beta|i0|s2|r1',
+        task_id: 'task.beta',
+        counts: { planned: 3, attempted: 3, valid: 3, success: 3, failure: 0, error: 0, cancelled: 0, missing: 0 },
+        pass_at_k: { '1': 1.0, '2': 1.0, '5': 1.0 },
+        flakiness: 'stable' as const,
+      },
+    ],
+    pass_k_values: [1, 2, 5],
+  },
   created_at: '2026-07-06T00:00:11.000Z',
 };
 
@@ -446,6 +482,14 @@ describe('Test Platform reports UI', () => {
     expect((await screen.findByTestId('tp-gate-verdict')).textContent).toContain('failed');
     expect(screen.getByTestId('tp-report-regressions').textContent).toContain('1');
     expect(screen.getByTestId('tp-report-runtime-delta').textContent).toContain('20%');
+    // Reliability section renders Pass@1 and flaky count.
+    const reliability = screen.getByTestId('tp-report-reliability');
+    expect(reliability.textContent).toContain('0.75');
+    expect(reliability.textContent).toContain('task.alpha');
+    expect(reliability.textContent).toContain('flaky');
+    // Paired lanes sharing materialization_key are shown as separate rows.
+    expect(reliability.textContent).toContain('baseline');
+    expect(reliability.textContent).toContain('candidate');
     expect(screen.getByTestId('tp-report-pair-pair-regression')).toBeTruthy();
     expect(screen.getByTestId('tp-report-pair-pair-stable')).toBeTruthy();
 
