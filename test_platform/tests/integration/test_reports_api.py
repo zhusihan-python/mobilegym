@@ -52,6 +52,32 @@ def _make_completed_reportable_run(client: TestClient) -> str:
     return run_id
 
 
+def _write_monitor_csv(database, run_id: str) -> str:
+    """Write a monitor.csv into the candidate lane's artifact root."""
+    row = database.connection.execute(
+        """
+        SELECT la.artifact_root FROM lane_attempts AS la
+        JOIN lanes AS l ON l.id = la.lane_id
+        WHERE l.run_id = ? AND l.lane_key = 'candidate'
+        ORDER BY la.run_attempt_id DESC LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    artifact_root = row["artifact_root"]
+    monitor_dir = database.settings.runs_dir / run_id / artifact_root
+    monitor_dir.mkdir(parents=True, exist_ok=True)
+    monitor_path = monitor_dir / "monitor.csv"
+    monitor_path.write_text(
+        "timestamp,load1,load5,mem_used_gb,mem_pct,"
+        "tcp_established,tcp_time_wait,tcp_close_wait\n"
+        "1,0.5,0.3,2.0,50,10,5,0\n"
+        "2,0.8,0.4,2.5,60,12,6,0\n"
+    )
+    return artifact_root
+
+
 def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
     app = create_app(_settings(tmp_path))
 
@@ -67,6 +93,8 @@ def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
         assert report["schema_version"] == 2
         assert "reliability" in report
         assert "tasks" in report["reliability"]
+        assert "infrastructure" in report
+        assert report["infrastructure"]["available"] is False  # no monitor.csv in test
         assert report["gate"]["verdict"] == "failed"
         assert report["gate"]["thresholds"] == {
             "max_candidate_errors": 0,
@@ -408,3 +436,167 @@ def test_legacy_schema_v1_report_remains_readable_and_exportable(tmp_path):
 def _canonical_json(value):
     import json
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def test_infrastructure_report_with_monitor_csv(tmp_path):
+    """A run with monitor.csv must report infrastructure available=true,
+    and the monitor file must be discoverable via the artifact API."""
+    app = create_app(_settings(tmp_path))
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        db = client.app.state.database
+
+        # Write monitor.csv into the candidate lane root.
+        _write_monitor_csv(db, run_id)
+
+        # Delete any cached report so it rebuilds with monitor data.
+        db.connection.execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
+        db.connection.commit()
+
+        # Report must show infrastructure available.
+        report_response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+        assert report_response.status_code == 200
+        infra = report_response.json().get("infrastructure", {})
+        assert infra.get("available") is True
+        assert len(infra.get("sources", [])) > 0
+        source = infra["sources"][0]
+        assert source["lane_key"] == "candidate"
+        assert source["available"] is True
+        assert "host" in source["dimensions"]
+        assert source["dimensions"]["host"]["available"] is True
+
+        # Artifact API must list the monitor file.
+        artifacts_response = client.get(f"/api/platform/v1/runs/{run_id}/artifacts")
+        assert artifacts_response.status_code == 200
+        monitor_artifacts = [
+            a for a in artifacts_response.json()["items"]
+            if a.get("kind") == "monitor"
+        ]
+        assert len(monitor_artifacts) >= 1
+        assert "monitor.csv" in monitor_artifacts[0]["relative_path"]
+
+        # Source artifact_id must match the artifact API's id.
+        assert source["artifact_id"] == monitor_artifacts[0]["id"]
+
+        # Artifact content endpoint must serve it.
+        artifact_id = monitor_artifacts[0]["id"]
+        content_response = client.get(
+            f"/api/platform/v1/runs/{run_id}/artifacts/{artifact_id}/content"
+        )
+        assert content_response.status_code == 200
+        assert "timestamp" in content_response.text
+        assert "load1" in content_response.text
+
+
+def test_infrastructure_report_exposes_bounds_metadata(tmp_path):
+    """Infrastructure report must expose scan_truncated_lanes and
+    excluded_source_count when discovery overflows.
+
+    This test creates 40 subdirectories with monitor.csv (within the 65-entry
+    scan limit) to trigger the 32-source limit, NOT scan overflow.
+    """
+    import csv
+
+    app = create_app(_settings(tmp_path))
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        db = client.app.state.database
+
+        # Get candidate lane root.
+        row = db.connection.execute(
+            """
+            SELECT la.artifact_root FROM lane_attempts AS la
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE l.run_id = ? AND l.lane_key = 'candidate'
+            ORDER BY la.run_attempt_id DESC LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        lane_root = db.settings.runs_dir / run_id / row["artifact_root"]
+
+        # Create 40 subdirectories with monitor.csv (within 65-entry scan limit).
+        for i in range(40):
+            d = lane_root / f"ts{i:04d}"
+            d.mkdir(parents=True)
+            monitor_path = d / "monitor.csv"
+            with open(monitor_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["timestamp", "load1"])
+                w.writerow(["1", "0.5"])
+
+        # Delete cached report.
+        db.connection.execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
+        db.connection.commit()
+
+        report_response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+        assert report_response.status_code == 200
+        infra = report_response.json().get("infrastructure", {})
+        # Source limit exceeded: 40 discovered, 32 accepted, 8 excluded.
+        assert infra["discovered_source_count"] == 40
+        assert infra["accepted_source_count"] == 32
+        assert infra["excluded_source_count"] == 8
+        assert len(infra["sources"]) == 32
+
+
+def test_infrastructure_report_scan_overflow_zero_sources(tmp_path):
+    """When scan overflows and no direct monitor.csv exists, the report must
+    return 200 with sources=[], reason=scan_overflow, and all collectors
+    unavailable. This is the TypeError regression test."""
+    app = create_app(_settings(tmp_path))
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        db = client.app.state.database
+
+        # Get candidate lane root. Do NOT write a direct monitor.csv.
+        row = db.connection.execute(
+            """
+            SELECT la.artifact_root FROM lane_attempts AS la
+            JOIN lanes AS l ON l.id = la.lane_id
+            WHERE l.run_id = ? AND l.lane_key = 'candidate'
+            ORDER BY la.run_attempt_id DESC LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        lane_root = db.settings.runs_dir / run_id / row["artifact_root"]
+        lane_root.mkdir(parents=True, exist_ok=True)
+
+        # Create 70 empty subdirectories to trigger scan overflow.
+        for i in range(70):
+            (lane_root / f"ts{i:04d}").mkdir()
+
+        # Delete cached report.
+        db.connection.execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
+        db.connection.commit()
+
+        report_response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+        assert report_response.status_code == 200
+        infra = report_response.json().get("infrastructure", {})
+        assert infra["available"] is False
+        assert infra["reason"] == "scan_overflow"
+        assert infra["sources"] == []
+        assert "candidate" in infra["scan_truncated_lanes"]
+        # All collectors should be listed as unavailable.
+        assert set(infra["unavailable_collectors"]) == {
+            "host", "process", "gpu", "tcp", "model_server",
+        }
+
+
+def test_infrastructure_report_no_monitor_available_false(tmp_path):
+    """A run without monitor.csv must report infrastructure available=false
+    with reason=no_monitor_artifact."""
+    app = create_app(_settings(tmp_path))
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        db = client.app.state.database
+
+        # Delete cached report.
+        db.connection.execute("DELETE FROM reports WHERE run_id = ?", (run_id,))
+        db.connection.commit()
+
+        report_response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+        assert report_response.status_code == 200
+        infra = report_response.json().get("infrastructure", {})
+        assert infra["available"] is False
+        assert infra["reason"] == "no_monitor_artifact"
+        assert infra["excluded_source_count"] == 0
+        assert infra["scan_truncated_lanes"] == []

@@ -175,6 +175,45 @@ const report: RunReport = {
     ],
     pass_k_values: [1, 2, 5],
   },
+  infrastructure: {
+    schema_version: 1,
+    available: true,
+    scan_truncated_lanes: ['candidate'],
+    discovered_source_count: 3,
+    accepted_source_count: 1,
+    excluded_source_count: 2,
+    sources: [
+      {
+        lane_key: 'candidate',
+        relative_path: 'lanes/candidate/attempts/0001/monitor.csv',
+        artifact_id: 'artifact_abc123',
+        format_version: 'bench_env.monitor.csv.v1',
+        available: true,
+        status: 'ok',
+        truncated_at_bytes: null,
+        truncated_at_rows: null,
+        sample_window: { start: '1', end: '10', duration_s: 9, sample_count: 10 },
+        dimensions: {
+          host: {
+            available: true,
+            metrics: {
+              load_1m: { unit: 'load', sample_count: 10, p50: 0.5, p95: 0.9 },
+            },
+          },
+          gpu: {
+            available: true,
+            metrics: {
+              '0.utilization': { unit: 'percent', sample_count: 10, p50: 30, p95: 50 },
+            },
+          },
+        },
+        unavailable_collectors: ['process', 'tcp', 'model_server'],
+        excluded: { malformed_cells: 0, unknown_columns: [] },
+      },
+    ],
+    unavailable_collectors: ['process', 'tcp', 'model_server'],
+    partially_unavailable_collectors: [],
+  },
   created_at: '2026-07-06T00:00:11.000Z',
 };
 
@@ -490,6 +529,21 @@ describe('Test Platform reports UI', () => {
     // Paired lanes sharing materialization_key are shown as separate rows.
     expect(reliability.textContent).toContain('baseline');
     expect(reliability.textContent).toContain('candidate');
+    // Infrastructure section renders per-source dimensions.
+    const infra = screen.getByTestId('tp-report-infrastructure');
+    expect(infra.textContent).toContain('candidate');
+    expect(infra.textContent).toContain('host');
+    expect(infra.textContent).toContain('gpu');
+    // Scan overflow warning.
+    expect(infra.textContent).toContain('Scan overflow');
+    expect(infra.textContent).toContain('candidate');
+    // Excluded source warning.
+    expect(infra.textContent).toContain('2 monitor source(s) exceeded the limit');
+    // Raw monitor link must use the real artifact_id.
+    const monitorLink = screen.getByRole('link', { name: 'Raw monitor data' });
+    expect(monitorLink.getAttribute('href')).toContain('artifact_abc123');
+    expect(monitorLink.getAttribute('href')).toContain('/artifacts/');
+    expect(monitorLink.getAttribute('href')).toContain('/content');
     expect(screen.getByTestId('tp-report-pair-pair-regression')).toBeTruthy();
     expect(screen.getByTestId('tp-report-pair-pair-stable')).toBeTruthy();
 

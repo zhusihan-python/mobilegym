@@ -323,6 +323,41 @@ export type RunReport = {
     }>;
     pass_k_values: number[];
   };
+  infrastructure?: {
+    schema_version: number;
+    available: boolean;
+    reason?: string | null;
+    sources: Array<{
+      lane_key: string;
+      relative_path: string;
+      artifact_id: string;
+      format_version: string;
+      available: boolean;
+      status: string;
+      truncated_at_bytes?: number | null;
+      truncated_at_rows?: number | null;
+      truncated_at_columns?: boolean;
+      sample_window?: { start: string; end: string; duration_s: number | null; sample_count: number } | null;
+      dimensions: Record<string, {
+        available: boolean;
+        reason?: string | null;
+        metrics?: Record<string, {
+          unit: string;
+          sample_count: number;
+          p50?: number | null;
+          p95?: number | null;
+        }>;
+      }>;
+      unavailable_collectors: string[];
+      excluded: { malformed_cells: number; unknown_columns: string[] };
+    }>;
+    scan_truncated_lanes: string[];
+    discovered_source_count: number;
+    accepted_source_count: number;
+    excluded_source_count: number;
+    unavailable_collectors: string[];
+    partially_unavailable_collectors: string[];
+  };
   gate: GateResult;
   created_at: string;
 };

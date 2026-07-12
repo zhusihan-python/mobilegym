@@ -688,7 +688,7 @@ class RunRepository:
 
 
 class ReportInputRepository:
-    """Build the stable raw input used by report builders.
+    """Build the stable, canonical input consumed by report section builders.
 
     This intentionally does not reuse ``RunRepository.get`` because the UI DTO
     omits report-critical raw fields such as ``episode_attempts.id`` and
@@ -697,6 +697,7 @@ class ReportInputRepository:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+        # settings accessed via self.database.settings
 
     def get_for_run(self, run_id: str) -> ReportInput:
         return self._get_for_run(run_id, attempt_states=("completed", "failed"))
@@ -770,6 +771,56 @@ class ReportInputRepository:
         imported = _imported_metadata(run_plan)
         if imported is not None:
             provenance["imported"] = imported
+
+        # TP-H12: discover and load monitor sources (per-lane, shared helper).
+        monitor_sources = None
+        if self.database.settings is not None:
+            from test_platform.domain.reports.monitor_source import discover_monitor_sources
+            from test_platform.domain.reports.monitor_csv import load_monitor_csv
+
+            run_root = self.database.settings.runs_dir / str(run["id"])
+            discovery = discover_monitor_sources(run_root, lanes)
+            monitor_sources = []
+            for src in discovery.sources:
+                try:
+                    csv_result = load_monitor_csv(src.resolved_path)
+                except (OSError, PermissionError):
+                    continue
+                monitor_sources.append({
+                    "lane_key": src.lane_key,
+                    "relative_path": src.relative_path,
+                    "csv_result": {
+                        "headers": csv_result.headers,
+                        "rows": csv_result.rows,
+                        "row_count": csv_result.row_count,
+                        "truncated_at_bytes": csv_result.truncated_at_bytes,
+                        "truncated_at_rows": csv_result.truncated_at_rows,
+                        "truncated_at_columns": csv_result.truncated_at_columns,
+                        "malformed_cells": csv_result.malformed_cells,
+                        "status": csv_result.status,
+                        "unknown_columns": csv_result.unknown_columns,
+                    },
+                })
+            if not monitor_sources:
+                # Even with no sources, propagate scan overflow and discovery
+                # bounds metadata so the infrastructure report can explain why.
+                if discovery.scan_truncated_lanes or discovery.excluded_source_count > 0:
+                    monitor_sources = [{
+                        "_scan_truncated_lanes": discovery.scan_truncated_lanes,
+                        "_discovered_count": discovery.discovered_count,
+                        "_accepted_count": discovery.accepted_count,
+                        "_excluded_source_count": discovery.excluded_source_count,
+                    }]
+                else:
+                    monitor_sources = None
+            else:
+                # Propagate scan overflow and discovery bounds metadata.
+                for src in monitor_sources:
+                    src["_scan_truncated_lanes"] = discovery.scan_truncated_lanes
+                    src["_discovered_count"] = discovery.discovered_count
+                    src["_accepted_count"] = discovery.accepted_count
+                    src["_excluded_source_count"] = discovery.excluded_source_count
+
         return ReportInput.from_payload(
             run_id=str(run["id"]),
             run_attempt_id=run_attempt_id,
@@ -777,6 +828,7 @@ class ReportInputRepository:
             planned_lane_episodes=planned_lane_episodes,
             episode_attempts=episode_attempts,
             comparison=comparison,
+            monitor_sources=monitor_sources if monitor_sources else None,
         )
 
     def _lanes_for_attempt(
@@ -788,6 +840,8 @@ class ReportInputRepository:
             """
             SELECT l.id AS lane_id, l.lane_key, l.role, l.target_id,
                    l.target_revision_id, la.id AS lane_attempt_id,
+                   la.artifact_root AS lane_attempt_artifact_root,
+                   la.run_attempt_id AS lane_run_attempt_id,
                    la.state AS lane_attempt_state
             FROM lanes AS l
             LEFT JOIN lane_attempts AS la
@@ -807,6 +861,16 @@ class ReportInputRepository:
                 "lane_attempt_id": (
                     str(row["lane_attempt_id"])
                     if row["lane_attempt_id"] is not None
+                    else None
+                ),
+                "artifact_root": (
+                    str(row["lane_attempt_artifact_root"])
+                    if row["lane_attempt_artifact_root"] is not None
+                    else None
+                ),
+                "run_attempt_id": (
+                    str(row["lane_run_attempt_id"])
+                    if row["lane_run_attempt_id"] is not None
                     else None
                 ),
                 "lane_attempt_state": (
@@ -958,6 +1022,7 @@ class DiagnosticInputRepository:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+        # settings accessed via self.database.settings
 
     def get_for_run(self, run_id: str) -> DiagnosticInput:
         report_input = ReportInputRepository(self.database).get_for_run(run_id)
@@ -1046,6 +1111,7 @@ class DiagnosticInputRepository:
 class ReportRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
+        # settings accessed via self.database.settings
 
     def get(self, run_id: str) -> dict[str, Any]:
         row = self.database.connection.execute(
@@ -1378,6 +1444,59 @@ class ArtifactRepository:
                                 now,
                             ),
                         )
+
+                # TP-H12: index monitor artifacts at lane root level (not
+                # under episode artifact roots). Uses the shared discovery
+                # helper so artifact listing matches report ingestion.
+                from test_platform.domain.reports.monitor_source import (
+                    discover_monitor_sources,
+                )
+                lane_attempt_rows = self.database.connection.execute(
+                    """
+                    SELECT la.id, la.lane_id, l.lane_key, la.run_attempt_id,
+                           la.artifact_root
+                    FROM lane_attempts AS la
+                    JOIN lanes AS l ON l.id = la.lane_id
+                    WHERE l.run_id = ?
+                    ORDER BY l.lane_key
+                    """,
+                    (run_id,),
+                ).fetchall()
+                discovery = discover_monitor_sources(
+                    run_root, [dict(r) for r in lane_attempt_rows],
+                )
+                for src in discovery.sources:
+                    try:
+                        rel = src.relative_path
+                        resolved = resolve_artifact_path(run_root, rel)
+                    except ArtifactPathError:
+                        continue
+                    payload = {"run_id": run_id, "relative_path": rel}
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO artifacts (
+                          id, run_id, run_attempt_id, lane_attempt_id,
+                          episode_attempt_id, kind, relative_path,
+                          media_type, size_bytes, sha256, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "artifact_"
+                            + canonical_sha256(payload).removeprefix("sha256:"),
+                            run_id,
+                            src.run_attempt_id,
+                            src.lane_attempt_id,
+                            None,  # episode_attempt_id=NULL for lane-level artifacts
+                            "monitor",
+                            rel,
+                            _media_type(rel),
+                            resolved.stat().st_size,
+                            _file_sha256(resolved),
+                            now,
+                        ),
+                    )
+
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -1976,6 +2095,8 @@ def _build_report_payload(
     comparison = build_comparison_report(report_input)
     sequence = build_sequence_report(report_input)
     reliability = build_reliability_report(report_input)
+    from test_platform.domain.reports.infrastructure import build_infrastructure_report
+    infrastructure = build_infrastructure_report(report_input)
     report = {
         "id": report_id,
         "schema_version": 2,
@@ -1988,6 +2109,7 @@ def _build_report_payload(
         "comparison": comparison,
         "sequence": sequence,
         "reliability": reliability,
+        "infrastructure": infrastructure,
         "created_at": created_at,
     }
     report["gate"] = evaluate_gates(report, thresholds)

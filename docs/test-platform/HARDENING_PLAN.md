@@ -766,18 +766,24 @@ infrastructure distributions for host, process, GPU, TCP, and supported
 model-server metrics. Missing collectors or dimensions remain explicit and do
 not fail functional reporting.
 
+Current evidence: [`evidence/2026-07-13-tp-h12-infrastructure.md`](evidence/2026-07-13-tp-h12-infrastructure.md).
+Monitor CSV ingestion is path-safe, streaming, and bounded. Per-lane
+distributions use a normalized metric registry with stable names and units.
+Availability rules are mechanical. UI shows availability status. TP-H12 is
+complete.
+
 ### Acceptance criteria
 
-- [ ] Monitor ingestion is path-contained, size-bounded, and tolerant of missing
+- [x] Monitor ingestion is path-contained, size-bounded, and tolerant of missing
       optional files.
-- [ ] Host, process, GPU, TCP, and model-server dimensions use stable names and
+- [x] Host, process, GPU, TCP, and model-server dimensions use stable names and
       units.
-- [ ] Infrastructure metrics are not mixed with Agent or simulator execution
+- [x] Infrastructure metrics are not mixed with Agent or simulator execution
       phases.
-- [ ] Malformed samples are counted and excluded with structured reasons.
-- [ ] Reports identify unavailable collectors and empty sample windows.
-- [ ] Existing reports without monitor artifacts remain readable.
-- [ ] The console renders concise infrastructure summaries and keeps raw samples
+- [x] Malformed samples are counted and excluded with structured reasons.
+- [x] Reports identify unavailable collectors and empty sample windows.
+- [x] Existing reports without monitor artifacts remain readable.
+- [x] The console renders concise infrastructure summaries and keeps raw samples
       lazy-loaded or artifact-linked.
 
 ### Test seam

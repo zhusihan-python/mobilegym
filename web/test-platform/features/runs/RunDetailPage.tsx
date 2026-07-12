@@ -926,6 +926,61 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
         </div>
       ) : null}
 
+      {data.infrastructure ? (
+        <div data-testid="tp-report-infrastructure">
+          <h3>Infrastructure</h3>
+          <p>
+            {data.infrastructure.available
+              ? `${data.infrastructure.sources.length} monitor source(s) found.`
+              : `No monitor data (${data.infrastructure.reason ?? 'unavailable'}).`}
+          </p>
+          {data.infrastructure.scan_truncated_lanes.length > 0 ? (
+            <p className="tp-hint" role="alert">
+              Scan overflow in lane(s): {data.infrastructure.scan_truncated_lanes.join(', ')}.
+              Some multiprocess monitor sources may be missing.
+            </p>
+          ) : null}
+          {data.infrastructure.excluded_source_count > 0 ? (
+            <p className="tp-hint" role="alert">
+              {data.infrastructure.excluded_source_count} monitor source(s) exceeded the limit and were excluded.
+            </p>
+          ) : null}
+          {data.infrastructure.sources.map((src) => (
+            <div key={`${src.lane_key}:${src.relative_path}`} data-testid={`tp-infra-source-${src.lane_key}`}>
+              <div className="tp-kicker">
+                {src.lane_key} · {src.status === 'truncated' ? 'partial' : src.status}
+                {!src.available ? ` · ${src.status}` : ''}
+                {src.sample_window ? ` · ${src.sample_window.sample_count} samples` : ''}
+              </div>
+              <table>
+                <thead>
+                  <tr><th>Dimension</th><th>Available</th><th>Key p95</th></tr>
+                </thead>
+                <tbody>
+                  {Object.entries(src.dimensions).map(([dim, info]) => {
+                    const metrics = info.metrics ?? {};
+                    const firstKey = Object.keys(metrics)[0];
+                    const p95 = firstKey ? metrics[firstKey]?.p95 : null;
+                    return (
+                      <tr key={dim}>
+                        <td>{dim}</td>
+                        <td>{info.available ? 'yes' : (info.reason ?? 'no')}</td>
+                        <td>{firstKey ? `${firstKey}: ${p95 ?? '—'}` : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {src.artifact_id ? (
+                <a href={`/api/platform/v1/runs/${run.id}/artifacts/${encodeURIComponent(src.artifact_id)}/content`}>
+                  Raw monitor data
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {sequenceGroups.length > 0 ? (
         <div className="tp-report-sequences" data-testid="tp-report-sequences">
           {sequenceGroups.map((group) => (
