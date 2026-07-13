@@ -4,65 +4,76 @@
 
 | Field | Value |
 |---|---|
-| Status | Active backlog |
-| Scope | Product directions that are recorded but not yet specified |
-| Current delivery focus | Hardening complete; no backlog item is authorized for implementation |
+| Status | Active planning register |
+| Scope | Product directions from backlog discovery through delivery authorization |
+| Current delivery focus | TP-FUTURE-01 product and architecture accepted; delivery planning is next and implementation is not authorized |
 
-Backlog entries describe opportunities, not accepted implementation contracts.
+Backlog entries begin as opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
-delivery plan.
+delivery plan, and a reviewed delivery plan before implementation.
 
 ## TP-FUTURE-01: Versioned Execution Profiles and execution-aware lanes
 
 | Field | Value |
 |---|---|
-| Status | Deferred TODO |
-| Priority | Discuss only after explicit product authorization |
+| Status | Product and architecture accepted; awaiting delivery plan |
+| Priority | Next planning candidate; implementation remains gated |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
-| Not authorized yet | Schema, migration, secret, UI, comparison-policy, retry, or rollout implementation |
+| Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
+| Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
+| Domain language | [`CONTEXT.md`](CONTEXT.md) |
+| Not authorized yet | Delivery issues, schema migration, runtime code, UI code, or rollout |
 
 ### Opportunity
 
 The Test Platform currently treats target and App comparison as the primary lane
 dimension while launch-time Agent and model settings are applied as execution
-configuration. A future product direction could make an Execution Profile a
-first-class immutable revision and define a lane as the combination of:
+configuration. The accepted product direction makes an Execution Profile a
+first-class immutable revision and defines a profile-aware Lane Binding as the
+combination of:
 
 - a frozen target revision; and
 - a frozen execution-profile revision.
 
-That would allow the existing prepared-episode and pairing guarantees to support
-model A/B or Agent A/B evaluation on the same simulator state. This direction is
-more aligned with MobileGym's agent-benchmarking purpose than expanding toward a
+This allows the existing Prepared Episode and pairing guarantees to support
+model A/B or Agent A/B evaluation on the same simulator state. It is more
+aligned with MobileGym's agent-benchmarking purpose than expansion toward a
 general arbitrary-DAG workflow system.
 
-### Discussion gate
+### Product and architecture decision
 
-The hardening plan is complete and its acceptance evidence is recorded. This
-removes the sequencing blocker, but it does not authorize design or
-implementation. Begin only after a separate product decision explicitly moves
-this item out of the backlog.
+The hardening plan is complete and its acceptance evidence is recorded. On
+2026-07-13, the user authorized product and architecture review and accepted the
+recommended product and module shape. The accepted requirements and architecture
+are linked above.
 
-The later discussion must resolve at least:
+The review resolved the original discussion list:
 
-- profile identity, revision, publication, and archival semantics;
-- which Agent, model, image, generation, judge, and timeout settings belong in a
-  profile;
-- secret references and redaction without storing secret values in immutable
-  revisions;
-- whether a lane references exactly one target revision and one profile revision;
-- allowed comparison dimensions and invariants when target and execution differ;
-- same-prepared-state guarantees for model or Agent comparisons;
-- run fingerprint and provenance changes;
-- clone, retry, and resume behavior when a profile changes;
-- migration and compatibility for existing workflows and run plans;
-- authoring, launch, report, baseline, and comparison UI;
-- how the current model-compatibility preflight result relates to a future
-  profile revision without making preflight itself the profile contract.
+- [x] profile identity, revision, publication, and archival semantics;
+- [x] Agent, model, Image Input Format, generation, Judge, timeout, target, and
+      orchestration ownership;
+- [x] private Credential Reference binding and public redaction without durable
+      secret values;
+- [x] exactly one Target Revision and one Execution Profile Revision per
+      profile-aware Lane Binding;
+- [x] Single, Target Comparison, and Execution Comparison invariants, with mixed
+      comparisons rejected;
+- [x] profile-independent, Run-scoped Prepared Episodes;
+- [x] Run Plan, Lane, report, and Strict Baseline fingerprint/provenance changes;
+- [x] clone, Retry, Resume, relaunch, archive, and new-head behavior;
+- [x] versioned readers and honest Legacy Execution Identity;
+- [x] separate profile authoring and Run Launch user flows;
+- [x] Compatibility Preflight as redacted Run Attempt evidence rather than a
+      profile contract.
 
-### Explicit non-decision
+### Remaining delivery gate
 
-This backlog entry does not select a storage schema, interface, adapter, workflow
-shape, or rollout plan. Those decisions belong in the future PRD and architecture
-review.
+The review selects the product contract, domain language, two-module seam,
+module interfaces, Workflow v2 Lane Slots, Run Plan v2 identity, causal
+comparison modes, and compatibility principles. It does not authorize or fully
+specify SQL migrations, HTTP payloads, file layout, a production secret adapter,
+vertical delivery slices, rollout, or compatibility-window removal.
+
+Those decisions belong in a separately reviewed delivery plan and implementation
+design. No implementation begins before that review is explicitly authorized.
