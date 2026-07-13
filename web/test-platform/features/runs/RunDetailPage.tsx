@@ -696,6 +696,7 @@ export function RunDetailPage() {
 function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
   const [regressionsOnly, setRegressionsOnly] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [baselineName, setBaselineName] = useState('');
   const defaultLaneKey =
     run.lanes.find((lane) => lane.role === 'baseline')?.lane_key ??
     run.lanes[0]?.lane_key ??
@@ -781,9 +782,14 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
   };
 
   const promote = () => {
-    promoteBaseline(run.id, selectedLaneKey)
+    const displayName = baselineName.trim();
+    if (!displayName) {
+      setMessage('Baseline name is required.');
+      return;
+    }
+    promoteBaseline(run.id, displayName, selectedLaneKey)
       .then((baseline) => {
-        setMessage(`Promoted baseline for ${baseline.lane_key}.`);
+        setMessage(`Promoted ${baseline.display_name}.`);
       })
       .catch((error) => {
         setMessage(error instanceof Error ? error.message : 'Baseline promotion failed.');
@@ -821,10 +827,22 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
               </option>
             ))}
           </select>
+          <label htmlFor="tp-baseline-name">Baseline name</label>
+          <input
+            id="tp-baseline-name"
+            value={baselineName}
+            maxLength={80}
+            onChange={(event) => setBaselineName(event.target.value)}
+            placeholder="Required"
+          />
           <button
             type="button"
             onClick={promote}
-            disabled={eligibility.status !== 'loaded' || !eligibility.value.eligible}
+            disabled={
+              eligibility.status !== 'loaded'
+              || !eligibility.value.eligible
+              || !baselineName.trim()
+            }
           >
             Promote baseline
           </button>

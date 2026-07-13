@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/platform/v1")
 class PromoteBaselineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    display_name: str
     lane_key: str | None = None
 
 
@@ -67,13 +68,51 @@ def export_run_report(
 def promote_run_baseline(
     request: Request,
     run_id: str,
-    body: PromoteBaselineRequest | None = None,
+    body: PromoteBaselineRequest,
 ) -> dict[str, object]:
     try:
         return BaselineRepository(get_database(request)).promote(
             run_id,
-            lane_key=body.lane_key if body is not None else None,
+            display_name=body.display_name,
+            lane_key=body.lane_key,
         )
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.get("/reports/{report_id}")
+def get_report(request: Request, report_id: str) -> dict[str, object]:
+    try:
+        return ReportRepository(get_database(request)).get_by_id(report_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.get("/projects/{project_id}/baselines")
+def list_project_baselines(
+    request: Request,
+    project_id: str,
+    include_archived: bool = False,
+) -> dict[str, object]:
+    items = BaselineRepository(get_database(request)).list_for_project(
+        project_id,
+        include_archived=include_archived,
+    )
+    return {"items": items, "next_cursor": None}
+
+
+@router.get("/baselines/{baseline_id}")
+def get_baseline(request: Request, baseline_id: str) -> dict[str, object]:
+    try:
+        return BaselineRepository(get_database(request)).get(baseline_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.post("/baselines/{baseline_id}/archive")
+def archive_baseline(request: Request, baseline_id: str) -> dict[str, object]:
+    try:
+        return BaselineRepository(get_database(request)).archive(baseline_id)
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 

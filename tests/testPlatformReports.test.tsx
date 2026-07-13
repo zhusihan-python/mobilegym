@@ -3,7 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
-import type { Baseline, Project, RunDetail, RunReport } from '../web/test-platform/api/types';
+import type {
+  Baseline,
+  BaselineDetail,
+  Project,
+  RunDetail,
+  RunReport,
+} from '../web/test-platform/api/types';
 
 const originalCreateObjectUrl = URL.createObjectURL;
 const originalRevokeObjectUrl = URL.revokeObjectURL;
@@ -219,16 +225,36 @@ const report: RunReport = {
 
 const baseline: Baseline = {
   id: 'baseline-1',
-  report_id: report.id,
-  run_id: run.id,
+  display_name: 'Release baseline',
   project_id: project.id,
-  workflow_version_id: 'wv1',
-  run_plan_hash: 'sha256:run-plan',
-  task_source_digest: 'sha256:tasks',
-  target_revision_ids: { baseline: 'rev-b', candidate: 'rev-c' },
+  source_run_id: run.id,
+  source_run_name: run.name,
   lane_key: 'baseline',
   target_revision_id: 'rev-b',
+  workflow_version_id: 'wv1',
+  report_id: report.id,
+  report_schema_version: 2,
   created_at: '2026-07-06T00:00:12.000Z',
+  archived_at: null,
+};
+
+const baselineDetail: BaselineDetail = {
+  baseline,
+  source_report: {
+    id: report.id,
+    run_id: run.id,
+    run_attempt_id: report.run_attempt_id,
+    schema_version: report.schema_version,
+    href: `/api/platform/v1/reports/${report.id}`,
+  },
+  replays: [
+    {
+      episode_key: 'task.alpha|i0',
+      episode_attempt_id: 'ea-b1',
+      run_attempt_no: 1,
+      href: `/api/platform/v1/runs/${run.id}/episodes/task.alpha%7Ci0/replay?lane_key=baseline&attempt_no=1`,
+    },
+  ],
 };
 
 const manualRun: RunDetail = {
@@ -446,6 +472,7 @@ describe('Test Platform reports UI', () => {
   });
 
   it('shows gate verdict, filters regressions, drills into pair diffs, exports, and promotes baseline', async () => {
+    let promotionCount = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
       const method = init?.method ?? 'GET';
@@ -509,6 +536,17 @@ describe('Test Platform reports UI', () => {
         });
       }
       if (url.pathname === `/api/platform/v1/runs/${run.id}/baseline` && method === 'POST') {
+        promotionCount += 1;
+        if (promotionCount > 1) {
+          return jsonResponse({
+            error: {
+              code: 'BASELINE_NAME_CONFLICT',
+              message: 'An active baseline with this name already exists in the project.',
+              details: [{ conflicting_baseline_id: baseline.id }],
+              request_id: 'request-duplicate',
+            },
+          }, 409);
+        }
         return jsonResponse(baseline, 201);
       }
 
@@ -566,8 +604,15 @@ describe('Test Platform reports UI', () => {
     await waitFor(() => {
       expect(
         (screen.getByRole('button', { name: 'Promote baseline' }) as HTMLButtonElement).disabled,
-      ).toBe(false);
+      ).toBe(true);
     });
+
+    fireEvent.change(screen.getByLabelText('Baseline name'), {
+      target: { value: 'Release baseline' },
+    });
+    expect(
+      (screen.getByRole('button', { name: 'Promote baseline' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
     fireEvent.click(screen.getByRole('button', { name: 'Promote baseline' }));
@@ -581,11 +626,133 @@ describe('Test Platform reports UI', () => {
         expect.stringContaining(`/runs/${run.id}/baseline`),
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ lane_key: 'baseline' }),
+          body: JSON.stringify({ display_name: 'Release baseline', lane_key: 'baseline' }),
         }),
       );
     });
-    expect(await screen.findByText('Promoted baseline for baseline.')).toBeTruthy();
+    expect(await screen.findByText('Promoted Release baseline.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Promote baseline' }));
+    expect(
+      await screen.findByText('An active baseline with this name already exists in the project.'),
+    ).toBeTruthy();
+  });
+
+  it('discovers baseline provenance, archives it, and reuses the released name', async () => {
+    window.history.pushState({}, '', '/test-platform/baselines');
+    let archived = false;
+    const reusedBaseline = { ...baseline, id: 'baseline-2' };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? 'GET';
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/baselines`) {
+        return jsonResponse({ items: archived ? [] : [baseline], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/baselines/${baseline.id}`) {
+        return jsonResponse({
+          ...baselineDetail,
+          baseline: archived
+            ? { ...baseline, archived_at: '2026-07-06T00:00:13.000Z' }
+            : baseline,
+        });
+      }
+      if (
+        url.pathname === `/api/platform/v1/baselines/${baseline.id}/archive`
+        && method === 'POST'
+      ) {
+        archived = true;
+        return jsonResponse({ ...baseline, archived_at: '2026-07-06T00:00:13.000Z' });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}`) {
+        return jsonResponse(run);
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/report`) {
+        return jsonResponse(report);
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/diagnostics`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          run_attempt_id: report.run_attempt_id,
+          input_hash: 'sha256:diagnostics',
+          provenance: report.provenance,
+          summary: { total: 0, by_category: {}, by_severity: {} },
+          items: [],
+        });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/artifacts`) {
+        return jsonResponse({ items: [] });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/baseline/eligibility`) {
+        return jsonResponse({
+          run_id: run.id,
+          run_attempt_id: report.run_attempt_id,
+          lane_key: url.searchParams.get('lane_key'),
+          eligible: true,
+          counts: { planned: 2, pass: 2, fail: 0, error: 0, cancelled: 0, incomplete: 0 },
+          reasons: [],
+        });
+      }
+      if (url.pathname === `/api/platform/v1/runs/${run.id}/baseline` && method === 'POST') {
+        return jsonResponse(reusedBaseline, 201);
+      }
+      throw new Error(`Unexpected request: ${method} ${url.pathname}${url.search}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole('link', { name: 'Release baseline' })).toBeTruthy();
+    const catalog = screen.getByTestId('tp-baselines-list');
+    expect(catalog.textContent).toContain(run.name);
+    expect(catalog.textContent).toContain('baseline');
+    expect(catalog.textContent).toContain('rev-b');
+    expect(catalog.textContent).toContain('wv1');
+    expect(catalog.textContent).toContain('v2');
+
+    fireEvent.click(screen.getByRole('link', { name: 'Release baseline' }));
+    expect(await screen.findByRole('heading', { name: 'Release baseline' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open source report' }).getAttribute('href')).toBe(
+      baselineDetail.source_report.href,
+    );
+    expect(screen.getByRole('link', { name: 'Replay task.alpha|i0' }).getAttribute('href')).toBe(
+      baselineDetail.replays[0].href,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive baseline' }));
+    expect(await screen.findByText('Baseline archived. Its source evidence remains available.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('link', { name: 'Open source run' }));
+    expect(await screen.findByText('Eligible for strict baseline promotion.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Baseline name'), {
+      target: { value: 'Release baseline' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Promote baseline' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/runs/${run.id}/baseline`),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ display_name: 'Release baseline', lane_key: 'baseline' }),
+        }),
+      );
+    });
+    expect(await screen.findByText('Promoted Release baseline.')).toBeTruthy();
   });
 
   it('groups manual sequence report items under the ordered sequence', async () => {

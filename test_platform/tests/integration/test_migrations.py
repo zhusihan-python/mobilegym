@@ -1,7 +1,13 @@
 import sqlite3
+import shutil
 
+import pytest
+from fastapi.testclient import TestClient
+
+from test_platform.api.app import create_app
 from test_platform.config import PlatformSettings
 from test_platform.persistence.database import Database
+from test_platform.persistence.migrations import MIGRATIONS_DIR, apply_migrations
 
 
 def _table_names(database_path):
@@ -71,6 +77,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (11, "0011_retry_resume_selection.sql"),
         (12, "0012_manual_sequence_episode_metadata.sql"),
         (13, "0013_run_attempt_compatibility.sql"),
+        (14, "0014_named_baselines.sql"),
     ]
 
 
@@ -279,4 +286,126 @@ def test_database_initialization_is_idempotent(tmp_path):
         (11, "0011_retry_resume_selection.sql"),
         (12, "0012_manual_sequence_episode_metadata.sql"),
         (13, "0013_run_attempt_compatibility.sql"),
+        (14, "0014_named_baselines.sql"),
     ]
+
+
+def test_baseline_catalog_migration_upgrades_legacy_rows_and_releases_archived_names(
+    tmp_path,
+):
+    legacy_migrations = tmp_path / "legacy_migrations"
+    legacy_migrations.mkdir()
+    for migration_path in MIGRATIONS_DIR.glob("*.sql"):
+        if int(migration_path.name.split("_", 1)[0]) <= 13:
+            shutil.copy2(migration_path, legacy_migrations / migration_path.name)
+
+    database_path = tmp_path / "platform.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        apply_migrations(connection, legacy_migrations)
+        connection.execute(
+            "INSERT INTO projects (id, name, slug, name_key, archived_at, created_at, updated_at) "
+            "VALUES ('p1','Project','project','project',NULL,'2026-07-13T00:00:00.000Z','2026-07-13T00:00:00.000Z')"
+        )
+        connection.execute(
+            "INSERT INTO workflows (id, project_id, name, draft_definition_json, created_at, updated_at) "
+            "VALUES ('w1','p1','Workflow','{}','2026-07-13T00:00:00.000Z','2026-07-13T00:00:00.000Z')"
+        )
+        connection.execute(
+            "INSERT INTO workflow_versions "
+            "(id, workflow_id, version_no, status, definition_json, definition_hash, created_at, published_at) "
+            "VALUES ('wv1','w1',1,'published','{}','hash','2026-07-13T00:00:00.000Z','2026-07-13T00:00:00.000Z')"
+        )
+        connection.execute(
+            "INSERT INTO runs "
+            "(id, project_id, workflow_version_id, name, state, run_plan_json, run_plan_hash, "
+            "artifact_root, next_event_sequence, created_at, updated_at) "
+            "VALUES ('r1','p1','wv1','Source run','completed','{}','run-hash','runs/r1',1,"
+            "'2026-07-13T00:00:00.000Z','2026-07-13T00:00:00.000Z')"
+        )
+        connection.execute(
+            "INSERT INTO run_attempts "
+            "(id, run_id, attempt_no, reason, state, created_at) "
+            "VALUES ('ra1','r1',1,'initial','completed','2026-07-13T00:00:00.000Z')"
+        )
+        connection.execute(
+            "INSERT INTO reports "
+            "(id, run_id, run_attempt_id, schema_version, input_hash, report_json, created_at) "
+            "VALUES ('report1','r1','ra1',2,'report-hash','{}','2026-07-13T00:00:00.000Z')"
+        )
+        connection.execute(
+            "INSERT INTO baselines "
+            "(id, report_id, run_id, project_id, workflow_version_id, run_plan_hash, "
+            "task_source_digest, target_revision_ids_json, lane_key, target_revision_id, created_at) "
+            "VALUES ('legacy-a','report1','r1','p1','wv1','run-hash','tasks-hash',"
+            "'{\"candidate\":\"rev1\"}','candidate','rev1','2026-07-13T00:00:00.000Z')"
+        )
+        connection.commit()
+
+        apply_migrations(connection)
+
+        legacy = connection.execute(
+            "SELECT display_name, name_key, archived_at FROM baselines WHERE id = 'legacy-a'"
+        ).fetchone()
+        assert dict(legacy) == {
+            "display_name": "Legacy baseline legacy-a",
+            "name_key": "legacy baseline legacy-a",
+            "archived_at": None,
+        }
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO baselines "
+                "(id, report_id, run_id, project_id, workflow_version_id, run_plan_hash, "
+                "task_source_digest, target_revision_ids_json, lane_key, target_revision_id, "
+                "display_name, name_key, archived_at, created_at) "
+                "VALUES ('duplicate','report1','r1','p1','wv1','run-hash','tasks-hash',"
+                "'{\"candidate\":\"rev1\"}','candidate','rev1','Legacy baseline legacy-a',"
+                "'legacy baseline legacy-a',NULL,'2026-07-13T00:01:00.000Z')"
+            )
+        connection.rollback()
+        connection.execute(
+            "UPDATE baselines SET archived_at = '2026-07-13T00:02:00.000Z' "
+            "WHERE id = 'legacy-a'"
+        )
+        connection.execute(
+            "INSERT INTO baselines "
+            "(id, report_id, run_id, project_id, workflow_version_id, run_plan_hash, "
+            "task_source_digest, target_revision_ids_json, lane_key, target_revision_id, "
+            "display_name, name_key, archived_at, created_at) "
+            "VALUES ('reused','report1','r1','p1','wv1','run-hash','tasks-hash',"
+            "'{\"candidate\":\"rev1\"}','candidate','rev1','Legacy baseline legacy-a',"
+            "'legacy baseline legacy-a',NULL,'2026-07-13T00:03:00.000Z')"
+        )
+        connection.commit()
+
+        settings = PlatformSettings(
+            database_path=database_path,
+            runs_dir=tmp_path / "runs",
+        )
+        connection.close()
+        with TestClient(create_app(settings)) as client:
+            listed = client.get(
+                "/api/platform/v1/projects/p1/baselines?include_archived=true"
+            )
+            assert listed.status_code == 200
+            legacy_summary = next(
+                item for item in listed.json()["items"] if item["id"] == "legacy-a"
+            )
+            assert legacy_summary["display_name"] == "Legacy baseline legacy-a"
+            assert legacy_summary["archived_at"] == "2026-07-13T00:02:00.000Z"
+
+            detail = client.get("/api/platform/v1/baselines/legacy-a")
+            assert detail.status_code == 200
+            assert detail.json()["baseline"] == legacy_summary
+            assert detail.json()["source_report"] == {
+                "id": "report1",
+                "run_id": "r1",
+                "run_attempt_id": "ra1",
+                "schema_version": 2,
+                "href": "/api/platform/v1/reports/report1",
+            }
+    finally:
+        connection.close()

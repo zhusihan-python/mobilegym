@@ -111,7 +111,10 @@ def test_imported_run_api_preserves_source_and_blocks_strict_baseline(tmp_path):
         eligibility = client.get(
             f"/api/platform/v1/runs/{imported['id']}/baseline/eligibility"
         )
-        baseline = client.post(f"/api/platform/v1/runs/{imported['id']}/baseline")
+        baseline = client.post(
+            f"/api/platform/v1/runs/{imported['id']}/baseline",
+            json={"display_name": "Imported baseline"},
+        )
         assert eligibility.status_code == 200
         assert eligibility.json()["eligible"] is False
         assert "STRICT_PROVENANCE_INCOMPLETE" in [

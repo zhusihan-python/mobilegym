@@ -808,6 +808,12 @@ npx vitest run --config vitest.platform.config.ts tests/testPlatformReports.test
 
 ## TP-H13: Add named, discoverable strict baselines
 
+Current evidence: [`evidence/2026-07-13-tp-h13-named-baselines.md`](evidence/2026-07-13-tp-h13-named-baselines.md).
+Strict promotion now requires a normalized name, active names are unique per
+project, legacy rows receive deterministic labels, and the console supports
+discovery, immutable source inspection, archive, and name reuse. TP-H13 is
+complete.
+
 ### What to build
 
 Turn strict baseline promotion into a complete product capability: require a
@@ -817,19 +823,19 @@ deterministic legacy labels.
 
 ### Acceptance criteria
 
-- [ ] New strict baselines require a non-empty bounded display name.
-- [ ] Active names are unique within a project and duplicate errors are
+- [x] New strict baselines require a non-empty bounded display name.
+- [x] Active names are unique within a project and duplicate errors are
       structured.
-- [ ] Operators can list baselines with source run, selected lane, target
+- [x] Operators can list baselines with source run, selected lane, target
       revision, workflow version, report version, and creation time.
-- [ ] Baseline detail links back to the immutable source report and replay.
-- [ ] Existing anonymous baseline rows remain readable with deterministic legacy
+- [x] Baseline detail links back to the immutable source report and replay.
+- [x] Existing anonymous baseline rows remain readable with deterministic legacy
       labels.
-- [ ] Operators can archive a baseline without deleting its immutable source
+- [x] Operators can archive a baseline without deleting its immutable source
       report or provenance, and an archived name may be reused.
-- [ ] Eligibility is always delegated to `BaselineEligibility`.
-- [ ] Imported runs with incomplete provenance remain visibly ineligible.
-- [ ] Trend charts and automatic current-vs-baseline runs remain out of scope.
+- [x] Eligibility is always delegated to `BaselineEligibility`.
+- [x] Imported runs with incomplete provenance remain visibly ineligible.
+- [x] Trend charts and automatic current-vs-baseline runs remain out of scope.
 
 ### Test seam
 

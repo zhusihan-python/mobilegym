@@ -417,16 +417,34 @@ export type ArtifactItem = {
 
 export type Baseline = {
   id: string;
-  report_id: string;
-  run_id: string;
+  display_name: string;
   project_id: string;
-  workflow_version_id: string;
-  run_plan_hash: string;
-  task_source_digest: string;
-  target_revision_ids: Record<string, string>;
+  source_run_id: string;
+  source_run_name: string | null;
   lane_key: string;
   target_revision_id: string;
+  workflow_version_id: string;
+  report_id: string;
+  report_schema_version: number;
   created_at: string;
+  archived_at: string | null;
+};
+
+export type BaselineDetail = {
+  baseline: Baseline;
+  source_report: {
+    id: string;
+    run_id: string;
+    run_attempt_id: string;
+    schema_version: number;
+    href: string;
+  };
+  replays: Array<{
+    episode_key: string;
+    episode_attempt_id: string;
+    run_attempt_no: number;
+    href: string;
+  }>;
 };
 
 export type BaselineEligibility = {

@@ -145,6 +145,7 @@ export function PlatformShell() {
         ) : null}
         <nav className="tp-nav" aria-label="Test Platform">
           <NavLink to="/runs">Runs</NavLink>
+          <NavLink to="/baselines">Baselines</NavLink>
           <NavLink to="/tasks">Tasks</NavLink>
           <NavLink to="/targets">Targets</NavLink>
           <NavLink to="/workflows">Workflows</NavLink>
@@ -382,6 +383,7 @@ function firstFailedCheck(readiness: ReadinessResponse) {
 }
 
 function pageTitle(pathname: string) {
+  if (pathname.startsWith('/baselines')) return 'Baselines';
   if (pathname.startsWith('/tasks')) return 'Tasks';
   if (pathname.startsWith('/targets')) return 'Targets';
   if (pathname.startsWith('/workflows')) return 'Workflows';

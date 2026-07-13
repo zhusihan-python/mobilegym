@@ -120,7 +120,10 @@ def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
         assert "<script>alert(1)</script>" not in html_export.text
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_export.text
 
-        promoted = client.post(f"/api/platform/v1/runs/{run_id}/baseline")
+        promoted = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"display_name": "Release baseline"},
+        )
         assert promoted.status_code == 409
         assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
         assert [
@@ -199,11 +202,11 @@ def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
 
         promoted = client.post(
             f"/api/platform/v1/runs/{run_id}/baseline",
-            json={"lane_key": "baseline"},
+            json={"display_name": "Healthy baseline", "lane_key": "baseline"},
         )
         rejected = client.post(
             f"/api/platform/v1/runs/{run_id}/baseline",
-            json={"lane_key": "candidate"},
+            json={"display_name": "Rejected candidate", "lane_key": "candidate"},
         )
 
         assert promoted.status_code == 201
@@ -217,6 +220,160 @@ def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
                 "details": {"error": 1},
             }
         ]
+
+
+def test_named_baselines_are_discoverable_archivable_and_reusable(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _make_completed_reportable_run(client)
+        database.connection.execute(
+            "UPDATE episode_attempts SET outcome = 'PASS' WHERE id = 'ea_base_ep0'"
+        )
+        database.connection.execute(
+            """
+            INSERT INTO episode_attempts (
+              id, episode_id, lane_attempt_id, attempt_no, state, outcome,
+              error_code, result_json, artifact_root, started_at, ended_at, created_at
+            )
+            VALUES ('ea_base_ep1', 'ep1', 'attempt3_baseline', 1, 'completed',
+                    'PASS', NULL, '{"is_success":true}', 'artifacts/base1',
+                    '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:01.000Z',
+                    '2026-07-13T00:00:01.000Z')
+            """
+        )
+        database.connection.commit()
+        report = client.get(f"/api/platform/v1/runs/{run_id}/report").json()
+
+        promoted = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"display_name": "  Release   baseline  ", "lane_key": "baseline"},
+        )
+
+        assert promoted.status_code == 201
+        baseline = promoted.json()
+        assert baseline == {
+            "id": baseline["id"],
+            "display_name": "Release baseline",
+            "project_id": "proj1",
+            "source_run_id": run_id,
+            "source_run_name": "VS-11 run",
+            "lane_key": "baseline",
+            "target_revision_id": "trev_base",
+            "workflow_version_id": "wv1",
+            "report_id": report["id"],
+            "report_schema_version": 2,
+            "created_at": baseline["created_at"],
+            "archived_at": None,
+        }
+
+        duplicate = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"display_name": "release baseline", "lane_key": "baseline"},
+        )
+        assert duplicate.status_code == 409
+        duplicate_error = duplicate.json()["error"]
+        assert {
+            key: duplicate_error[key] for key in ("code", "message", "details")
+        } == {
+            "code": "BASELINE_NAME_CONFLICT",
+            "message": "An active baseline with this name already exists in the project.",
+            "details": [
+                {
+                    "project_id": "proj1",
+                    "display_name": "release baseline",
+                    "conflicting_baseline_id": baseline["id"],
+                }
+            ],
+        }
+
+        listed = client.get("/api/platform/v1/projects/proj1/baselines")
+        assert listed.status_code == 200
+        assert listed.json() == {"items": [baseline], "next_cursor": None}
+
+        detail_response = client.get(
+            f"/api/platform/v1/baselines/{baseline['id']}"
+        )
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["baseline"] == baseline
+        assert detail["source_report"] == {
+            "id": report["id"],
+            "run_id": run_id,
+            "run_attempt_id": "attempt3",
+            "schema_version": 2,
+            "href": f"/api/platform/v1/reports/{report['id']}",
+        }
+        immutable_report = client.get(detail["source_report"]["href"])
+        assert immutable_report.status_code == 200
+        assert immutable_report.json()["id"] == report["id"]
+        assert detail["replays"] == [
+            {
+                "episode_key": "fake.Task::0",
+                "episode_attempt_id": "ea_base_ep0",
+                "run_attempt_no": 3,
+                "href": (
+                    f"/api/platform/v1/runs/{run_id}/episodes/fake.Task%3A%3A0/replay"
+                    "?lane_key=baseline&attempt_no=3"
+                ),
+            },
+            {
+                "episode_key": "fake.Task::1",
+                "episode_attempt_id": "ea_base_ep1",
+                "run_attempt_no": 3,
+                "href": (
+                    f"/api/platform/v1/runs/{run_id}/episodes/fake.Task%3A%3A1/replay"
+                    "?lane_key=baseline&attempt_no=3"
+                ),
+            },
+        ]
+
+        archived_response = client.post(
+            f"/api/platform/v1/baselines/{baseline['id']}/archive"
+        )
+        assert archived_response.status_code == 200
+        archived = archived_response.json()
+        assert archived["id"] == baseline["id"]
+        assert archived["archived_at"] is not None
+        assert client.get("/api/platform/v1/projects/proj1/baselines").json() == {
+            "items": [],
+            "next_cursor": None,
+        }
+
+        reused = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"display_name": "Release baseline", "lane_key": "baseline"},
+        )
+        assert reused.status_code == 201
+        assert reused.json()["display_name"] == "Release baseline"
+        assert reused.json()["id"] != baseline["id"]
+
+
+@pytest.mark.parametrize(
+    ("display_name", "error_code"),
+    [
+        ("   ", "BASELINE_DISPLAY_NAME_REQUIRED"),
+        ("x" * 81, "BASELINE_DISPLAY_NAME_TOO_LONG"),
+    ],
+)
+def test_baseline_display_name_contract_is_bounded(tmp_path, display_name, error_code):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        run_id = _make_completed_reportable_run(client)
+        invalid = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"display_name": display_name, "lane_key": "baseline"},
+        )
+        missing = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"lane_key": "baseline"},
+        )
+
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == error_code
+    assert missing.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -288,7 +445,7 @@ async def test_single_lane_non_pass_work_is_never_strict_baseline_eligible(
         report = client.get(f"/api/platform/v1/runs/{run.id}/report")
         promoted = client.post(
             f"/api/platform/v1/runs/{run.id}/baseline",
-            json={"lane_key": "candidate"},
+            json={"display_name": "Candidate baseline", "lane_key": "candidate"},
         )
 
         assert eligibility.status_code == 200
@@ -306,7 +463,10 @@ def test_promote_baseline_rejects_non_completed_run(tmp_path):
     with TestClient(app) as client:
         run_id = _seed_reportable_paired_run(client.app.state.database)
 
-        promoted = client.post(f"/api/platform/v1/runs/{run_id}/baseline")
+        promoted = client.post(
+            f"/api/platform/v1/runs/{run_id}/baseline",
+            json={"display_name": "Pending baseline"},
+        )
 
     assert promoted.status_code == 409
     assert promoted.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
@@ -324,7 +484,11 @@ def test_baseline_promotion_has_no_force_override(tmp_path):
 
         response = client.post(
             f"/api/platform/v1/runs/{run_id}/baseline",
-            json={"lane_key": "candidate", "force": True},
+            json={
+                "display_name": "No override baseline",
+                "lane_key": "candidate",
+                "force": True,
+            },
         )
 
     assert response.status_code == 422

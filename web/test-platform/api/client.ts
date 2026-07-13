@@ -3,6 +3,7 @@ import type {
   ApiErrorDetail,
   ArtifactItem,
   Baseline,
+  BaselineDetail,
   BaselineEligibility,
   CancelRunResponse,
   CollectionResponse,
@@ -210,10 +211,30 @@ export async function getReportExport(
   return response.text();
 }
 
-export function promoteBaseline(runId: string, laneKey?: string): Promise<Baseline> {
+export function promoteBaseline(
+  runId: string,
+  displayName: string,
+  laneKey?: string,
+): Promise<Baseline> {
   return apiFetch<Baseline>(`/runs/${encodeURIComponent(runId)}/baseline`, {
     method: 'POST',
-    body: JSON.stringify({ lane_key: laneKey ?? null }),
+    body: JSON.stringify({ display_name: displayName, lane_key: laneKey ?? null }),
+  });
+}
+
+export function listBaselines(projectId: string): Promise<CollectionResponse<Baseline>> {
+  return apiFetch<CollectionResponse<Baseline>>(
+    `/projects/${encodeURIComponent(projectId)}/baselines`,
+  );
+}
+
+export function getBaseline(baselineId: string): Promise<BaselineDetail> {
+  return apiFetch<BaselineDetail>(`/baselines/${encodeURIComponent(baselineId)}`);
+}
+
+export function archiveBaseline(baselineId: string): Promise<Baseline> {
+  return apiFetch<Baseline>(`/baselines/${encodeURIComponent(baselineId)}/archive`, {
+    method: 'POST',
   });
 }
 

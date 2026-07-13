@@ -4,9 +4,12 @@ from datetime import UTC, datetime
 import hashlib
 import json
 import mimetypes
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+import unicodedata
+from urllib.parse import quote
 
 from test_platform.artifacts.paths import (
     ArtifactPathError,
@@ -1133,6 +1136,20 @@ class ReportRepository:
             )
         return json.loads(row["report_json"])
 
+    def get_by_id(self, report_id: str) -> dict[str, Any]:
+        row = self.database.connection.execute(
+            "SELECT report_json FROM reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            raise RunDomainError(
+                "REPORT_NOT_FOUND",
+                "The report was not found.",
+                status_code=404,
+                details=[{"report_id": report_id}],
+            )
+        return json.loads(row["report_json"])
+
     def get_or_create(self, run_id: str) -> dict[str, Any]:
         report_input = ReportInputRepository(self.database).get_for_run(run_id)
         return self._get_or_create(report_input)
@@ -1770,12 +1787,21 @@ class ReplayRepository:
 
 
 class BaselineRepository:
+    MAX_DISPLAY_NAME_LENGTH = 80
+
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def promote(self, run_id: str, *, lane_key: str | None = None) -> dict[str, Any]:
+    def promote(
+        self,
+        run_id: str,
+        *,
+        display_name: str,
+        lane_key: str | None = None,
+    ) -> dict[str, Any]:
         from test_platform.services.baselines import BaselineEligibility
 
+        cleaned_name, name_key = self._validated_name(display_name)
         eligibility = BaselineEligibility(self.database).evaluate(
             run_id,
             lane_key=lane_key,
@@ -1814,33 +1840,223 @@ class BaselineRepository:
             "target_revision_ids": target_revision_ids,
             "lane_key": selected_lane_key,
             "target_revision_id": target_revision_id,
+            "display_name": cleaned_name,
+            "name_key": name_key,
+            "archived_at": None,
             "created_at": now,
         }
-        self.database.connection.execute(
-            """
-            INSERT INTO baselines (
-              id, report_id, run_id, project_id, workflow_version_id,
-              run_plan_hash, task_source_digest, target_revision_ids_json,
-              lane_key, target_revision_id, created_at
+        try:
+            self.database.connection.execute(
+                """
+                INSERT INTO baselines (
+                  id, report_id, run_id, project_id, workflow_version_id,
+                  run_plan_hash, task_source_digest, target_revision_ids_json,
+                  lane_key, target_revision_id, display_name, name_key,
+                  archived_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    baseline_id,
+                    row["report_id"],
+                    row["run_id"],
+                    row["project_id"],
+                    row["workflow_version_id"],
+                    row["run_plan_hash"],
+                    row["task_source_digest"],
+                    canonical_json(target_revision_ids),
+                    selected_lane_key,
+                    target_revision_id,
+                    cleaned_name,
+                    name_key,
+                    None,
+                    now,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            self.database.connection.commit()
+        except sqlite3.IntegrityError as exc:
+            self.database.connection.rollback()
+            conflict = self.database.connection.execute(
+                """
+                SELECT id
+                FROM baselines
+                WHERE project_id = ? AND name_key = ? AND archived_at IS NULL
+                """,
+                (row["project_id"], name_key),
+            ).fetchone()
+            if conflict is None:
+                raise
+            raise RunDomainError(
+                "BASELINE_NAME_CONFLICT",
+                "An active baseline with this name already exists in the project.",
+                status_code=409,
+                details=[
+                    {
+                        "project_id": row["project_id"],
+                        "display_name": cleaned_name,
+                        "conflicting_baseline_id": str(conflict["id"]),
+                    }
+                ],
+            ) from exc
+        return self.get_summary(baseline_id)
+
+    def list_for_project(
+        self,
+        project_id: str,
+        *,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        archived_filter = "" if include_archived else "AND b.archived_at IS NULL"
+        rows = self.database.connection.execute(
+            f"""
+            SELECT b.id, b.display_name, b.project_id, b.run_id, r.name AS run_name,
+                   b.lane_key, b.target_revision_id, b.workflow_version_id,
+                   b.report_id, reports.schema_version AS report_schema_version,
+                   b.created_at, b.archived_at
+            FROM baselines AS b
+            JOIN reports ON reports.id = b.report_id
+            JOIN runs AS r ON r.id = b.run_id
+            WHERE b.project_id = ? {archived_filter}
+            ORDER BY b.created_at DESC, b.id DESC
             """,
-            (
-                baseline_id,
-                row["report_id"],
-                row["run_id"],
-                row["project_id"],
-                row["workflow_version_id"],
-                row["run_plan_hash"],
-                row["task_source_digest"],
-                canonical_json(target_revision_ids),
-                selected_lane_key,
-                target_revision_id,
-                now,
-            ),
+            (project_id,),
+        ).fetchall()
+        return [self._summary_from_row(row) for row in rows]
+
+    def get_summary(self, baseline_id: str) -> dict[str, Any]:
+        row = self.database.connection.execute(
+            """
+            SELECT b.id, b.display_name, b.project_id, b.run_id, r.name AS run_name,
+                   b.lane_key, b.target_revision_id, b.workflow_version_id,
+                   b.report_id, reports.schema_version AS report_schema_version,
+                   b.created_at, b.archived_at
+            FROM baselines AS b
+            JOIN reports ON reports.id = b.report_id
+            JOIN runs AS r ON r.id = b.run_id
+            WHERE b.id = ?
+            """,
+            (baseline_id,),
+        ).fetchone()
+        if row is None:
+            raise self._not_found(baseline_id)
+        return self._summary_from_row(row)
+
+    def get(self, baseline_id: str) -> dict[str, Any]:
+        summary = self.get_summary(baseline_id)
+        report = self.database.connection.execute(
+            """
+            SELECT reports.id, reports.run_id, reports.run_attempt_id,
+                   reports.schema_version, ra.attempt_no
+            FROM reports
+            JOIN run_attempts AS ra ON ra.id = reports.run_attempt_id
+            WHERE reports.id = ?
+            """,
+            (summary["report_id"],),
+        ).fetchone()
+        if report is None:
+            raise self._not_found(baseline_id)
+
+        replay_rows = self.database.connection.execute(
+            """
+            SELECT e.episode_key, ea.id AS episode_attempt_id
+            FROM episodes AS e
+            JOIN lanes AS l ON l.run_id = e.run_id AND l.lane_key = ?
+            JOIN lane_attempts AS la
+              ON la.lane_id = l.id AND la.run_attempt_id = ?
+            JOIN episode_attempts AS ea
+              ON ea.id = (
+                SELECT latest.id
+                FROM episode_attempts AS latest
+                WHERE latest.episode_id = e.id
+                  AND latest.lane_attempt_id = la.id
+                ORDER BY latest.attempt_no DESC, latest.id DESC
+                LIMIT 1
+              )
+            WHERE e.run_id = ?
+            ORDER BY e.sequence_index, e.id
+            """,
+            (summary["lane_key"], report["run_attempt_id"], report["run_id"]),
+        ).fetchall()
+        encoded_run_id = quote(str(report["run_id"]), safe="")
+        encoded_lane_key = quote(str(summary["lane_key"]), safe="")
+        run_attempt_no = int(report["attempt_no"])
+        return {
+            "baseline": summary,
+            "source_report": {
+                "id": str(report["id"]),
+                "run_id": str(report["run_id"]),
+                "run_attempt_id": str(report["run_attempt_id"]),
+                "schema_version": int(report["schema_version"]),
+                "href": f"/api/platform/v1/reports/{quote(str(report['id']), safe='')}",
+            },
+            "replays": [
+                {
+                    "episode_key": str(row["episode_key"]),
+                    "episode_attempt_id": str(row["episode_attempt_id"]),
+                    "run_attempt_no": run_attempt_no,
+                    "href": (
+                        f"/api/platform/v1/runs/{encoded_run_id}/episodes/"
+                        f"{quote(str(row['episode_key']), safe='')}/replay"
+                        f"?lane_key={encoded_lane_key}&attempt_no={run_attempt_no}"
+                    ),
+                }
+                for row in replay_rows
+            ],
+        }
+
+    def archive(self, baseline_id: str) -> dict[str, Any]:
+        existing = self.get_summary(baseline_id)
+        if existing["archived_at"] is None:
+            self.database.connection.execute(
+                "UPDATE baselines SET archived_at = ? WHERE id = ?",
+                (_utc_timestamp(), baseline_id),
+            )
+            self.database.connection.commit()
+        return self.get_summary(baseline_id)
+
+    @classmethod
+    def _validated_name(cls, display_name: str) -> tuple[str, str]:
+        cleaned = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", display_name)).strip()
+        if not cleaned:
+            raise RunDomainError(
+                "BASELINE_DISPLAY_NAME_REQUIRED",
+                "A baseline display name is required.",
+                status_code=422,
+            )
+        if len(cleaned) > cls.MAX_DISPLAY_NAME_LENGTH:
+            raise RunDomainError(
+                "BASELINE_DISPLAY_NAME_TOO_LONG",
+                f"Baseline display names must be {cls.MAX_DISPLAY_NAME_LENGTH} characters or fewer.",
+                status_code=422,
+                details=[{"max_length": cls.MAX_DISPLAY_NAME_LENGTH}],
+            )
+        return cleaned, cleaned.casefold()
+
+    @staticmethod
+    def _summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "display_name": str(row["display_name"]),
+            "project_id": str(row["project_id"]),
+            "source_run_id": str(row["run_id"]),
+            "source_run_name": str(row["run_name"]) if row["run_name"] is not None else None,
+            "lane_key": str(row["lane_key"]),
+            "target_revision_id": str(row["target_revision_id"]),
+            "workflow_version_id": str(row["workflow_version_id"]),
+            "report_id": str(row["report_id"]),
+            "report_schema_version": int(row["report_schema_version"]),
+            "created_at": str(row["created_at"]),
+            "archived_at": str(row["archived_at"]) if row["archived_at"] is not None else None,
+        }
+
+    @staticmethod
+    def _not_found(baseline_id: str) -> RunDomainError:
+        return RunDomainError(
+            "BASELINE_NOT_FOUND",
+            "Baseline was not found.",
+            status_code=404,
+            details=[{"baseline_id": baseline_id}],
         )
-        self.database.connection.commit()
-        return row
 
 
 class ComparisonRepository:
