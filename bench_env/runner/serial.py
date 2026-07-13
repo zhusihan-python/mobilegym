@@ -53,6 +53,16 @@ class SerialRunner(BaseRunner):
         self.event_sink = event_sink or NullEventSink()
         self.cancellation_token = cancellation_token or CancellationToken()
 
+    def _configure_browser_log_dir(self, run_dir) -> None:
+        if not run_dir:
+            return
+        setter = getattr(self.env, "set_browser_log_dir", None)
+        if callable(setter):
+            setter(
+                self.config.browser_log_dir or (run_dir / "browser_logs"),
+                self.config.browser_log_prefix,
+            )
+
     @classmethod
     async def from_args(cls, args):
         from bench_env import factory
@@ -93,6 +103,7 @@ class SerialRunner(BaseRunner):
         results = []
         # Cache run_dir early because recorder.finish_run() clears internal state.
         run_dir = self.recorder.run_dir
+        self._configure_browser_log_dir(run_dir)
         repeat_n = self.config.repeat_n
         total_episodes = len(self.tasks) * repeat_n
         logger.info(f"Tasks: {len(self.tasks)}, Repeat: {repeat_n}, Total Episodes: {total_episodes}, Output: {run_dir}")
@@ -177,6 +188,7 @@ class SerialRunner(BaseRunner):
         prepared_work_items = self.prepared_work_items or []
         results = []
         run_dir = self.recorder.run_dir
+        self._configure_browser_log_dir(run_dir)
         repeat_n = self.config.repeat_n
         total_episodes = len(prepared_work_items)
         logger.info(f"Prepared Episodes: {total_episodes}, Output: {run_dir}")

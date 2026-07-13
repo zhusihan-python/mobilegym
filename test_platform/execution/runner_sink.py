@@ -62,6 +62,14 @@ class PlatformRunnerEventSink:
             # drives episode_id resolution below but is not in the API DTO.
             if event.episode_key:
                 payload.setdefault("episode_key", event.episode_key)
+            is_diagnostic = event.type.startswith("diagnostic.")
+            if is_diagnostic:
+                payload.setdefault("phase", event.phase)
+                payload.setdefault("task_id", event.task_id)
+                payload.setdefault("trial_id", event.trial_id)
+                payload.setdefault("episode_key", event.episode_key)
+                payload.setdefault("step", None)
+                payload.setdefault("app_ids", [])
             # Resolve the persisted episode_id from the runner's episode_key when
             # both a key and a resolver are available. The resolver is allowed to
             # return None (unknown key); the event is still persisted with a null
@@ -81,7 +89,15 @@ class PlatformRunnerEventSink:
                 lane_attempt_id=self._lane_attempt_id,
                 episode_id=episode_id,
                 worker_id=event.worker_id or self._default_worker_id,
-                entity_type="episode" if event.type.startswith("episode.") else "run",
+                entity_type=(
+                    "diagnostic"
+                    if is_diagnostic
+                    else "episode"
+                    if event.type.startswith("episode.")
+                    else "run"
+                ),
+                entity_id=str(payload.get("code")) if is_diagnostic else None,
+                occurred_at=event.timestamp or None,
             )
         except Exception:  # noqa: BLE001 — never propagate into the runner
             logger.debug("PlatformRunnerEventSink dropped event %s", event.type, exc_info=True)

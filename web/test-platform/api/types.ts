@@ -362,8 +362,11 @@ export type RunReport = {
   created_at: string;
 };
 
+export type DiagnosticScope = 'episode' | 'run';
+
 export type DiagnosticItem = {
   id: string;
+  source_event_id: string | null;
   code: string;
   category: string;
   phase: string | null;
@@ -371,20 +374,36 @@ export type DiagnosticItem = {
   retryable: boolean;
   message: string;
   entity_type: string;
+  scope: DiagnosticScope;
   run_id: string;
   run_attempt_id: string;
-  lane_attempt_id?: string | null;
-  episode_attempt_id?: string | null;
-  episode_key?: string | null;
-  lane_key?: string | null;
+  run_attempt_no: number | null;
+  lane_id: string | null;
+  lane_attempt_id: string | null;
+  lane_key: string | null;
+  target_id: string | null;
+  episode_id: string | null;
+  episode_attempt_id: string | null;
+  episode_key: string | null;
+  episode_attempt_no: number | null;
+  worker_id: string | null;
+  step: number | null;
+  task_id: string | null;
+  app_ids: string[];
   comparison_id?: string | null;
   comparison_pair_id?: string | null;
   pair_key?: string | null;
   gate_result_id?: string | null;
   report_id?: string | null;
-  artifact_refs: string[];
+  baseline_episode_attempt_id?: string | null;
+  candidate_episode_attempt_id?: string | null;
+  artifacts: Array<{
+    id: string;
+    kind: string;
+    media_type: string | null;
+    href: string;
+  }>;
   recommended_action?: string | null;
-  raw: Record<string, unknown>;
 };
 
 export type RunDiagnostics = {
@@ -399,6 +418,7 @@ export type RunDiagnostics = {
     by_severity: Record<string, number>;
   };
   items: DiagnosticItem[];
+  next_cursor: string | null;
 };
 
 export type ArtifactItem = {

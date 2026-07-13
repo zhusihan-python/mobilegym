@@ -64,7 +64,7 @@ export function EvidenceDock({
       </div>
       <div className="tp-evidence-body" role="tabpanel">
         {activeTab === 'diagnostics' ? (
-          <DiagnosticsEvidence diagnostics={diagnostics} />
+          <DiagnosticsEvidence diagnostics={diagnostics} replay={replay} />
         ) : replay ? (
           <EvidencePanel
             activeTab={activeTab}
@@ -121,7 +121,7 @@ function EvidencePanel({
     return <StateEvidence selectedStep={selectedStep} />;
   }
   if (activeTab === 'diagnostics') {
-    return <DiagnosticsEvidence diagnostics={diagnostics} />;
+    return <DiagnosticsEvidence diagnostics={diagnostics} replay={replay} />;
   }
   return <ArtifactList runId={runId} selectedStep={selectedStep} />;
 }
@@ -242,7 +242,13 @@ function ArtifactList({
   );
 }
 
-function DiagnosticsEvidence({ diagnostics }: { diagnostics: EvidenceDiagnosticsState }) {
+function DiagnosticsEvidence({
+  diagnostics,
+  replay,
+}: {
+  diagnostics: EvidenceDiagnosticsState;
+  replay: EpisodeReplay | null;
+}) {
   if (diagnostics.status === 'idle') {
     return <p className="tp-dock-empty">Diagnostics are available after the run reaches a reportable state.</p>;
   }
@@ -252,6 +258,13 @@ function DiagnosticsEvidence({ diagnostics }: { diagnostics: EvidenceDiagnostics
   if (diagnostics.status === 'error') {
     return <p className="tp-dock-empty">{diagnostics.message}</p>;
   }
+
+  const scopedItems = replay
+    ? diagnostics.diagnostics.items.filter(
+        (item) => item.episode_attempt_id === replay.episode_attempt_id,
+      )
+    : [];
+  const runWideItems = diagnostics.diagnostics.items.filter((item) => item.scope === 'run');
 
   return (
     <div className="tp-evidence-section">
@@ -265,20 +278,34 @@ function DiagnosticsEvidence({ diagnostics }: { diagnostics: EvidenceDiagnostics
           <dd>{formatPrettyJson(diagnostics.diagnostics.summary.by_severity)}</dd>
         </div>
       </dl>
-      {diagnostics.diagnostics.items.length > 0 ? (
-        <ul className="tp-diagnostics-mini-list">
-          {diagnostics.diagnostics.items.slice(0, 5).map((item) => (
-            <li key={item.id}>
-              <strong>{item.code}</strong>
-              <span>{item.message}</span>
-              {item.recommended_action ? <em>{item.recommended_action}</em> : null}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="tp-dock-empty">No diagnostics recorded.</p>
-      )}
+      {replay ? <h4>Selected episode attempt {replay.episode_attempt_id}</h4> : null}
+      {replay ? <DiagnosticMiniList items={scopedItems} empty="No diagnostics for this episode attempt." /> : null}
+      <h4>Run-wide diagnostics</h4>
+      <DiagnosticMiniList items={runWideItems} empty="No run-wide diagnostics recorded." />
     </div>
+  );
+}
+
+function DiagnosticMiniList({
+  items,
+  empty,
+}: {
+  items: RunDiagnostics['items'];
+  empty: string;
+}) {
+  if (items.length === 0) {
+    return <p className="tp-dock-empty">{empty}</p>;
+  }
+  return (
+    <ul className="tp-diagnostics-mini-list">
+      {items.slice(0, 5).map((item) => (
+        <li key={item.id}>
+          <strong>{item.code}</strong>
+          <span>{item.message}</span>
+          {item.recommended_action ? <em>{item.recommended_action}</em> : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 

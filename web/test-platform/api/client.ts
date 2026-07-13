@@ -189,8 +189,52 @@ export function getReport(runId: string): Promise<RunReport> {
   return apiFetch<RunReport>(`/runs/${encodeURIComponent(runId)}/report`);
 }
 
-export function getDiagnostics(runId: string): Promise<RunDiagnostics> {
-  return apiFetch<RunDiagnostics>(`/runs/${encodeURIComponent(runId)}/diagnostics`);
+export type DiagnosticFilters = {
+  category?: string;
+  severity?: string;
+  targetId?: string;
+  appId?: string;
+  taskId?: string;
+  retryable?: boolean;
+  laneKey?: string;
+  episodeKey?: string;
+  attemptNo?: number;
+  cursor?: string;
+  limit?: number;
+};
+
+export function getDiagnostics(
+  runId: string,
+  filters: DiagnosticFilters = {},
+): Promise<RunDiagnostics> {
+  const params = new URLSearchParams();
+  if (filters.category) params.set('category', filters.category);
+  if (filters.severity) params.set('severity', filters.severity);
+  if (filters.targetId) params.set('target_id', filters.targetId);
+  if (filters.appId) params.set('app_id', filters.appId);
+  if (filters.taskId) params.set('task_id', filters.taskId);
+  if (filters.retryable !== undefined) params.set('retryable', String(filters.retryable));
+  if (filters.laneKey) params.set('lane_key', filters.laneKey);
+  if (filters.episodeKey) params.set('episode_key', filters.episodeKey);
+  if (filters.attemptNo !== undefined) params.set('attempt_no', String(filters.attemptNo));
+  if (filters.cursor) params.set('cursor', filters.cursor);
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  const query = params.toString();
+  return apiFetch<RunDiagnostics>(
+    `/runs/${encodeURIComponent(runId)}/diagnostics${query ? `?${query}` : ''}`,
+  );
+}
+
+export async function getAllDiagnostics(runId: string): Promise<RunDiagnostics> {
+  let page = await getDiagnostics(runId, { limit: 200 });
+  const items = [...page.items];
+  const visitedCursors = new Set<string>();
+  while (page.next_cursor && !visitedCursors.has(page.next_cursor)) {
+    visitedCursors.add(page.next_cursor);
+    page = await getDiagnostics(runId, { cursor: page.next_cursor, limit: 200 });
+    items.push(...page.items);
+  }
+  return { ...page, items, next_cursor: null };
 }
 
 export function listArtifacts(runId: string): Promise<{ items: ArtifactItem[] }> {

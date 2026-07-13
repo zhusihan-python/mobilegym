@@ -61,6 +61,14 @@ class _FakeEnv:
         self.cancel_during_act = cancel_during_act
         self._agent_message: str | None = None
         self._agent_answer: str | None = None
+        self.diagnostic_sinks: list[Any] = []
+        self.diagnostic_contexts: list[dict[str, Any]] = []
+
+    def set_diagnostic_event_sink(self, sink: Any) -> None:
+        self.diagnostic_sinks.append(sink)
+
+    def set_diagnostic_context(self, **context: Any) -> None:
+        self.diagnostic_contexts.append(context)
 
     async def get_state(self, required_apps: list[str] | None = None) -> dict[str, Any]:
         return {"apps": {"fake": {}}, "os": {"time": {"mode": "fixed"}}}
@@ -157,6 +165,78 @@ class _NoEvaluator(Evaluator):
         from bench_env.task.judge import JudgeResult
 
         return JudgeResult.ok()
+
+
+@pytest.mark.asyncio
+async def test_controller_binds_diagnostic_sink_and_episode_step_context() -> None:
+    env = _FakeEnv()
+    task = _FakeTask()
+    agent = _FakeAgent(env=env)
+    sink = _CollectingSink()
+
+    await Controller.run_loop(
+        env,
+        agent,
+        task,
+        max_steps=1,
+        event_sink=sink,
+        worker_id="W0",
+        episode_key="fake.Task::0",
+        trial_id=2,
+    )
+
+    assert env.diagnostic_sinks[0] is sink
+    assert env.diagnostic_contexts[:2] == [
+        {
+            "episode_key": "fake.Task::0",
+            "step": None,
+            "app_ids": ["fake"],
+            "trial_id": 2,
+        },
+        {
+            "episode_key": "fake.Task::0",
+            "step": 1,
+            "app_ids": ["fake"],
+            "trial_id": 2,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_controller_emits_structured_runner_diagnostic_for_action_error() -> None:
+    env = _FakeEnv()
+    task = _FakeTask()
+    agent = _FakeAgent(env=env)
+    sink = _CollectingSink()
+
+    async def invalid_step(action: Action) -> StepResult:
+        raise ValueError("point is outside the viewport")
+
+    env.step = invalid_step  # type: ignore[assignment]
+    await Controller.run(
+        env,
+        agent,
+        task,
+        await env.get_observation(),
+        max_steps=2,
+        event_sink=sink,
+        worker_id="W0",
+        episode_key="fake.Task::0",
+    )
+
+    diagnostic = next(event for event in sink.events if event.type == "diagnostic.runner")
+    assert diagnostic.phase == "runner.action"
+    assert diagnostic.worker_id == "W0"
+    assert diagnostic.task_id == "fake.Task"
+    assert diagnostic.episode_key == "fake.Task::0"
+    assert diagnostic.payload == {
+        "code": "ACTION_FORMAT_ERROR",
+        "message": "point is outside the viewport",
+        "severity": "error",
+        "retryable": True,
+        "step": 1,
+        "app_ids": ["fake"],
+    }
 
 
 @pytest.mark.asyncio

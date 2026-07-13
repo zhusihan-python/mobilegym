@@ -8,7 +8,7 @@ from test_platform.domain.diagnostics.classifier import classify_episode_attempt
 from test_platform.domain.diagnostics.input import DiagnosticInput
 
 
-DIAGNOSTICS_SCHEMA_VERSION = 1
+DIAGNOSTICS_SCHEMA_VERSION = 2
 
 
 def build_diagnostics(diagnostic_input: DiagnosticInput) -> dict[str, Any]:
@@ -27,6 +27,9 @@ def build_diagnostics(diagnostic_input: DiagnosticInput) -> dict[str, Any]:
                 }
             )
         )
+
+    for event in diagnostic_input.event_diagnostics:
+        items.append(_with_event_id(_event_diagnostic(event)))
 
     comparison = diagnostic_input.comparison
     if comparison is not None:
@@ -107,6 +110,49 @@ def _comparison_pair_diagnostic(
     }
 
 
+def _event_diagnostic(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    code = str(payload.get("code") or "RUNNER_DIAGNOSTIC")
+    phase = str(payload.get("phase") or "") or None
+    spec = _EVENT_CODE_SPECS.get(code, _EVENT_CODE_SPECS["RUNNER_DIAGNOSTIC"])
+    app_ids = payload.get("app_ids")
+    app_ids = [str(value) for value in app_ids] if isinstance(app_ids, list) else []
+    episode_id = event.get("episode_id")
+    episode_attempt_id = event.get("episode_attempt_id")
+    return {
+        "source_event_id": event.get("source_event_id"),
+        "code": code,
+        "category": spec["category"],
+        "phase": phase,
+        "severity": str(payload.get("severity") or spec["severity"]),
+        "retryable": bool(payload.get("retryable", spec["retryable"])),
+        "message": str(payload.get("message") or code),
+        "recommended_action": str(
+            payload.get("recommended_action") or spec["recommended_action"]
+        ),
+        "entity_type": "diagnostic_event",
+        "scope": "episode" if episode_attempt_id else "run",
+        "run_id": event.get("run_id"),
+        "run_attempt_id": event.get("run_attempt_id"),
+        "run_attempt_no": event.get("run_attempt_no"),
+        "lane_id": event.get("lane_id"),
+        "lane_attempt_id": event.get("lane_attempt_id"),
+        "lane_key": event.get("lane_key"),
+        "target_id": event.get("target_id"),
+        "episode_id": episode_id,
+        "episode_attempt_id": episode_attempt_id,
+        "episode_key": event.get("episode_key") or payload.get("episode_key"),
+        "episode_attempt_no": event.get("episode_attempt_no"),
+        "worker_id": event.get("worker_id"),
+        "step": payload.get("step"),
+        "task_id": payload.get("task_id"),
+        "app_ids": app_ids,
+        "artifact_refs": [],
+        "raw": {},
+    }
+
+
 def _gate_diagnostic(
     gate_result: dict[str, Any],
     *,
@@ -166,6 +212,14 @@ def _with_id(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _with_event_id(record: dict[str, Any]) -> dict[str, Any]:
+    source_event_id = str(record.get("source_event_id") or "")
+    return {
+        "id": "diag_event_" + canonical_sha256(source_event_id).removeprefix("sha256:"),
+        **record,
+    }
+
+
 _PAIR_CLASSIFICATION_SPECS: dict[str, dict[str, Any]] = {
     "candidate_error": {
         "code": "CANDIDATE_ERROR",
@@ -190,5 +244,39 @@ _PAIR_CLASSIFICATION_SPECS: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "retryable": False,
         "recommended_action": "Inspect pair materialization and task selection.",
+    },
+}
+
+
+_EVENT_CODE_SPECS: dict[str, dict[str, Any]] = {
+    "BROWSER_PAGE_ERROR": {
+        "category": "page",
+        "severity": "error",
+        "retryable": False,
+        "recommended_action": "Inspect the browser log and page error.",
+    },
+    "BROWSER_REQUEST_FAILED": {
+        "category": "network",
+        "severity": "error",
+        "retryable": True,
+        "recommended_action": "Inspect the browser log and retry the request.",
+    },
+    "BROWSER_HTTP_ERROR": {
+        "category": "network",
+        "severity": "error",
+        "retryable": True,
+        "recommended_action": "Inspect the HTTP response and browser log.",
+    },
+    "BROWSER_CONSOLE_ERROR": {
+        "category": "browser",
+        "severity": "error",
+        "retryable": False,
+        "recommended_action": "Inspect the browser console log.",
+    },
+    "RUNNER_DIAGNOSTIC": {
+        "category": "runner",
+        "severity": "error",
+        "retryable": True,
+        "recommended_action": "Inspect runner logs and retry if the failure is transient.",
     },
 }

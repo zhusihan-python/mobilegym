@@ -301,6 +301,16 @@ class Controller:
         _recent_fps: deque[str] = deque(maxlen=loop_threshold if loop_threshold > 0 else None)
         sink = event_sink or NullEventSink()
 
+        def _bind_diagnostic_context(step: int | None) -> None:
+            setter = getattr(env, "set_diagnostic_context", None)
+            if callable(setter):
+                setter(
+                    episode_key=episode_key,
+                    step=step,
+                    app_ids=list(getattr(task, "apps", []) or []),
+                    trial_id=trial_id,
+                )
+
         def _emit(event_type: str, **payload: Any) -> None:
             try:
                 sink.emit(ExecutionEvent(
@@ -315,6 +325,35 @@ class Controller:
                 ))
             except Exception:  # noqa: BLE001 — event failure must not affect the run
                 logger.debug("event sink emit failed", exc_info=True)
+
+        def _emit_runner_diagnostic(
+            *,
+            code: str,
+            message: str,
+            phase: str,
+            step: int | None,
+            retryable: bool = True,
+        ) -> None:
+            try:
+                sink.emit(ExecutionEvent(
+                    type="diagnostic.runner",
+                    timestamp="",
+                    phase=phase,
+                    worker_id=worker_id,
+                    task_id=task.id,
+                    trial_id=trial_id,
+                    episode_key=episode_key,
+                    payload={
+                        "code": code,
+                        "message": message,
+                        "severity": "error",
+                        "retryable": retryable,
+                        "step": step,
+                        "app_ids": list(getattr(task, "apps", []) or []),
+                    },
+                ))
+            except Exception:  # noqa: BLE001
+                logger.debug("runner diagnostic emit failed", exc_info=True)
 
         try:
             # task.description includes grounded suffix (via task_name set in setup)
@@ -333,6 +372,7 @@ class Controller:
 
             from bench_env.env.stopwatch import set_current_stopwatch
             for step in range(max_steps):
+                _bind_diagnostic_context(step + 1)
                 # Cooperative cancellation: check before inference. If cancelled
                 # here, agent.act never runs for this step.
                 if cancellation_token is not None:
@@ -410,6 +450,12 @@ class Controller:
                     # Model output format error (e.g. invalid point coordinates)
                     # Terminate episode — this is the model's fault
                     logger.warning("Action format error at step %d: %s", step + 1, e)
+                    _emit_runner_diagnostic(
+                        code="ACTION_FORMAT_ERROR",
+                        message=str(e),
+                        phase="runner.action",
+                        step=step + 1,
+                    )
                     done, stop_reason = True, "FORMAT_ERROR"
                     break
                 obs, done, stop_reason = result.observation, result.done, result.stop_reason
@@ -470,6 +516,12 @@ class Controller:
             # Handle runtime errors gracefully
             error_msg = f"{type(e).__name__}: {e}"
             logger.exception(f"Runtime error in episode: {error_msg}")
+            _emit_runner_diagnostic(
+                code="RUNNER_EXCEPTION",
+                message=error_msg,
+                phase="runner.execute",
+                step=len(trace) + 1,
+            )
             
             stopwatch_total_s, stopwatch_flat, stopwatch_tree = _snapshot_stopwatch(env.stopwatch)
             exec_result = ExecutionResult(
@@ -503,6 +555,17 @@ class Controller:
         Returns:
             tuple: (ExecutionResult, init_obs, final_obs, episode, task)
         """
+        diagnostic_sink_setter = getattr(env, "set_diagnostic_event_sink", None)
+        if callable(diagnostic_sink_setter):
+            diagnostic_sink_setter(event_sink)
+        diagnostic_context_setter = getattr(env, "set_diagnostic_context", None)
+        if callable(diagnostic_context_setter):
+            diagnostic_context_setter(
+                episode_key=episode_key,
+                step=None,
+                app_ids=list(getattr(task, "apps", []) or []),
+                trial_id=trial_id,
+            )
         try:
             if cancellation_token is not None:
                 cancellation_token.raise_if_cancelled()

@@ -5,6 +5,7 @@ import json
 
 from test_platform.config import PlatformSettings
 from test_platform.execution.event_writer import EventWriter
+from test_platform.execution.runner_sink import PlatformRunnerEventSink
 from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
 
@@ -242,5 +243,72 @@ def test_emit_never_raises_on_non_serializable_payload(tmp_path):
             "SELECT COUNT(*) AS n FROM events WHERE run_id = ?", (run_id,)
         ).fetchone()
         assert int(rows["n"]) == 0
+    finally:
+        database.close()
+
+
+def test_browser_diagnostic_event_reaches_durable_pipeline_with_known_identity(
+    tmp_path,
+):
+    from bench_env.runner.events import ExecutionEvent
+
+    database = _database(tmp_path)
+    try:
+        run_id = _seed_run(database)
+        database.connection.execute(
+            "INSERT INTO run_attempts (id, run_id, attempt_no, reason, state, created_at) "
+            "VALUES ('ra1', ?, 1, 'initial', 'running', '2026-07-13T00:00:00.000Z')",
+            (run_id,),
+        )
+        database.connection.commit()
+        sink = PlatformRunnerEventSink(
+            EventWriter(database),
+            run_id=run_id,
+            run_attempt_id="ra1",
+            lane_id="lane-c",
+            lane_attempt_id="la-c",
+            worker_id="W2",
+            episode_key_resolver=lambda key: "episode-c" if key == "fake.Task::0" else None,
+        )
+
+        sink.emit(
+            ExecutionEvent(
+                type="diagnostic.browser",
+                timestamp="2026-07-13T00:00:01.000Z",
+                phase="browser.network",
+                worker_id="W2",
+                task_id="fake.Task",
+                trial_id=0,
+                episode_key="fake.Task::0",
+                payload={
+                    "code": "BROWSER_REQUEST_FAILED",
+                    "message": "connection refused",
+                    "step": 3,
+                    "app_ids": ["fake"],
+                },
+            )
+        )
+
+        row = database.connection.execute(
+            "SELECT * FROM events WHERE run_id = ? AND type = 'diagnostic.browser'",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["run_attempt_id"] == "ra1"
+        assert row["lane_id"] == "lane-c"
+        assert row["lane_attempt_id"] == "la-c"
+        assert row["episode_id"] == "episode-c"
+        assert row["worker_id"] == "W2"
+        assert row["entity_type"] == "diagnostic"
+        assert json.loads(row["payload_json"]) == {
+            "app_ids": ["fake"],
+            "code": "BROWSER_REQUEST_FAILED",
+            "episode_key": "fake.Task::0",
+            "message": "connection refused",
+            "phase": "browser.network",
+            "step": 3,
+            "task_id": "fake.Task",
+            "trial_id": 0,
+        }
     finally:
         database.close()

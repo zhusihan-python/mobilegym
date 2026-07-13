@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+from collections import Counter
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -1044,7 +1046,68 @@ class DiagnosticInputRepository:
             comparison=report_input.comparison,
             report=report,
             gate_results=gate_results,
+            event_diagnostics=self._event_diagnostics(
+                report_input.run_id,
+                report_input.run_attempt_id,
+            ),
         )
+
+    def _event_diagnostics(
+        self,
+        run_id: str,
+        run_attempt_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            """
+            SELECT ev.id AS source_event_id, ev.type, ev.run_id,
+                   ev.run_attempt_id, ra.attempt_no AS run_attempt_no,
+                   ev.lane_id, ev.lane_attempt_id, l.lane_key, l.target_id,
+                   ev.episode_id, e.episode_key, ev.worker_id,
+                   ev.occurred_at, ev.payload_json,
+                   ea.id AS episode_attempt_id,
+                   ea.attempt_no AS episode_attempt_no
+            FROM events AS ev
+            LEFT JOIN run_attempts AS ra ON ra.id = ev.run_attempt_id
+            LEFT JOIN lanes AS l ON l.id = ev.lane_id
+            LEFT JOIN episodes AS e ON e.id = ev.episode_id
+            LEFT JOIN episode_attempts AS ea
+              ON ea.episode_id = ev.episode_id
+             AND ea.lane_attempt_id = ev.lane_attempt_id
+             AND NOT EXISTS (
+               SELECT 1
+               FROM episode_attempts AS other
+               WHERE other.episode_id = ev.episode_id
+                 AND other.lane_attempt_id = ev.lane_attempt_id
+                 AND other.id <> ea.id
+             )
+            WHERE ev.run_id = ?
+              AND ev.run_attempt_id = ?
+              AND ev.type LIKE 'diagnostic.%'
+            ORDER BY ev.sequence, ev.id
+            """,
+            (run_id, run_attempt_id),
+        ).fetchall()
+        return [
+            {
+                "source_event_id": str(row["source_event_id"]),
+                "type": str(row["type"]),
+                "run_id": str(row["run_id"]),
+                "run_attempt_id": str(row["run_attempt_id"]),
+                "run_attempt_no": row["run_attempt_no"],
+                "lane_id": row["lane_id"],
+                "lane_attempt_id": row["lane_attempt_id"],
+                "lane_key": row["lane_key"],
+                "target_id": row["target_id"],
+                "episode_id": row["episode_id"],
+                "episode_attempt_id": row["episode_attempt_id"],
+                "episode_key": row["episode_key"],
+                "episode_attempt_no": row["episode_attempt_no"],
+                "worker_id": row["worker_id"],
+                "occurred_at": str(row["occurred_at"]),
+                "payload": _json_or_empty_object(row["payload_json"]),
+            }
+            for row in rows
+        ]
 
     def _latest_report(
         self,
@@ -1271,26 +1334,71 @@ class DiagnosticRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def get_or_create(self, run_id: str) -> dict[str, Any]:
+    def get_or_create(
+        self,
+        run_id: str,
+        *,
+        category: str | None = None,
+        severity: str | None = None,
+        target_id: str | None = None,
+        app_id: str | None = None,
+        task_id: str | None = None,
+        retryable: bool | None = None,
+        lane_key: str | None = None,
+        episode_key: str | None = None,
+        attempt_no: int | None = None,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
         ReportRepository(self.database).get_or_create(run_id)
         diagnostic_input = DiagnosticInputRepository(self.database).get_for_run(run_id)
         payload = build_diagnostics(diagnostic_input)
+        ArtifactRepository(self.database)._index_run(run_id)
         now = _utc_timestamp()
         connection = self.database.connection
         with self.database._lock:  # noqa: SLF100
             connection.execute("BEGIN IMMEDIATE")
             try:
                 for item in payload["items"]:
+                    identity = self._identity_for_item(item)
                     connection.execute(
                         """
-                        INSERT OR IGNORE INTO diagnostics (
+                        INSERT INTO diagnostics (
                           id, run_id, run_attempt_id, lane_attempt_id,
                           episode_attempt_id, comparison_id, comparison_pair_id,
                           gate_result_id, entity_type, code, category, phase,
                           severity, retryable, message, recommended_action,
-                          raw_json, artifact_refs_json, input_hash, created_at
+                          raw_json, artifact_refs_json, input_hash, created_at,
+                          source_event_id, lane_id, episode_id, worker_id, step,
+                          target_id, app_ids_json, task_id, lane_key, episode_key,
+                          run_attempt_no, episode_attempt_no, scope,
+                          artifact_ids_json, pair_key, report_id,
+                          baseline_episode_attempt_id, candidate_episode_attempt_id
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                          lane_attempt_id = excluded.lane_attempt_id,
+                          episode_attempt_id = excluded.episode_attempt_id,
+                          source_event_id = excluded.source_event_id,
+                          lane_id = excluded.lane_id,
+                          episode_id = excluded.episode_id,
+                          worker_id = excluded.worker_id,
+                          step = excluded.step,
+                          target_id = excluded.target_id,
+                          app_ids_json = excluded.app_ids_json,
+                          task_id = excluded.task_id,
+                          lane_key = excluded.lane_key,
+                          episode_key = excluded.episode_key,
+                          run_attempt_no = excluded.run_attempt_no,
+                          episode_attempt_no = excluded.episode_attempt_no,
+                          scope = excluded.scope,
+                          artifact_ids_json = excluded.artifact_ids_json,
+                          pair_key = excluded.pair_key,
+                          report_id = excluded.report_id,
+                          baseline_episode_attempt_id = excluded.baseline_episode_attempt_id,
+                          candidate_episode_attempt_id = excluded.candidate_episode_attempt_id,
+                          input_hash = excluded.input_hash
                         """,
                         (
                             item["id"],
@@ -1313,13 +1421,289 @@ class DiagnosticRepository:
                             canonical_json(item.get("artifact_refs") or []),
                             payload["input_hash"],
                             now,
+                            identity["source_event_id"],
+                            identity["lane_id"],
+                            identity["episode_id"],
+                            identity["worker_id"],
+                            identity["step"],
+                            identity["target_id"],
+                            canonical_json(identity["app_ids"]),
+                            identity["task_id"],
+                            identity["lane_key"],
+                            identity["episode_key"],
+                            identity["run_attempt_no"],
+                            identity["episode_attempt_no"],
+                            identity["scope"],
+                            canonical_json(identity["artifact_ids"]),
+                            identity["pair_key"],
+                            identity["report_id"],
+                            identity["baseline_episode_attempt_id"],
+                            identity["candidate_episode_attempt_id"],
                         ),
                     )
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
-        return payload
+        filters = {
+            "category": category,
+            "severity": severity,
+            "target_id": target_id,
+            "app_id": app_id,
+            "task_id": task_id,
+            "retryable": retryable,
+            "lane_key": lane_key,
+            "episode_key": episode_key,
+            "attempt_no": attempt_no,
+        }
+        all_rows = self._select_rows(run_id, filters=filters)
+        page_rows = self._select_rows(
+            run_id,
+            filters=filters,
+            cursor=cursor,
+            limit=max(1, min(limit, 200)) + 1,
+        )
+        page_limit = max(1, min(limit, 200))
+        has_more = len(page_rows) > page_limit
+        page_rows = page_rows[:page_limit]
+        items = [self._public_item(row) for row in page_rows]
+        categories = Counter(str(row["category"]) for row in all_rows)
+        severities = Counter(str(row["severity"]) for row in all_rows)
+        public_item = {
+            "schema_version": 2,
+            "run_id": payload["run_id"],
+            "run_attempt_id": payload["run_attempt_id"],
+            "input_hash": payload["input_hash"],
+            "provenance": payload["provenance"],
+            "summary": {
+                "total": len(all_rows),
+                "by_category": dict(sorted(categories.items())),
+                "by_severity": dict(sorted(severities.items())),
+            },
+            "items": items,
+            "next_cursor": (
+                self._encode_cursor(page_rows[-1]) if has_more and page_rows else None
+            ),
+        }
+        return public_item
+
+    def _identity_for_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        identity = {
+            "source_event_id": item.get("source_event_id"),
+            "lane_id": item.get("lane_id"),
+            "episode_id": item.get("episode_id"),
+            "worker_id": item.get("worker_id"),
+            "step": item.get("step"),
+            "target_id": item.get("target_id"),
+            "app_ids": list(item.get("app_ids") or []),
+            "task_id": item.get("task_id"),
+            "lane_key": item.get("lane_key"),
+            "episode_key": item.get("episode_key"),
+            "run_attempt_no": item.get("run_attempt_no"),
+            "episode_attempt_no": item.get("episode_attempt_no"),
+            "scope": item.get("scope") or "run",
+            "artifact_ids": [],
+            "pair_key": item.get("pair_key"),
+            "report_id": item.get("report_id"),
+            "baseline_episode_attempt_id": item.get("baseline_episode_attempt_id"),
+            "candidate_episode_attempt_id": item.get("candidate_episode_attempt_id"),
+        }
+        episode_attempt_id = item.get("episode_attempt_id")
+        if episode_attempt_id:
+            row = self.database.connection.execute(
+                """
+                SELECT ea.id AS episode_attempt_id, ea.attempt_no AS episode_attempt_no,
+                       ea.result_json, e.id AS episode_id, e.episode_key, e.task_id,
+                       la.id AS lane_attempt_id, la.run_attempt_id,
+                       l.id AS lane_id, l.lane_key, l.target_id,
+                       ra.attempt_no AS run_attempt_no
+                FROM episode_attempts AS ea
+                JOIN episodes AS e ON e.id = ea.episode_id
+                JOIN lane_attempts AS la ON la.id = ea.lane_attempt_id
+                JOIN lanes AS l ON l.id = la.lane_id
+                JOIN run_attempts AS ra ON ra.id = la.run_attempt_id
+                WHERE ea.id = ?
+                """,
+                (episode_attempt_id,),
+            ).fetchone()
+            if row is not None:
+                result = _json_or_empty_object(row["result_json"])
+                identity.update(
+                    {
+                        "lane_id": str(row["lane_id"]),
+                        "episode_id": str(row["episode_id"]),
+                        "target_id": str(row["target_id"]),
+                        "task_id": str(row["task_id"]),
+                        "lane_key": str(row["lane_key"]),
+                        "episode_key": str(row["episode_key"]),
+                        "run_attempt_no": int(row["run_attempt_no"]),
+                        "episode_attempt_no": int(row["episode_attempt_no"]),
+                        "scope": "episode",
+                    }
+                )
+                if not identity["app_ids"]:
+                    apps = result.get("apps")
+                    identity["app_ids"] = (
+                        [str(value) for value in apps] if isinstance(apps, list) else []
+                    )
+        if identity["run_attempt_no"] is None:
+            row = self.database.connection.execute(
+                "SELECT attempt_no FROM run_attempts WHERE id = ?",
+                (item.get("run_attempt_id"),),
+            ).fetchone()
+            if row is not None:
+                identity["run_attempt_no"] = int(row["attempt_no"])
+
+        artifact_rows = self.database.connection.execute(
+            """
+            SELECT id
+            FROM artifacts
+            WHERE run_id = ?
+              AND (
+                (? IS NOT NULL AND episode_attempt_id = ?)
+                OR (? IS NOT NULL AND lane_attempt_id = ? AND kind = 'log')
+              )
+            ORDER BY kind, id
+            """,
+            (
+                item.get("run_id"),
+                episode_attempt_id,
+                episode_attempt_id,
+                item.get("lane_attempt_id"),
+                item.get("lane_attempt_id"),
+            ),
+        ).fetchall()
+        identity["artifact_ids"] = [str(row["id"]) for row in artifact_rows]
+        return identity
+
+    def _select_rows(
+        self,
+        run_id: str,
+        *,
+        filters: dict[str, Any],
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> list[sqlite3.Row]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        for field in ("category", "severity", "target_id", "task_id", "lane_key", "episode_key"):
+            value = filters.get(field)
+            if value is not None:
+                clauses.append(f"{field} = ?")
+                params.append(value)
+        if filters.get("retryable") is not None:
+            clauses.append("retryable = ?")
+            params.append(1 if filters["retryable"] else 0)
+        if filters.get("attempt_no") is not None:
+            clauses.append("run_attempt_no = ?")
+            params.append(filters["attempt_no"])
+        if filters.get("app_id") is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(diagnostics.app_ids_json) WHERE value = ?)"
+            )
+            params.append(filters["app_id"])
+        if cursor is not None:
+            cursor_created_at, cursor_id = self._decode_cursor(cursor)
+            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            params.extend([cursor_created_at, cursor_created_at, cursor_id])
+        sql = (
+            "SELECT * FROM diagnostics WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY created_at DESC, id DESC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.database.connection.execute(sql, tuple(params)).fetchall()
+
+    def _public_item(self, row: sqlite3.Row) -> dict[str, Any]:
+        artifact_ids = _json_or_empty_array(row["artifact_ids_json"])
+        artifacts: list[dict[str, Any]] = []
+        for artifact_id in artifact_ids:
+            artifact = self.database.connection.execute(
+                "SELECT id, kind, media_type FROM artifacts WHERE id = ? AND run_id = ?",
+                (artifact_id, row["run_id"]),
+            ).fetchone()
+            if artifact is None:
+                continue
+            artifacts.append(
+                {
+                    "id": str(artifact["id"]),
+                    "kind": str(artifact["kind"]),
+                    "media_type": (
+                        str(artifact["media_type"])
+                        if artifact["media_type"] is not None
+                        else None
+                    ),
+                    "href": (
+                        f"/api/platform/v1/runs/{quote(str(row['run_id']), safe='')}"
+                        f"/artifacts/{quote(str(artifact['id']), safe='')}/content"
+                    ),
+                }
+            )
+        nullable = lambda name: str(row[name]) if row[name] is not None else None
+        public_item = {
+            "id": str(row["id"]),
+            "source_event_id": nullable("source_event_id"),
+            "code": str(row["code"]),
+            "category": str(row["category"]),
+            "phase": nullable("phase"),
+            "severity": str(row["severity"]),
+            "retryable": bool(row["retryable"]),
+            "message": str(row["message"]),
+            "recommended_action": nullable("recommended_action"),
+            "entity_type": str(row["entity_type"]),
+            "scope": str(row["scope"]),
+            "run_id": str(row["run_id"]),
+            "run_attempt_id": str(row["run_attempt_id"]),
+            "run_attempt_no": row["run_attempt_no"],
+            "lane_id": nullable("lane_id"),
+            "lane_attempt_id": nullable("lane_attempt_id"),
+            "lane_key": nullable("lane_key"),
+            "target_id": nullable("target_id"),
+            "episode_id": nullable("episode_id"),
+            "episode_attempt_id": nullable("episode_attempt_id"),
+            "episode_key": nullable("episode_key"),
+            "episode_attempt_no": row["episode_attempt_no"],
+            "worker_id": nullable("worker_id"),
+            "step": row["step"],
+            "task_id": nullable("task_id"),
+            "app_ids": [str(value) for value in _json_or_empty_array(row["app_ids_json"])],
+            "artifacts": artifacts,
+        }
+        for name in (
+            "comparison_id",
+            "comparison_pair_id",
+            "pair_key",
+            "gate_result_id",
+            "report_id",
+            "baseline_episode_attempt_id",
+            "candidate_episode_attempt_id",
+        ):
+            value = nullable(name)
+            if value is not None:
+                public_item[name] = value
+        return public_item
+
+    @staticmethod
+    def _encode_cursor(row: sqlite3.Row) -> str:
+        raw = canonical_json([str(row["created_at"]), str(row["id"])]).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> tuple[str, str]:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded).decode())
+            if not isinstance(value, list) or len(value) != 2:
+                raise ValueError
+            return str(value[0]), str(value[1])
+        except Exception as exc:
+            raise RunDomainError(
+                "DIAGNOSTIC_CURSOR_INVALID",
+                "The diagnostic cursor is invalid.",
+                status_code=400,
+            ) from exc
 
 
 class ArtifactRepository:
@@ -1479,6 +1863,53 @@ class ArtifactRepository:
                     """,
                     (run_id,),
                 ).fetchall()
+                for lane_row in lane_attempt_rows:
+                    try:
+                        lane_root = resolve_artifact_directory(
+                            run_root,
+                            str(lane_row["artifact_root"]),
+                        )
+                    except ArtifactPathError:
+                        continue
+                    browser_log_dir = lane_root / "browser_logs"
+                    if not browser_log_dir.is_dir():
+                        continue
+                    for log_path in sorted(browser_log_dir.glob("*.log"))[:64]:
+                        if not log_path.is_file():
+                            continue
+                        try:
+                            relative_path = log_path.resolve().relative_to(
+                                resolved_run_root
+                            ).as_posix()
+                            resolved_file = resolve_artifact_path(
+                                run_root,
+                                relative_path,
+                            )
+                        except (ArtifactPathError, ValueError):
+                            continue
+                        payload = {"run_id": run_id, "relative_path": relative_path}
+                        connection.execute(
+                            """
+                            INSERT OR IGNORE INTO artifacts (
+                              id, run_id, run_attempt_id, lane_attempt_id,
+                              episode_attempt_id, kind, relative_path,
+                              media_type, size_bytes, sha256, created_at
+                            )
+                            VALUES (?, ?, ?, ?, NULL, 'log', ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                "artifact_"
+                                + canonical_sha256(payload).removeprefix("sha256:"),
+                                run_id,
+                                str(lane_row["run_attempt_id"]),
+                                str(lane_row["id"]),
+                                relative_path,
+                                _media_type(relative_path),
+                                resolved_file.stat().st_size,
+                                _file_sha256(resolved_file),
+                                now,
+                            ),
+                        )
                 discovery = discover_monitor_sources(
                     run_root, [dict(r) for r in lane_attempt_rows],
                 )

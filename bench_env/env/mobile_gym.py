@@ -439,6 +439,10 @@ class MobileGymEnv(BaseMobileEnv):
         self._page_seq = 0  # incremented on each start()
         self._log_prefix = f"[W{worker_id}]" if worker_id >= 0 else ""
         self._current_task_id: str = ""
+        self._diagnostic_episode_key: str | None = None
+        self._diagnostic_step: int | None = None
+        self._diagnostic_app_ids: list[str] = []
+        self._diagnostic_trial_id: int | None = None
         self._browser_logger: Optional[logging.Logger] = None
         self._diagnostic_event_sink: EventSink = NullEventSink()
         self._fresh = False  # True after start(), skip first reset
@@ -503,6 +507,20 @@ class MobileGymEnv(BaseMobileEnv):
         """Set an optional sink for structured browser diagnostics."""
         self._diagnostic_event_sink = event_sink or NullEventSink()
 
+    def set_diagnostic_context(
+        self,
+        *,
+        episode_key: str | None,
+        step: int | None,
+        app_ids: list[str] | None,
+        trial_id: int | None = None,
+    ) -> None:
+        """Bind the current episode identity used by browser event producers."""
+        self._diagnostic_episode_key = episode_key
+        self._diagnostic_step = step
+        self._diagnostic_app_ids = list(app_ids or [])
+        self._diagnostic_trial_id = trial_id
+
     def _emit_browser_diagnostic(
         self,
         *,
@@ -514,6 +532,8 @@ class MobileGymEnv(BaseMobileEnv):
         event_payload = {
             "code": code,
             "message": message,
+            "step": self._diagnostic_step,
+            "app_ids": list(self._diagnostic_app_ids),
             **payload,
         }
         worker_id = f"W{self.worker_id}" if self.worker_id >= 0 else None
@@ -525,6 +545,8 @@ class MobileGymEnv(BaseMobileEnv):
                     phase=phase,
                     worker_id=worker_id,
                     task_id=self._current_task_id or None,
+                    trial_id=self._diagnostic_trial_id,
+                    episode_key=self._diagnostic_episode_key,
                     payload=event_payload,
                 )
             )

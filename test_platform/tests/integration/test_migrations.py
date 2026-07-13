@@ -78,6 +78,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (12, "0012_manual_sequence_episode_metadata.sql"),
         (13, "0013_run_attempt_compatibility.sql"),
         (14, "0014_named_baselines.sql"),
+        (15, "0015_diagnostic_identity.sql"),
     ]
 
 
@@ -113,6 +114,24 @@ def test_diagnostics_and_artifacts_tables_are_created(tmp_path):
             "artifact_refs_json",
             "input_hash",
             "created_at",
+            "source_event_id",
+            "lane_id",
+            "episode_id",
+            "worker_id",
+            "step",
+            "target_id",
+            "app_ids_json",
+            "task_id",
+            "lane_key",
+            "episode_key",
+            "run_attempt_no",
+            "episode_attempt_no",
+            "scope",
+            "artifact_ids_json",
+            "pair_key",
+            "report_id",
+            "baseline_episode_attempt_id",
+            "candidate_episode_attempt_id",
         } <= diagnostic_columns
         assert {
             "id",
@@ -287,6 +306,7 @@ def test_database_initialization_is_idempotent(tmp_path):
         (12, "0012_manual_sequence_episode_metadata.sql"),
         (13, "0013_run_attempt_compatibility.sql"),
         (14, "0014_named_baselines.sql"),
+        (15, "0015_diagnostic_identity.sql"),
     ]
 
 

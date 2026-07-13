@@ -6,7 +6,7 @@ import {
   cancelRun,
   getComparison,
   getBaselineEligibility,
-  getDiagnostics,
+  getAllDiagnostics,
   getReport,
   getReportExport,
   getRun,
@@ -199,7 +199,7 @@ export function RunDetailPage() {
     }
     let active = true;
     setDiagnostics({ status: 'loading' });
-    Promise.all([getDiagnostics(runId), listArtifacts(runId)])
+    Promise.all([getAllDiagnostics(runId), listArtifacts(runId)])
       .then(([diagnosticData, artifactData]) => {
         if (active) {
           setDiagnostics({
@@ -1086,7 +1086,9 @@ function DiagnosticsPanel({
   run: RunDetail;
   diagnostics: DiagnosticsState;
 }) {
-  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [taskFilter, setTaskFilter] = useState('');
+  const [retryabilityFilter, setRetryabilityFilter] = useState('');
 
   if (!REPORTABLE_RUN_STATES.has(run.state)) {
     return (
@@ -1116,9 +1118,13 @@ function DiagnosticsPanel({
   }
 
   const data = diagnostics.diagnostics;
-  const visibleItems = errorsOnly
-    ? data.items.filter((item) => item.severity === 'error')
-    : data.items;
+  const categories = Array.from(new Set(data.items.map((item) => item.category))).sort();
+  const visibleItems = data.items.filter((item) => {
+    if (categoryFilter && item.category !== categoryFilter) return false;
+    if (taskFilter && item.task_id !== taskFilter.trim()) return false;
+    if (retryabilityFilter && String(item.retryable) !== retryabilityFilter) return false;
+    return true;
+  });
 
   return (
     <section className="tp-panel" data-testid="tp-diagnostics-panel">
@@ -1151,22 +1157,51 @@ function DiagnosticsPanel({
         </div>
       </dl>
 
-      <label className="tp-inline-control">
-        <input
-          type="checkbox"
-          checked={errorsOnly}
-          onChange={(event) => setErrorsOnly(event.currentTarget.checked)}
-        />
-        Errors only
-      </label>
+      <div className="tp-form-grid">
+        <label>
+          <span>Diagnostic category</span>
+          <select
+            aria-label="Diagnostic category"
+            value={categoryFilter}
+            onChange={(event) => setCategoryFilter(event.target.value)}
+          >
+            <option value="">All categories</option>
+            {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Diagnostic task</span>
+          <input
+            aria-label="Diagnostic task"
+            value={taskFilter}
+            onChange={(event) => setTaskFilter(event.target.value)}
+            placeholder="Exact task ID"
+          />
+        </label>
+        <label>
+          <span>Diagnostic retryability</span>
+          <select
+            aria-label="Diagnostic retryability"
+            value={retryabilityFilter}
+            onChange={(event) => setRetryabilityFilter(event.target.value)}
+          >
+            <option value="">Any retryability</option>
+            <option value="true">Retryable</option>
+            <option value="false">Not retryable</option>
+          </select>
+        </label>
+      </div>
 
       <table>
         <thead>
           <tr>
             <th>Code</th>
+            <th>Category</th>
             <th>Severity</th>
-            <th>Entity</th>
+            <th>Retry</th>
+            <th>Identity</th>
             <th>Message</th>
+            <th>Recommended action</th>
             <th>Artifacts</th>
           </tr>
         </thead>
@@ -1174,24 +1209,36 @@ function DiagnosticsPanel({
           {visibleItems.map((item) => (
             <tr key={item.id} data-testid={`tp-diagnostic-${item.code}`}>
               <td className="tp-mono">{item.code}</td>
+              <td>{item.category}</td>
               <td>
                 <span className={`tp-classification tp-diagnostic-${item.severity}`}>
                   {item.severity}
                 </span>
               </td>
               <td>
-                {item.entity_type}
-                {item.episode_attempt_id ? (
-                  <span className="tp-mono"> {item.episode_attempt_id}</span>
-                ) : null}
-                {item.pair_key ? <span className="tp-mono"> {item.pair_key}</span> : null}
+                {item.retryable ? 'retryable' : 'not retryable'}
+              </td>
+              <td className="tp-mono">
+                {[
+                  item.target_id ? `target ${item.target_id}` : null,
+                  item.app_ids.length ? `App ${item.app_ids.join(', ')}` : null,
+                  item.task_id ? `task ${item.task_id}` : null,
+                  item.lane_key ? `lane ${item.lane_key}` : null,
+                  item.episode_key ? `episode ${item.episode_key}` : null,
+                  item.run_attempt_no !== null
+                    ? `run ${item.run_attempt_no} / episode ${item.episode_attempt_no ?? '—'}`
+                    : null,
+                  item.worker_id ? `worker ${item.worker_id}` : null,
+                  item.step !== null ? `step ${item.step}` : null,
+                ].filter(Boolean).join(' · ') || 'run-wide'}
               </td>
               <td>{item.message}</td>
+              <td>{item.recommended_action ?? '—'}</td>
               <td>
-                {item.artifact_refs.length > 0
-                  ? item.artifact_refs.map((ref) => (
-                      <a key={ref} href={runExplorerHref(run.id, ref)}>
-                        {ref}
+                {item.artifacts.length > 0
+                  ? item.artifacts.map((artifact) => (
+                      <a key={artifact.id} href={artifact.href}>
+                        Open {artifact.kind} artifact
                       </a>
                     ))
                   : '—'}

@@ -6,7 +6,7 @@ from typing import Any
 from test_platform.domain.canonical_json import canonical_sha256
 
 
-DIAGNOSTIC_INPUT_SCHEMA_VERSION = 1
+DIAGNOSTIC_INPUT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class DiagnosticInput:
     comparison: dict[str, Any] | None
     report: dict[str, Any] | None
     gate_results: list[dict[str, Any]]
+    event_diagnostics: list[dict[str, Any]]
     input_hash: str
     schema_version: int = DIAGNOSTIC_INPUT_SCHEMA_VERSION
 
@@ -36,6 +37,7 @@ class DiagnosticInput:
         comparison: dict[str, Any] | None,
         report: dict[str, Any] | None,
         gate_results: list[dict[str, Any]],
+        event_diagnostics: list[dict[str, Any]],
     ) -> DiagnosticInput:
         payload = {
             "schema_version": DIAGNOSTIC_INPUT_SCHEMA_VERSION,
@@ -47,6 +49,7 @@ class DiagnosticInput:
             "comparison": comparison,
             "report": report,
             "gate_results": gate_results,
+            "event_diagnostics": event_diagnostics,
         }
         return cls(
             run_id=run_id,
@@ -57,6 +60,7 @@ class DiagnosticInput:
             comparison=comparison,
             report=report,
             gate_results=gate_results,
+            event_diagnostics=event_diagnostics,
             input_hash=canonical_sha256(payload),
         )
 
@@ -72,4 +76,5 @@ class DiagnosticInput:
             "comparison": self.comparison,
             "report": self.report,
             "gate_results": self.gate_results,
+            "event_diagnostics": self.event_diagnostics,
         }

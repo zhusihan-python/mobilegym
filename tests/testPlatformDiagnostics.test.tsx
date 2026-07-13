@@ -43,13 +43,33 @@ const run: RunDetail = {
   ended_at: '2026-07-06T00:00:10.000Z',
   run_plan: {},
   target_revisions: [],
-  episode_identities: [],
-  episode_attempts: [],
+  episode_identities: [{
+    episode_key: 'fake.Task::0',
+    pair_key: 'fake.Task::0',
+    task_base_id: 'fake.Task',
+    task_id: 'fake.Task',
+    instance_id: 0,
+    instance_seed: 1,
+    template_index: null,
+    trial_id: 0,
+    max_steps: 10,
+    sequence_index: null,
+    sequence_group_id: null,
+  }],
+  episode_attempts: [{
+    episode_key: 'fake.Task::0',
+    lane_key: 'candidate',
+    attempt_no: 1,
+    state: 'failed',
+    outcome: 'ERROR',
+    error_code: 'BROWSER_REQUEST_FAILED',
+    artifact_root: 'artifacts/cand0',
+  }],
 };
 
 const report: RunReport = {
   id: 'report-1',
-  schema_version: 1,
+  schema_version: 2,
   run_id: run.id,
   run_attempt_id: 'attempt-1',
   input_hash: 'sha256:report',
@@ -101,52 +121,82 @@ const report: RunReport = {
 };
 
 const diagnostics: RunDiagnostics = {
-  schema_version: 1,
+  schema_version: 2,
   run_id: run.id,
   run_attempt_id: 'attempt-1',
   input_hash: 'sha256:diagnostics',
   provenance: report.provenance,
   summary: {
     total: 2,
-    by_category: { assertion: 1, execution: 1 },
-    by_severity: { error: 1, warning: 1 },
+    by_category: { gate: 1, network: 1 },
+    by_severity: { error: 2 },
   },
   items: [
     {
       id: 'diag-error',
-      code: 'EXECUTION_ERROR',
-      category: 'execution',
-      phase: 'execute',
+      code: 'BROWSER_REQUEST_FAILED',
+      category: 'network',
+      phase: 'browser.network',
       severity: 'error',
       retryable: true,
-      message: 'candidate crashed',
-      entity_type: 'episode_attempt',
+      message: 'connection refused',
+      entity_type: 'diagnostic_event',
+      source_event_id: 'event-browser',
+      scope: 'episode',
       run_id: run.id,
       run_attempt_id: 'attempt-1',
+      run_attempt_no: 1,
+      lane_id: 'lane-c',
       lane_attempt_id: 'la-c',
+      lane_key: 'candidate',
+      target_id: 'target-c',
+      episode_id: 'episode-c',
       episode_attempt_id: 'ea-c',
-      artifact_refs: ['artifacts/cand0'],
-      recommended_action: 'Inspect execution logs.',
-      raw: {},
+      episode_key: 'fake.Task::0',
+      episode_attempt_no: 1,
+      worker_id: 'W0',
+      step: 2,
+      task_id: 'fake.Task',
+      app_ids: ['fake'],
+      artifacts: [{
+        id: 'artifact-1',
+        kind: 'log',
+        media_type: 'text/plain',
+        href: `/api/platform/v1/runs/${run.id}/artifacts/artifact-1/content`,
+      }],
+      recommended_action: 'Inspect the browser log and retry the request.',
     },
     {
-      id: 'diag-warning',
-      code: 'ASSERTION_FAILURE',
-      category: 'assertion',
-      phase: 'judge',
-      severity: 'warning',
+      id: 'diag-run-wide',
+      code: 'QUALITY_GATE_FAILED',
+      category: 'gate',
+      phase: 'gate',
+      severity: 'error',
       retryable: false,
-      message: 'judge mismatch',
-      entity_type: 'episode_attempt',
+      message: 'quality gate failed',
+      entity_type: 'gate',
+      source_event_id: null,
+      scope: 'run',
       run_id: run.id,
       run_attempt_id: 'attempt-1',
-      lane_attempt_id: 'la-c',
-      episode_attempt_id: 'ea-c2',
-      artifact_refs: [],
-      recommended_action: 'Inspect judge evidence.',
-      raw: {},
+      run_attempt_no: 1,
+      lane_id: null,
+      lane_attempt_id: null,
+      lane_key: null,
+      target_id: null,
+      episode_id: 'episode-c',
+      episode_attempt_id: null,
+      episode_key: 'fake.Task::0',
+      episode_attempt_no: null,
+      worker_id: null,
+      step: null,
+      task_id: null,
+      app_ids: [],
+      artifacts: [],
+      recommended_action: 'Inspect gate reasons.',
     },
   ],
+  next_cursor: null,
 };
 
 const artifact: ArtifactItem = {
@@ -155,9 +205,9 @@ const artifact: ArtifactItem = {
   run_attempt_id: 'attempt-1',
   lane_attempt_id: 'la-c',
   episode_attempt_id: 'ea-c',
-  kind: 'json',
-  relative_path: 'artifacts/cand0/trace.json',
-  media_type: 'application/json',
+  kind: 'log',
+  relative_path: 'artifacts/cand0/browser_W0.log',
+  media_type: 'text/plain',
   size_bytes: 12,
   sha256: 'sha256:artifact',
   created_at: '2026-07-06T00:00:12.000Z',
@@ -212,7 +262,33 @@ describe('Test Platform diagnostics UI', () => {
         return jsonResponse(report);
       }
       if (url.pathname === `/api/platform/v1/runs/${run.id}/diagnostics`) {
-        return jsonResponse(diagnostics);
+        if (url.searchParams.get('cursor') === 'diagnostics-page-2') {
+          return jsonResponse({
+            ...diagnostics,
+            items: [diagnostics.items[0]],
+            next_cursor: null,
+          });
+        }
+        return jsonResponse({
+          ...diagnostics,
+          items: [diagnostics.items[1]],
+          next_cursor: 'diagnostics-page-2',
+        });
+      }
+      if (url.pathname.includes(`/api/platform/v1/runs/${run.id}/episodes/`)
+        && url.pathname.endsWith('/replay')) {
+        return jsonResponse({
+          run_id: run.id,
+          episode_key: 'fake.Task::0',
+          lane_key: 'candidate',
+          attempt_no: 1,
+          episode_attempt_id: 'ea-c',
+          artifact_root: 'artifacts/cand0',
+          outcome: 'ERROR',
+          error_code: 'BROWSER_REQUEST_FAILED',
+          result: {},
+          steps: [],
+        });
       }
       if (url.pathname === `/api/platform/v1/runs/${run.id}/artifacts`) {
         return jsonResponse({ items: [artifact] });
@@ -225,16 +301,44 @@ describe('Test Platform diagnostics UI', () => {
     render(<App />);
 
     expect((await screen.findByTestId('tp-diagnostics-total')).textContent).toContain('2');
-    expect(screen.getByTestId('tp-diagnostics-errors').textContent).toContain('1');
-    expect(screen.getByTestId('tp-diagnostic-EXECUTION_ERROR')).toBeTruthy();
-    expect(screen.getByTestId('tp-diagnostic-ASSERTION_FAILURE')).toBeTruthy();
+    expect(screen.getByTestId('tp-diagnostics-errors').textContent).toContain('2');
+    expect(screen.getByTestId('tp-diagnostic-BROWSER_REQUEST_FAILED')).toBeTruthy();
+    expect(screen.getByTestId('tp-diagnostic-QUALITY_GATE_FAILED')).toBeTruthy();
     expect(screen.getByTestId('tp-artifact-artifact-1').querySelector('a')?.href).toContain(
       `/api/platform/v1/runs/${run.id}/artifacts/${artifact.id}/content`,
     );
 
-    fireEvent.click(screen.getByLabelText('Errors only'));
+    const browserRow = screen.getByTestId('tp-diagnostic-BROWSER_REQUEST_FAILED');
+    expect(browserRow.textContent).toContain('network');
+    expect(browserRow.textContent).toContain('retryable');
+    expect(browserRow.textContent).toContain('target-c');
+    expect(browserRow.textContent).toContain('fake.Task');
+    expect(browserRow.textContent).toContain('candidate');
+    expect(browserRow.textContent).toContain('fake.Task::0');
+    expect(browserRow.textContent).toContain('run 1 / episode 1');
+    expect(browserRow.textContent).toContain('Inspect the browser log and retry the request.');
+    expect(screen.getByRole('link', { name: 'Open log artifact' }).getAttribute('href')).toBe(
+      `/api/platform/v1/runs/${run.id}/artifacts/${artifact.id}/content`,
+    );
 
-    expect(screen.getByTestId('tp-diagnostic-EXECUTION_ERROR')).toBeTruthy();
-    expect(screen.queryByTestId('tp-diagnostic-ASSERTION_FAILURE')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Diagnostic category'), {
+      target: { value: 'network' },
+    });
+    fireEvent.change(screen.getByLabelText('Diagnostic task'), {
+      target: { value: 'fake.Task' },
+    });
+    fireEvent.change(screen.getByLabelText('Diagnostic retryability'), {
+      target: { value: 'true' },
+    });
+
+    expect(screen.getByTestId('tp-diagnostic-BROWSER_REQUEST_FAILED')).toBeTruthy();
+    expect(screen.queryByTestId('tp-diagnostic-QUALITY_GATE_FAILED')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }));
+    const evidence = screen.getByRole('tabpanel');
+    expect(evidence.textContent).toContain('Selected episode attempt ea-c');
+    expect(evidence.textContent).toContain('BROWSER_REQUEST_FAILED');
+    expect(evidence.textContent).toContain('Run-wide diagnostics');
+    expect(evidence.textContent).toContain('QUALITY_GATE_FAILED');
   });
 });

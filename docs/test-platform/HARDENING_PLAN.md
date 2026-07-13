@@ -869,22 +869,22 @@ links can be authoritative.
 
 ### Acceptance criteria
 
-- [ ] Browser, page, network, and runner diagnostics reach the durable platform
+- [x] Browser, page, network, and runner diagnostics reach the durable platform
       event and diagnostic pipeline.
-- [ ] Events carry stable run-attempt, lane-attempt, episode, worker, and step
+- [x] Events carry stable run-attempt, lane-attempt, episode, worker, and step
       identity when the producer knows it; unavailable identity remains explicit.
-- [ ] Diagnostic rows display category, severity, retryability, recommended
+- [x] Diagnostic rows display category, severity, retryability, recommended
       action, target, App, task, lane, episode, attempt, and artifact facts when
       present.
-- [ ] Public diagnostic queries support category, severity, target, App, task,
+- [x] Public diagnostic queries support category, severity, target, App, task,
       retryability, lane, episode, and attempt filters with stable pagination.
-- [ ] Browser/page/network failures link to captured logs or artifacts without
+- [x] Browser/page/network failures link to captured logs or artifacts without
       exposing raw filesystem paths.
-- [ ] Evidence Dock diagnostics are scoped to the selected episode attempt when
+- [x] Evidence Dock diagnostics are scoped to the selected episode attempt when
       identity is available and clearly labelled run-wide otherwise.
-- [ ] Existing episode, comparison, and gate diagnostic classifications remain
+- [x] Existing episode, comparison, and gate diagnostic classifications remain
       compatible.
-- [ ] Diagnostic identity is sufficient for TP-H15 to navigate without matching
+- [x] Diagnostic identity is sufficient for TP-H15 to navigate without matching
       raw message text or display order.
 
 ### Test seam
