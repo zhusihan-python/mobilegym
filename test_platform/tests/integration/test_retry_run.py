@@ -208,6 +208,84 @@ def _seed_retryable_single_lane_run(
     return "run-retry"
 
 
+def test_retry_preview_detects_stale_selection_and_confirms_exact_selection(tmp_path):
+    app = create_app(_settings(tmp_path), supervisor=FakeRunSupervisor())
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_retryable_single_lane_run(database)
+
+        preview_response = client.get(f"/api/platform/v1/runs/{run_id}/retry/preview")
+
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert preview == {
+            "schema_version": 1,
+            "run_id": run_id,
+            "kind": "retry",
+            "source_run_attempt_id": "attempt1",
+            "source_attempt_no": 1,
+            "preview_token": preview["preview_token"],
+            "can_execute": True,
+            "empty_reason": None,
+            "selected_lane_episodes": [
+                {
+                    "episode_key": "fake.Task::1",
+                    "lane_key": "candidate",
+                    "reason": "retry_failed",
+                },
+                {
+                    "episode_key": "fake.Task::2",
+                    "lane_key": "candidate",
+                    "reason": "retry_error",
+                },
+            ],
+        }
+        assert preview["preview_token"].startswith("sha256:")
+
+        database.connection.execute(
+            "UPDATE episode_attempts SET outcome = 'PASS', error_code = NULL WHERE id = 'ea1'"
+        )
+        database.connection.commit()
+
+        stale_response = client.post(
+            f"/api/platform/v1/runs/{run_id}/retry",
+            json={"preview_token": preview["preview_token"]},
+        )
+
+        assert stale_response.status_code == 409
+        stale_error = stale_response.json()["error"]
+        assert stale_error["code"] == "RUN_FOLLOWUP_PREVIEW_STALE"
+        assert stale_error["message"] == "The follow-up selection changed after preview."
+        assert stale_error["details"] == [
+            {
+                "kind": "retry",
+                "expected_preview_token": preview["preview_token"],
+                "current_preview_token": stale_error["details"][0][
+                    "current_preview_token"
+                ],
+            }
+        ]
+        assert stale_error["request_id"]
+        assert database.connection.execute(
+            "SELECT COUNT(*) FROM run_attempts WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()[0] == 1
+
+        current_preview = client.get(
+            f"/api/platform/v1/runs/{run_id}/retry/preview"
+        ).json()
+        confirmed = client.post(
+            f"/api/platform/v1/runs/{run_id}/retry",
+            json={"preview_token": current_preview["preview_token"]},
+        )
+
+        assert confirmed.status_code == 202
+        assert confirmed.json()["selected_lane_episodes"] == current_preview[
+            "selected_lane_episodes"
+        ]
+
+
 def test_retry_creates_new_attempt_selection_without_mutating_original_results(tmp_path):
     app = create_app(_settings(tmp_path))
 
@@ -250,6 +328,70 @@ def test_retry_creates_new_attempt_selection_without_mutating_original_results(t
         assert [(row["episode_id"], row["lane_id"], row["reason"]) for row in selected] == [
             ("ep1", "lane-c", "retry_failed"),
             ("ep2", "lane-c", "retry_error"),
+        ]
+
+
+def test_followup_previews_use_existing_selectors_and_explain_empty_state(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _seed_retryable_single_lane_run(database)
+
+        retry = client.get(f"/api/platform/v1/runs/{run_id}/retry/preview")
+        assert retry.status_code == 200
+        assert retry.json() == {
+            "schema_version": 1,
+            "run_id": run_id,
+            "kind": "retry",
+            "source_run_attempt_id": "attempt1",
+            "source_attempt_no": 1,
+            "preview_token": retry.json()["preview_token"],
+            "can_execute": True,
+            "empty_reason": None,
+            "selected_lane_episodes": [
+                {
+                    "episode_key": "fake.Task::1",
+                    "lane_key": "candidate",
+                    "reason": "retry_failed",
+                },
+                {
+                    "episode_key": "fake.Task::2",
+                    "lane_key": "candidate",
+                    "reason": "retry_error",
+                },
+            ],
+        }
+
+        empty_resume = client.get(f"/api/platform/v1/runs/{run_id}/resume/preview")
+        assert empty_resume.status_code == 200
+        assert empty_resume.json()["can_execute"] is False
+        assert empty_resume.json()["selected_lane_episodes"] == []
+        assert empty_resume.json()["empty_reason"] == (
+            "No missing or service-restarted lane episodes are available to resume."
+        )
+
+        database.connection.execute("DELETE FROM episode_attempts WHERE id = 'ea1'")
+        database.connection.execute(
+            "UPDATE episode_attempts SET outcome = 'ERROR', error_code = 'SERVICE_RESTARTED' "
+            "WHERE id = 'ea2'"
+        )
+        database.connection.commit()
+
+        resume = client.get(f"/api/platform/v1/runs/{run_id}/resume/preview")
+        assert resume.status_code == 200
+        assert resume.json()["can_execute"] is True
+        assert resume.json()["selected_lane_episodes"] == [
+            {
+                "episode_key": "fake.Task::1",
+                "lane_key": "candidate",
+                "reason": "resume_missing",
+            },
+            {
+                "episode_key": "fake.Task::2",
+                "lane_key": "candidate",
+                "reason": "resume_service_restarted",
+            },
         ]
 
 

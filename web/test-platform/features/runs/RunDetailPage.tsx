@@ -7,6 +7,7 @@ import {
   getComparison,
   getBaselineEligibility,
   getAllDiagnostics,
+  getFollowupPreview,
   getReport,
   getReportExport,
   getRun,
@@ -20,10 +21,22 @@ import type {
   ArtifactItem,
   BaselineEligibility,
   Comparison,
+  DiagnosticItem,
+  FollowupRunPreview,
   RunDetail,
   RunDiagnostics,
   RunReport,
 } from '../../api/types';
+import {
+  buildReplayOptions,
+  chooseDefaultReplayOption,
+  type ReplayOption,
+} from './episodeReplay';
+import {
+  observatoryRoute,
+  type EvidenceTab,
+  type ObservatorySelection,
+} from './observatoryLocation';
 import { RunObservatory } from './RunObservatory';
 import { reduceRunEvent, type RunLiveState, type ShardHealth } from './runEvents';
 
@@ -57,6 +70,12 @@ type BaselineEligibilityState =
   | { status: 'loaded'; value: BaselineEligibility }
   | { status: 'error'; message: string };
 
+type FollowupPreviewsState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'loaded'; retry: FollowupRunPreview; resume: FollowupRunPreview }
+  | { status: 'error'; message: string };
+
 const ACTIVE_RUN_STATES = new Set(['queued', 'preparing', 'running', 'evaluating', 'reporting']);
 const REPORTABLE_RUN_STATES = new Set(['completed', 'failed']);
 const FOLLOWUP_RUN_STATES = new Set(['completed', 'failed', 'cancelled']);
@@ -76,6 +95,9 @@ export function RunDetailPage() {
   const [followupMessage, setFollowupMessage] = useState<string | null>(null);
   const [followupBusy, setFollowupBusy] = useState<'retry' | 'resume' | null>(null);
   const [followupModelApiKey, setFollowupModelApiKey] = useState('');
+  const [followupPreviews, setFollowupPreviews] = useState<FollowupPreviewsState>({
+    status: 'idle',
+  });
 
   useEffect(() => {
     let active = true;
@@ -193,6 +215,32 @@ export function RunDetailPage() {
   }, [runId, runState]);
 
   useEffect(() => {
+    if (!FOLLOWUP_RUN_STATES.has(runState)) {
+      setFollowupPreviews({ status: 'idle' });
+      return;
+    }
+    let active = true;
+    setFollowupPreviews({ status: 'loading' });
+    Promise.all([
+      getFollowupPreview(runId, 'retry'),
+      getFollowupPreview(runId, 'resume'),
+    ])
+      .then(([retry, resume]) => {
+        if (active) setFollowupPreviews({ status: 'loaded', retry, resume });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setFollowupPreviews({
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Unable to preview follow-up work.',
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [runId, runState]);
+
+  useEffect(() => {
     if (!REPORTABLE_RUN_STATES.has(runState)) {
       setDiagnostics({ status: 'idle' });
       return;
@@ -240,6 +288,7 @@ export function RunDetailPage() {
   const runAttempts = run.run_attempts ?? [];
   const laneAttempts = run.lane_attempts ?? [];
   const episodeAttempts = run.episode_attempts ?? [];
+  const replayOptions = buildReplayOptions(run);
   // VS-07 live parallel progress: active workers + completed/total episodes.
   const activeWorkers = liveRef.current?.activeWorkers ?? new Set<string>();
   const completedEpisodeKeys = liveRef.current?.completedEpisodeKeys ?? new Set<string>();
@@ -280,6 +329,15 @@ export function RunDetailPage() {
   };
 
   const runFollowup = (kind: 'retry' | 'resume') => {
+    if (followupPreviews.status !== 'loaded') {
+      setFollowupMessage('Follow-up preview is not available.');
+      return;
+    }
+    const preview = followupPreviews[kind];
+    if (!preview.can_execute) {
+      setFollowupMessage(preview.empty_reason ?? 'No lane episodes are selected.');
+      return;
+    }
     const modelApiKey = followupModelApiKey.trim();
     if (followupRequiresModelApiKey && !modelApiKey) {
       setFollowupMessage(
@@ -289,7 +347,10 @@ export function RunDetailPage() {
     }
     setFollowupBusy(kind);
     setFollowupMessage(null);
-    const followupInput = modelApiKey ? { execution: { modelApiKey } } : undefined;
+    const followupInput = {
+      previewToken: preview.preview_token,
+      ...(modelApiKey ? { execution: { modelApiKey } } : {}),
+    };
     const request = kind === 'retry'
       ? retryRun(run.id, followupInput)
       : resumeRun(run.id, followupInput);
@@ -350,14 +411,22 @@ export function RunDetailPage() {
                 <button
                   type="button"
                   onClick={() => runFollowup('retry')}
-                  disabled={followupBusy !== null}
+                  disabled={
+                    followupBusy !== null
+                    || followupPreviews.status !== 'loaded'
+                    || !followupPreviews.retry.can_execute
+                  }
                 >
                   {followupBusy === 'retry' ? 'Retrying...' : 'Retry run'}
                 </button>
                 <button
                   type="button"
                   onClick={() => runFollowup('resume')}
-                  disabled={followupBusy !== null}
+                  disabled={
+                    followupBusy !== null
+                    || followupPreviews.status !== 'loaded'
+                    || !followupPreviews.resume.can_execute
+                  }
                 >
                   {followupBusy === 'resume' ? 'Resuming...' : 'Resume run'}
                 </button>
@@ -365,6 +434,9 @@ export function RunDetailPage() {
             ) : null}
           </div>
         </div>
+        {FOLLOWUP_RUN_STATES.has(run.state) ? (
+          <FollowupPreviewPanel state={followupPreviews} />
+        ) : null}
         {followupMessage ? (
           <p className="tp-kicker" data-testid="tp-followup-message">
             {followupMessage}
@@ -482,18 +554,29 @@ export function RunDetailPage() {
                 <th>State</th>
                 <th>Started</th>
                 <th>Ended</th>
+                <th>Evidence</th>
               </tr>
             </thead>
             <tbody>
-              {runAttempts.map((attempt) => (
-                <tr key={attempt.id}>
-                  <td>{attempt.attempt_no}</td>
-                  <td>{attempt.reason}</td>
-                  <td>{attempt.state}</td>
-                  <td>{attempt.started_at ?? '—'}</td>
-                  <td>{attempt.ended_at ?? '—'}</td>
-                </tr>
-              ))}
+              {runAttempts.map((attempt) => {
+                const option = replayOptionForRunAttempt(replayOptions, attempt.attempt_no);
+                return (
+                  <tr key={attempt.id}>
+                    <td>{attempt.attempt_no}</td>
+                    <td>{attempt.reason}</td>
+                    <td>{attempt.state}</td>
+                    <td>{attempt.started_at ?? '—'}</td>
+                    <td>{attempt.ended_at ?? '—'}</td>
+                    <td>
+                      {option ? (
+                        <Link to={observatoryRoute(run.id, selectionForReplayOption(option))}>
+                          Open attempt {attempt.attempt_no} evidence
+                        </Link>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </section>
@@ -569,22 +652,41 @@ export function RunDetailPage() {
                 <th>Outcome</th>
                 <th>Error</th>
                 <th>Artifact root</th>
+                <th>Evidence</th>
               </tr>
             </thead>
             <tbody>
-              {episodeAttempts.map((attempt) => (
-                <tr key={`${attempt.episode_key}:${attempt.lane_key}:${attempt.attempt_no}`}>
-                  <td className="tp-mono">{attempt.episode_key}</td>
-                  <td>{attempt.lane_key}</td>
-                  <td>
-                    <span className={`tp-outcome tp-outcome-${(attempt.outcome ?? 'pending').toLowerCase()}`}>
-                      {attempt.outcome ?? attempt.state}
-                    </span>
-                  </td>
-                  <td>{attempt.error_code ?? ''}</td>
-                  <td className="tp-mono">{attempt.artifact_root}</td>
-                </tr>
-              ))}
+              {episodeAttempts.map((attempt) => {
+                const option = replayOptionForEpisodeAttempt(
+                  replayOptions,
+                  attempt.episode_attempt_id ?? null,
+                  {
+                    lane: attempt.lane_key,
+                    episode: attempt.episode_key,
+                    attempt: attempt.attempt_no,
+                  },
+                );
+                return (
+                  <tr key={`${attempt.episode_key}:${attempt.lane_key}:${attempt.attempt_no}`}>
+                    <td className="tp-mono">{attempt.episode_key}</td>
+                    <td>{attempt.lane_key}</td>
+                    <td>
+                      <span className={`tp-outcome tp-outcome-${(attempt.outcome ?? 'pending').toLowerCase()}`}>
+                        {attempt.outcome ?? attempt.state}
+                      </span>
+                    </td>
+                    <td>{attempt.error_code ?? ''}</td>
+                    <td className="tp-mono">{attempt.artifact_root}</td>
+                    <td>
+                      {option ? (
+                        <Link to={observatoryRoute(run.id, selectionForReplayOption(option))}>
+                          Open episode evidence
+                        </Link>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </section>
@@ -623,38 +725,56 @@ export function RunDetailPage() {
                 <th>Integrity</th>
                 <th>Prepared params</th>
                 <th>Instruction</th>
+                <th>Evidence</th>
               </tr>
             </thead>
             <tbody>
-              {comparison.comparison.pairs.map((pair) => (
-                <tr key={pair.id} data-testid={`tp-comparison-pair-${pair.pair_key}`}>
-                  <td className="tp-mono">{pair.pair_key}</td>
-                  <td>
-                    <span
-                      className={`tp-classification tp-classification-${pair.classification}`}
-                      data-testid="tp-pair-classification"
-                    >
-                      {pair.classification}
-                    </span>
-                  </td>
-                  <td>{pair.delta.baseline_outcome ?? '—'}</td>
-                  <td>{pair.delta.candidate_outcome ?? '—'}</td>
-                  <td data-testid="tp-pair-integrity">
-                    {pair.integrity.status}
-                    {pair.integrity.status !== 'ok' && pair.integrity.reason
-                      ? ` (${pair.integrity.reason})`
-                      : ''}
-                  </td>
-                  <td className="tp-mono" data-testid="tp-pair-prepared-params">
-                    {pair.prepared
-                      ? JSON.stringify(pair.prepared.params)
-                      : '—'}
-                  </td>
-                  <td className="tp-mono">
-                    {pair.prepared?.instruction ?? '—'}
-                  </td>
-                </tr>
-              ))}
+              {comparison.comparison.pairs.map((pair) => {
+                const baselineOption = replayOptionForEpisodeAttempt(
+                  replayOptions,
+                  pair.baseline_episode_attempt_id,
+                );
+                const candidateOption = replayOptionForEpisodeAttempt(
+                  replayOptions,
+                  pair.candidate_episode_attempt_id,
+                );
+                return (
+                  <tr key={pair.id} data-testid={`tp-comparison-pair-${pair.pair_key}`}>
+                    <td className="tp-mono">{pair.pair_key}</td>
+                    <td>
+                      <span
+                        className={`tp-classification tp-classification-${pair.classification}`}
+                        data-testid="tp-pair-classification"
+                      >
+                        {pair.classification}
+                      </span>
+                    </td>
+                    <td>{pair.delta.baseline_outcome ?? '—'}</td>
+                    <td>{pair.delta.candidate_outcome ?? '—'}</td>
+                    <td data-testid="tp-pair-integrity">
+                      {pair.integrity.status}
+                      {pair.integrity.status !== 'ok' && pair.integrity.reason
+                        ? ` (${pair.integrity.reason})`
+                        : ''}
+                    </td>
+                    <td className="tp-mono" data-testid="tp-pair-prepared-params">
+                      {pair.prepared
+                        ? JSON.stringify(pair.prepared.params)
+                        : '—'}
+                    </td>
+                    <td className="tp-mono">
+                      {pair.prepared?.instruction ?? '—'}
+                    </td>
+                    <td>
+                      <ReplayEvidenceLinks
+                        runId={run.id}
+                        baselineOption={baselineOption}
+                        candidateOption={candidateOption}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </section>
@@ -759,6 +879,10 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
   }
 
   const data = report.report;
+  const replayOptions = buildReplayOptions(run);
+  const reportAttemptNo = run.run_attempts?.find(
+    (attempt) => attempt.id === data.run_attempt_id,
+  )?.attempt_no ?? null;
   const counts = data.comparison.classification_counts;
   const sequenceGroups = data.sequence?.groups ?? [];
   const hasComparisonPairs = data.comparison.pairs.length > 0;
@@ -1032,12 +1156,22 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
                     <th>Lane</th>
                     <th>Outcome</th>
                     <th>Error</th>
+                    <th>Evidence</th>
                   </tr>
                 </thead>
                 <tbody>
                   {group.items.map((item) => {
                     const outcome = item.outcome ?? item.status;
                     const outcomeClass = item.outcome ?? 'pending';
+                    const option = replayOptionForEpisodeAttempt(
+                      replayOptions,
+                      item.episode_attempt_id,
+                      {
+                        lane: item.lane_key,
+                        episode: item.episode_key,
+                        attempt: reportAttemptNo,
+                      },
+                    );
                     return (
                       <tr key={`${item.sequence_group_id}:${item.lane_key}:${item.episode_key}`}>
                         <td>{item.step ? `Step ${item.step}` : '—'}</td>
@@ -1049,6 +1183,13 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
                           </span>
                         </td>
                         <td>{item.error_code ?? '—'}</td>
+                        <td>
+                          {option ? (
+                            <Link to={observatoryRoute(run.id, selectionForReplayOption(option))}>
+                              Open sequence step evidence
+                            </Link>
+                          ) : '—'}
+                        </td>
                       </tr>
                     );
                   })}
@@ -1061,18 +1202,33 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
 
       {hasComparisonPairs ? (
         <div className="tp-report-pairs">
-          {visiblePairs.map((pair) => (
-            <details key={pair.pair_key} data-testid={`tp-report-pair-${pair.pair_key}`}>
-              <summary>
-                <span className="tp-mono">{pair.pair_key}</span>
-                {' · '}
-                <span className={`tp-classification tp-classification-${pair.classification}`}>
-                  {pair.classification}
-                </span>
-              </summary>
-              <pre className="tp-report-diff">{JSON.stringify(pair.delta, null, 2)}</pre>
-            </details>
-          ))}
+          {visiblePairs.map((pair) => {
+            const baselineOption = replayOptionForEpisodeAttempt(
+              replayOptions,
+              pair.baseline_episode_attempt_id,
+            );
+            const candidateOption = replayOptionForEpisodeAttempt(
+              replayOptions,
+              pair.candidate_episode_attempt_id,
+            );
+            return (
+              <details key={pair.pair_key} data-testid={`tp-report-pair-${pair.pair_key}`}>
+                <summary>
+                  <span className="tp-mono">{pair.pair_key}</span>
+                  {' · '}
+                  <span className={`tp-classification tp-classification-${pair.classification}`}>
+                    {pair.classification}
+                  </span>
+                </summary>
+                <ReplayEvidenceLinks
+                  runId={run.id}
+                  baselineOption={baselineOption}
+                  candidateOption={candidateOption}
+                />
+                <pre className="tp-report-diff">{JSON.stringify(pair.delta, null, 2)}</pre>
+              </details>
+            );
+          })}
         </div>
       ) : null}
     </section>
@@ -1118,6 +1274,7 @@ function DiagnosticsPanel({
   }
 
   const data = diagnostics.diagnostics;
+  const replayOptions = buildReplayOptions(run);
   const categories = Array.from(new Set(data.items.map((item) => item.category))).sort();
   const visibleItems = data.items.filter((item) => {
     if (categoryFilter && item.category !== categoryFilter) return false;
@@ -1202,12 +1359,15 @@ function DiagnosticsPanel({
             <th>Identity</th>
             <th>Message</th>
             <th>Recommended action</th>
+            <th>Evidence</th>
             <th>Artifacts</th>
           </tr>
         </thead>
         <tbody>
-          {visibleItems.map((item) => (
-            <tr key={item.id} data-testid={`tp-diagnostic-${item.code}`}>
+          {visibleItems.map((item) => {
+            const selection = diagnosticObservatorySelection(item, replayOptions);
+            return (
+              <tr key={item.id} data-testid={`tp-diagnostic-${item.code}`}>
               <td className="tp-mono">{item.code}</td>
               <td>{item.category}</td>
               <td>
@@ -1235,6 +1395,11 @@ function DiagnosticsPanel({
               <td>{item.message}</td>
               <td>{item.recommended_action ?? '—'}</td>
               <td>
+                <Link to={observatoryRoute(run.id, selection)}>
+                  Open {item.code} evidence
+                </Link>
+              </td>
+              <td>
                 {item.artifacts.length > 0
                   ? item.artifacts.map((artifact) => (
                       <a key={artifact.id} href={artifact.href}>
@@ -1243,8 +1408,9 @@ function DiagnosticsPanel({
                     ))
                   : '—'}
               </td>
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 
@@ -1275,6 +1441,140 @@ function DiagnosticsPanel({
           </table>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function replayOptionForRunAttempt(options: ReplayOption[], attemptNo: number) {
+  return chooseDefaultReplayOption(
+    options.filter((option) => option.attemptNo === attemptNo),
+  );
+}
+
+function replayOptionForEpisodeAttempt(
+  options: ReplayOption[],
+  episodeAttemptId: string | null,
+  fallback?: { lane: string | null; episode: string | null; attempt: number | null },
+) {
+  if (episodeAttemptId) {
+    const exact = options.find((option) => option.episodeAttemptId === episodeAttemptId);
+    if (exact) return exact;
+  }
+  if (!fallback?.lane || !fallback.episode || fallback.attempt === null) return null;
+  return options.find((option) => (
+    option.laneKey === fallback.lane
+    && option.episodeKey === fallback.episode
+    && option.attemptNo === fallback.attempt
+  )) ?? null;
+}
+
+function selectionForReplayOption(
+  option: ReplayOption,
+  evidence: EvidenceTab = 'judge',
+  step: number | null = null,
+): ObservatorySelection {
+  return {
+    lane: option.laneKey,
+    episode: option.episodeKey,
+    attempt: option.attemptNo,
+    step,
+    screenshot: 'annotated',
+    evidence,
+  };
+}
+
+function diagnosticObservatorySelection(
+  item: DiagnosticItem,
+  options: ReplayOption[],
+): ObservatorySelection {
+  const exactEpisodeAttemptId = item.episode_attempt_id
+    ?? item.candidate_episode_attempt_id
+    ?? item.baseline_episode_attempt_id
+    ?? null;
+  const option = replayOptionForEpisodeAttempt(options, exactEpisodeAttemptId, {
+    lane: item.lane_key,
+    episode: item.episode_key,
+    attempt: item.run_attempt_no,
+  });
+  if (option) return selectionForReplayOption(option, 'diagnostics', item.step);
+  return {
+    lane: item.lane_key,
+    episode: item.episode_key,
+    attempt: item.run_attempt_no,
+    step: item.step,
+    screenshot: 'annotated',
+    evidence: 'diagnostics',
+  };
+}
+
+function ReplayEvidenceLinks({
+  runId,
+  baselineOption,
+  candidateOption,
+}: {
+  runId: string;
+  baselineOption: ReplayOption | null;
+  candidateOption: ReplayOption | null;
+}) {
+  if (!baselineOption && !candidateOption) return <>—</>;
+  return (
+    <>
+      {baselineOption ? (
+        <Link to={observatoryRoute(runId, selectionForReplayOption(baselineOption))}>
+          Open baseline evidence
+        </Link>
+      ) : null}
+      {baselineOption && candidateOption ? ' · ' : null}
+      {candidateOption ? (
+        <Link to={observatoryRoute(runId, selectionForReplayOption(candidateOption))}>
+          Open candidate evidence
+        </Link>
+      ) : null}
+    </>
+  );
+}
+
+function FollowupPreviewPanel({ state }: { state: FollowupPreviewsState }) {
+  if (state.status === 'idle' || state.status === 'loading') {
+    return <p className="tp-kicker">Loading Retry and Resume previews...</p>;
+  }
+  if (state.status === 'error') {
+    return <p className="tp-alert">Follow-up previews unavailable: {state.message}</p>;
+  }
+  return (
+    <div className="tp-form-grid">
+      <FollowupPreviewCard kind="retry" preview={state.retry} />
+      <FollowupPreviewCard kind="resume" preview={state.resume} />
+    </div>
+  );
+}
+
+function FollowupPreviewCard({
+  kind,
+  preview,
+}: {
+  kind: 'retry' | 'resume';
+  preview: FollowupRunPreview;
+}) {
+  const label = kind === 'retry' ? 'Retry' : 'Resume';
+  return (
+    <section className="tp-panel" data-testid={`tp-${kind}-preview`}>
+      <h3>{label} preview</h3>
+      <p>
+        Source attempt {preview.source_attempt_no} · {preview.selected_lane_episodes.length}{' '}
+        lane episodes
+      </p>
+      {preview.selected_lane_episodes.length > 0 ? (
+        <ul>
+          {preview.selected_lane_episodes.map((item) => (
+            <li key={`${item.lane_key}:${item.episode_key}`}>
+              {item.lane_key} · {item.episode_key} · {item.reason}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{preview.empty_reason ?? `No lane episodes are selected for ${kind}.`}</p>
+      )}
     </section>
   );
 }

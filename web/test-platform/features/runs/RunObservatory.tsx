@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { getEpisodeReplay } from '../../api/client';
 import type { RunDetail } from '../../api/types';
 import { AgentConsole } from './AgentConsole';
 import { EpisodePicker } from './EpisodePicker';
-import { EvidenceDock, type EvidenceDiagnosticsState } from './EvidenceDock';
+import {
+  EvidenceDock,
+  type EvidenceDiagnosticsState,
+} from './EvidenceDock';
 import { PhoneReplayStage } from './PhoneReplayStage';
 import { RunSettingsDrawer } from './RunSettingsDrawer';
 import { StepTimeline } from './StepTimeline';
@@ -14,6 +18,15 @@ import {
   type ReplayLoadState,
   type ReplayOption,
 } from './episodeReplay';
+import {
+  appendLocationNotice,
+  mergeObservatorySearchParams,
+  observatoryPath,
+  resolveObservatoryLocation,
+  type EvidenceTab,
+  type ObservatorySelection,
+  type ScreenshotMode,
+} from './observatoryLocation';
 import type { LiveEpisodeProgress, RunLiveState } from './runEvents';
 
 export function RunObservatory({
@@ -25,15 +38,36 @@ export function RunObservatory({
   live: RunLiveState | null;
   diagnostics: EvidenceDiagnosticsState;
 }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const searchKey = searchParams.toString();
   const options = useMemo(() => buildReplayOptions(run), [run]);
   const defaultOption = useMemo(() => chooseDefaultReplayOption(options), [options]);
-  const [selectedId, setSelectedId] = useState<string | null>(defaultOption?.id ?? null);
-  const [selectionTouched, setSelectionTouched] = useState(false);
+  const resolvedLocation = useMemo(
+    () => resolveObservatoryLocation(new URLSearchParams(searchKey), options, defaultOption),
+    [defaultOption, options, searchKey],
+  );
+  const requestedStepRef = useRef(resolvedLocation.requestedStep);
+  requestedStepRef.current = resolvedLocation.requestedStep;
+  const [selectedId, setSelectedId] = useState<string | null>(
+    resolvedLocation.option?.id ?? null,
+  );
+  const [selectionTouched, setSelectionTouched] = useState(
+    resolvedLocation.hadSelectionRequest,
+  );
   const [replayState, setReplayState] = useState<ReplayLoadState>({ status: 'idle' });
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
-  const [screenshotMode, setScreenshotMode] = useState<'annotated' | 'raw'>('annotated');
+  const [stepNotice, setStepNotice] = useState<string | null>(null);
+  const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const screenshotMode = resolvedLocation.screenshotMode;
+  const activeEvidenceTab = resolvedLocation.evidenceTab;
   const followsLive = run.state === 'running' || run.state === 'queued';
+
+  useEffect(() => {
+    setSelectionTouched(resolvedLocation.hadSelectionRequest);
+    setSelectedId(resolvedLocation.option?.id ?? null);
+    setStepNotice(null);
+  }, [resolvedLocation.hadSelectionRequest, resolvedLocation.option?.id, searchKey]);
 
   useEffect(() => {
     setSelectedId((current) => {
@@ -62,6 +96,7 @@ export function RunObservatory({
   const selectedLiveProgress = selectedOption
     ? liveProgressForOption(live, selectedOption)
     : activeLiveProgress;
+  const incidentAttemptNo = stableIncidentAttemptNo(selectedOption, replayState);
 
   useEffect(() => {
     if (!selectedOption) {
@@ -81,8 +116,10 @@ export function RunObservatory({
     })
       .then((replay) => {
         if (!active) return;
+        const replayStep = resolveReplayStep(replay.steps, requestedStepRef.current);
+        setSelectedStepIndex(replayStep.index);
+        setStepNotice(replayStep.notice);
         setReplayState({ status: 'loaded', replay });
-        setSelectedStepIndex(Math.max(0, replay.steps.length - 1));
       })
       .catch((error) => {
         if (!active) return;
@@ -107,10 +144,101 @@ export function RunObservatory({
     selectedOption?.laneKey,
   ]);
 
+  useEffect(() => {
+    if (replayState.status !== 'loaded') return;
+    const replayStep = resolveReplayStep(
+      replayState.replay.steps,
+      resolvedLocation.requestedStep,
+    );
+    setSelectedStepIndex(replayStep.index);
+    setStepNotice(replayStep.notice);
+  }, [replayState, resolvedLocation.requestedStep]);
+
+  const updateObservatoryLocation = (values: ObservatorySelection) => {
+    setSearchParams(
+      (current) => mergeObservatorySearchParams(current, values),
+      { replace: true },
+    );
+    setCopyMessage(null);
+  };
+
   const selectEpisode = (id: string) => {
     setSelectionTouched(true);
     setSelectedId(id);
+    const option = options.find((candidate) => candidate.id === id);
+    if (option) {
+      updateObservatoryLocation({
+        lane: option.laneKey,
+        episode: option.episodeKey,
+        attempt: option.attemptNo,
+        step: null,
+        screenshot: screenshotMode,
+        evidence: activeEvidenceTab,
+      });
+    }
   };
+
+  const selectStep = (index: number) => {
+    setSelectedStepIndex(index);
+    if (replayState.status === 'loaded') {
+      const step = replayState.replay.steps[index];
+      if (step && selectedOption) {
+        updateObservatoryLocation({
+          lane: selectedOption.laneKey,
+          episode: selectedOption.episodeKey,
+          attempt: selectedOption.attemptNo,
+          step: step.step ?? index + 1,
+          screenshot: screenshotMode,
+          evidence: activeEvidenceTab,
+        });
+      }
+    }
+  };
+
+  const selectScreenshotMode = (mode: ScreenshotMode) => {
+    updateObservatoryLocation({
+      ...selectionForOption(selectedOption),
+      step: selectedReplayStep(replayState, selectedStepIndex),
+      screenshot: mode,
+      evidence: activeEvidenceTab,
+    });
+  };
+
+  const selectEvidenceTab = (tab: EvidenceTab) => {
+    updateObservatoryLocation({
+      ...selectionForOption(selectedOption),
+      step: selectedReplayStep(replayState, selectedStepIndex),
+      screenshot: screenshotMode,
+      evidence: tab,
+    });
+  };
+
+  const copyIncidentLink = async () => {
+    if (!selectedOption || incidentAttemptNo === null) return;
+    const clipboard = window.navigator.clipboard;
+    if (!clipboard?.writeText) {
+      setCopyMessage('Clipboard access is unavailable.');
+      return;
+    }
+    const url = new URL(observatoryPath(run.id, {
+      lane: selectedOption.laneKey,
+      episode: selectedOption.episodeKey,
+      attempt: incidentAttemptNo,
+      step: selectedReplayStep(replayState, selectedStepIndex),
+      screenshot: screenshotMode,
+      evidence: activeEvidenceTab,
+    }), window.location.origin);
+    try {
+      await clipboard.writeText(url.toString());
+      setCopyMessage('Incident link copied.');
+    } catch {
+      setCopyMessage('Unable to copy the incident link.');
+    }
+  };
+
+  const locationNotice = stepNotice
+    ? appendLocationNotice(resolvedLocation.notice, stepNotice)
+    : resolvedLocation.notice;
 
   return (
     <section className="tp-observatory" data-testid="tp-run-observatory">
@@ -125,6 +253,13 @@ export function RunObservatory({
             selectedId={selectedOption?.id ?? null}
             onSelect={selectEpisode}
           />
+          <button
+            type="button"
+            onClick={copyIncidentLink}
+            disabled={!selectedOption || incidentAttemptNo === null}
+          >
+            Copy incident link
+          </button>
           <button type="button" onClick={() => setSettingsOpen((open) => !open)}>
             Settings
           </button>
@@ -133,12 +268,18 @@ export function RunObservatory({
       {settingsOpen ? (
         <RunSettingsDrawer run={run} onClose={() => setSettingsOpen(false)} />
       ) : null}
+      {locationNotice ? (
+        <p className="tp-alert" data-testid="tp-observatory-location-notice">
+          {locationNotice}
+        </p>
+      ) : null}
+      {copyMessage ? <p className="tp-kicker">{copyMessage}</p> : null}
 
       <div className="tp-observatory-grid">
         <StepTimeline
           replayState={replayState}
           selectedStepIndex={selectedStepIndex}
-          onSelectStep={setSelectedStepIndex}
+          onSelectStep={selectStep}
           liveProgress={selectedLiveProgress}
           coalescedEventCount={live?.coalescedEventCount ?? 0}
         />
@@ -147,8 +288,8 @@ export function RunObservatory({
           replayState={replayState}
           selectedStepIndex={selectedStepIndex}
           screenshotMode={screenshotMode}
-          onSelectStep={setSelectedStepIndex}
-          onScreenshotModeChange={setScreenshotMode}
+          onSelectStep={selectStep}
+          onScreenshotModeChange={selectScreenshotMode}
           liveProgress={selectedLiveProgress}
         />
         <div className="tp-observatory-side">
@@ -165,11 +306,59 @@ export function RunObservatory({
             replayState={replayState}
             selectedStepIndex={selectedStepIndex}
             diagnostics={diagnostics}
+            activeTab={activeEvidenceTab}
+            onActiveTabChange={selectEvidenceTab}
           />
         </div>
       </div>
     </section>
   );
+}
+
+function selectionForOption(option: ReplayOption | null): ObservatorySelection {
+  if (!option) return {};
+  return {
+    lane: option.laneKey,
+    episode: option.episodeKey,
+    attempt: option.attemptNo,
+  };
+}
+
+function selectedReplayStep(state: ReplayLoadState, index: number) {
+  if (state.status !== 'loaded') return null;
+  const step = state.replay.steps[index];
+  return step ? step.step ?? index + 1 : null;
+}
+
+function stableIncidentAttemptNo(
+  option: ReplayOption | null,
+  state: ReplayLoadState,
+): number | null {
+  if (!option) return null;
+  if (typeof option.attemptNo === 'number') return option.attemptNo;
+  if (
+    state.status === 'loaded'
+    && state.replay.lane_key === option.laneKey
+    && state.replay.episode_key === option.episodeKey
+  ) {
+    return state.replay.attempt_no;
+  }
+  return null;
+}
+
+function resolveReplayStep(
+  steps: Array<{ step: number | null }>,
+  requestedStep: number | null,
+) {
+  const requestedIndex = requestedStep === null
+    ? -1
+    : steps.findIndex((step, index) => (step.step ?? index + 1) === requestedStep);
+  return {
+    index: requestedIndex >= 0 ? requestedIndex : Math.max(0, steps.length - 1),
+    notice: requestedStep !== null && requestedIndex < 0
+      ? `Requested replay step ${requestedStep} is no longer available; showing the final step.`
+      : null,
+  };
 }
 
 function liveProgressByKey(live: RunLiveState | null, key: string | null | undefined) {

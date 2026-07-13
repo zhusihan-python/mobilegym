@@ -55,15 +55,37 @@ const run: RunDetail = {
     max_steps: 10,
     sequence_index: null,
     sequence_group_id: null,
+  }, {
+    episode_key: 'fake.Other::0',
+    pair_key: 'fake.Other::0',
+    task_base_id: 'fake.Other',
+    task_id: 'fake.Other',
+    instance_id: 0,
+    instance_seed: 2,
+    template_index: null,
+    trial_id: 0,
+    max_steps: 10,
+    sequence_index: null,
+    sequence_group_id: null,
   }],
   episode_attempts: [{
     episode_key: 'fake.Task::0',
     lane_key: 'candidate',
+    episode_attempt_id: 'ea-c',
     attempt_no: 1,
     state: 'failed',
     outcome: 'ERROR',
     error_code: 'BROWSER_REQUEST_FAILED',
     artifact_root: 'artifacts/cand0',
+  }, {
+    episode_key: 'fake.Other::0',
+    lane_key: 'candidate',
+    episode_attempt_id: 'ea-other',
+    attempt_no: 1,
+    state: 'completed',
+    outcome: 'FAIL',
+    error_code: 'ASSERTION_FAILURE',
+    artifact_root: 'artifacts/other0',
   }],
 };
 
@@ -127,9 +149,9 @@ const diagnostics: RunDiagnostics = {
   input_hash: 'sha256:diagnostics',
   provenance: report.provenance,
   summary: {
-    total: 2,
-    by_category: { gate: 1, network: 1 },
-    by_severity: { error: 2 },
+    total: 3,
+    by_category: { comparison: 1, gate: 1, network: 1 },
+    by_severity: { error: 3 },
   },
   items: [
     {
@@ -194,6 +216,40 @@ const diagnostics: RunDiagnostics = {
       app_ids: [],
       artifacts: [],
       recommended_action: 'Inspect gate reasons.',
+    },
+    {
+      id: 'diag-comparison',
+      code: 'PAIR_REGRESSION',
+      category: 'comparison',
+      phase: 'comparison',
+      severity: 'error',
+      retryable: false,
+      message: 'candidate regressed',
+      entity_type: 'comparison_pair',
+      source_event_id: null,
+      scope: 'run',
+      run_id: run.id,
+      run_attempt_id: 'attempt-1',
+      run_attempt_no: 1,
+      lane_id: null,
+      lane_attempt_id: null,
+      lane_key: null,
+      target_id: null,
+      episode_id: null,
+      episode_attempt_id: null,
+      episode_key: null,
+      episode_attempt_no: null,
+      worker_id: null,
+      step: null,
+      task_id: 'fake.Other',
+      app_ids: ['fake'],
+      comparison_id: 'comparison-1',
+      comparison_pair_id: 'pair-1',
+      pair_key: 'fake.Other::0',
+      candidate_episode_attempt_id: 'ea-other',
+      baseline_episode_attempt_id: null,
+      artifacts: [],
+      recommended_action: 'Inspect the candidate replay.',
     },
   ],
   next_cursor: null,
@@ -271,7 +327,7 @@ describe('Test Platform diagnostics UI', () => {
         }
         return jsonResponse({
           ...diagnostics,
-          items: [diagnostics.items[1]],
+          items: [diagnostics.items[1], diagnostics.items[2]],
           next_cursor: 'diagnostics-page-2',
         });
       }
@@ -300,10 +356,11 @@ describe('Test Platform diagnostics UI', () => {
 
     render(<App />);
 
-    expect((await screen.findByTestId('tp-diagnostics-total')).textContent).toContain('2');
-    expect(screen.getByTestId('tp-diagnostics-errors').textContent).toContain('2');
+    expect((await screen.findByTestId('tp-diagnostics-total')).textContent).toContain('3');
+    expect(screen.getByTestId('tp-diagnostics-errors').textContent).toContain('3');
     expect(screen.getByTestId('tp-diagnostic-BROWSER_REQUEST_FAILED')).toBeTruthy();
     expect(screen.getByTestId('tp-diagnostic-QUALITY_GATE_FAILED')).toBeTruthy();
+    expect(screen.getByTestId('tp-diagnostic-PAIR_REGRESSION')).toBeTruthy();
     expect(screen.getByTestId('tp-artifact-artifact-1').querySelector('a')?.href).toContain(
       `/api/platform/v1/runs/${run.id}/artifacts/${artifact.id}/content`,
     );
@@ -320,6 +377,30 @@ describe('Test Platform diagnostics UI', () => {
     expect(screen.getByRole('link', { name: 'Open log artifact' }).getAttribute('href')).toBe(
       `/api/platform/v1/runs/${run.id}/artifacts/${artifact.id}/content`,
     );
+    const evidenceLink = screen.getByRole('link', {
+      name: 'Open BROWSER_REQUEST_FAILED evidence',
+    });
+    const evidenceUrl = new URL(evidenceLink.getAttribute('href') ?? '', window.location.origin);
+    expect(evidenceUrl.pathname).toBe(`/test-platform/runs/${run.id}`);
+    expect(Object.fromEntries(evidenceUrl.searchParams)).toEqual({
+      lane: 'candidate',
+      episode: 'fake.Task::0',
+      attempt: '1',
+      step: '2',
+      screenshot: 'annotated',
+      evidence: 'diagnostics',
+    });
+    const comparisonEvidenceUrl = new URL(
+      screen.getByRole('link', { name: 'Open PAIR_REGRESSION evidence' }).getAttribute('href') ?? '',
+      window.location.origin,
+    );
+    expect(Object.fromEntries(comparisonEvidenceUrl.searchParams)).toEqual({
+      lane: 'candidate',
+      episode: 'fake.Other::0',
+      attempt: '1',
+      screenshot: 'annotated',
+      evidence: 'diagnostics',
+    });
 
     fireEvent.change(screen.getByLabelText('Diagnostic category'), {
       target: { value: 'network' },

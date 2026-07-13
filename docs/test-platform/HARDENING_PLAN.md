@@ -923,26 +923,26 @@ contract and provide Copy incident link.
 
 ### Acceptance criteria
 
-- [ ] Retry preview lists every selected lane episode and reason using the
+- [x] Retry preview lists every selected lane episode and reason using the
       existing retry selector.
-- [ ] Resume preview lists missing or service-restarted lane episodes and reason
+- [x] Resume preview lists missing or service-restarted lane episodes and reason
       using the existing resume selector.
-- [ ] Empty Retry or Resume selections disable the action and explain the empty
+- [x] Empty Retry or Resume selections disable the action and explain the empty
       state.
-- [ ] Confirmed actions create exactly the previewed follow-up selections unless
+- [x] Confirmed actions create exactly the previewed follow-up selections unless
       a structured stale-state conflict is returned.
-- [ ] Diagnostic rows display retryability and recommended action and focus the
+- [x] Diagnostic rows display retryability and recommended action and focus the
       most exact matching observatory evidence available.
-- [ ] A URL round trip restores lane, episode, attempt, step, screenshot mode,
+- [x] A URL round trip restores lane, episode, attempt, step, screenshot mode,
       and evidence tab.
-- [ ] Manual UI selection updates the URL without losing run identity.
-- [ ] Invalid, missing, or stale values fall back deterministically and display a
+- [x] Manual UI selection updates the URL without losing run identity.
+- [x] Invalid, missing, or stale values fall back deterministically and display a
       concise explanation when evidence no longer exists.
-- [ ] Diagnostics, sequence rows, comparison pairs, and attempt history open the
+- [x] Diagnostics, sequence rows, comparison pairs, and attempt history open the
       correct replay selection.
-- [ ] Copy incident link copies only stable public identities and contains no
+- [x] Copy incident link copies only stable public identities and contains no
       secrets or filesystem paths.
-- [ ] Historical attempt links remain immutable after Retry or Resume creates a
+- [x] Historical attempt links remain immutable after Retry or Resume creates a
       newer attempt.
 
 ### Test seam

@@ -2,6 +2,7 @@ import type { EpisodeReplay, EpisodeReplayStep, RunDetail } from '../../api/type
 
 export type ReplayOption = {
   id: string;
+  episodeAttemptId?: string | null;
   episodeKey: string;
   laneKey: string;
   attemptNo: number | 'latest';
@@ -48,6 +49,7 @@ export function buildReplayOptions(run: RunDetail): ReplayOption[] {
         return {
           option: {
             id: replayOptionId(attempt.episode_key, attempt.lane_key, attempt.attempt_no),
+            episodeAttemptId: attempt.episode_attempt_id ?? null,
             episodeKey: attempt.episode_key,
             laneKey: attempt.lane_key,
             attemptNo: attempt.attempt_no,
@@ -69,6 +71,7 @@ export function buildReplayOptions(run: RunDetail): ReplayOption[] {
     run.episode_identities.map((episode, order) => ({
       option: {
         id: replayOptionId(episode.episode_key, laneKey, 'latest'),
+        episodeAttemptId: null,
         episodeKey: episode.episode_key,
         laneKey,
         attemptNo: 'latest',

@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -46,9 +46,50 @@ const run: RunDetail = {
   started_at: '2026-07-06T00:00:01.000Z',
   ended_at: '2026-07-06T00:00:10.000Z',
   run_plan: {},
+  run_attempts: [{
+    id: 'attempt-1',
+    attempt_no: 1,
+    reason: 'initial',
+    state: 'completed',
+    started_at: '2026-07-06T00:00:01.000Z',
+    ended_at: '2026-07-06T00:00:10.000Z',
+    created_at: '2026-07-06T00:00:00.000Z',
+  }],
   target_revisions: [],
-  episode_identities: [],
-  episode_attempts: [],
+  episode_identities: [
+    {
+      episode_key: 'pair-regression', pair_key: 'pair-regression', task_base_id: 'task.alpha',
+      task_id: 'task.alpha', instance_id: 0, instance_seed: 1, template_index: null,
+      trial_id: 0, max_steps: 10, sequence_index: null, sequence_group_id: null,
+    },
+    {
+      episode_key: 'pair-stable', pair_key: 'pair-stable', task_base_id: 'task.beta',
+      task_id: 'task.beta', instance_id: 0, instance_seed: 2, template_index: null,
+      trial_id: 0, max_steps: 10, sequence_index: null, sequence_group_id: null,
+    },
+  ],
+  episode_attempts: [
+    {
+      episode_key: 'pair-regression', lane_key: 'baseline', run_attempt_id: 'attempt-1',
+      episode_attempt_id: 'ea-b1', attempt_no: 1, state: 'completed', outcome: 'PASS',
+      error_code: null, artifact_root: 'lanes/baseline/pair-regression',
+    },
+    {
+      episode_key: 'pair-regression', lane_key: 'candidate', run_attempt_id: 'attempt-1',
+      episode_attempt_id: 'ea-c1', attempt_no: 1, state: 'completed', outcome: 'FAIL',
+      error_code: 'ASSERTION_FAILURE', artifact_root: 'lanes/candidate/pair-regression',
+    },
+    {
+      episode_key: 'pair-stable', lane_key: 'baseline', run_attempt_id: 'attempt-1',
+      episode_attempt_id: 'ea-b2', attempt_no: 1, state: 'completed', outcome: 'PASS',
+      error_code: null, artifact_root: 'lanes/baseline/pair-stable',
+    },
+    {
+      episode_key: 'pair-stable', lane_key: 'candidate', run_attempt_id: 'attempt-1',
+      episode_attempt_id: 'ea-c2', attempt_no: 1, state: 'completed', outcome: 'PASS',
+      error_code: null, artifact_root: 'lanes/candidate/pair-stable',
+    },
+  ],
 };
 
 const report: RunReport = {
@@ -303,6 +344,8 @@ const manualRun: RunDetail = {
     {
       episode_key: 'task.alpha|i0',
       lane_key: 'candidate',
+      run_attempt_id: 'attempt-1',
+      episode_attempt_id: 'ea-alpha',
       attempt_no: 1,
       state: 'completed',
       outcome: 'FAIL',
@@ -312,6 +355,8 @@ const manualRun: RunDetail = {
     {
       episode_key: 'task.beta|i0',
       lane_key: 'candidate',
+      run_attempt_id: 'attempt-1',
+      episode_attempt_id: 'ea-beta',
       attempt_no: 1,
       state: 'completed',
       outcome: 'PASS',
@@ -584,6 +629,20 @@ describe('Test Platform reports UI', () => {
     expect(monitorLink.getAttribute('href')).toContain('/content');
     expect(screen.getByTestId('tp-report-pair-pair-regression')).toBeTruthy();
     expect(screen.getByTestId('tp-report-pair-pair-stable')).toBeTruthy();
+    const candidateEvidenceLink = within(
+      screen.getByTestId('tp-report-pair-pair-regression'),
+    ).getByRole('link', { name: 'Open candidate evidence' });
+    const candidateEvidenceUrl = new URL(
+      candidateEvidenceLink.getAttribute('href') ?? '',
+      window.location.origin,
+    );
+    expect(Object.fromEntries(candidateEvidenceUrl.searchParams)).toEqual({
+      lane: 'candidate',
+      episode: 'pair-regression',
+      attempt: '1',
+      screenshot: 'annotated',
+      evidence: 'judge',
+    });
 
     fireEvent.click(screen.getByLabelText('Regression pairs only'));
 
@@ -819,6 +878,20 @@ describe('Test Platform reports UI', () => {
     expect(sequence.textContent).toContain('Step 2');
     expect(sequence.textContent).toContain('task.beta');
     expect(sequence.textContent).toContain('PASS');
+    const sequenceEvidenceLink = within(sequence).getAllByRole('link', {
+      name: 'Open sequence step evidence',
+    })[0];
+    const sequenceEvidenceUrl = new URL(
+      sequenceEvidenceLink?.getAttribute('href') ?? '',
+      window.location.origin,
+    );
+    expect(Object.fromEntries(sequenceEvidenceUrl.searchParams)).toEqual({
+      lane: 'candidate',
+      episode: 'task.alpha|i0',
+      attempt: '1',
+      screenshot: 'annotated',
+      evidence: 'judge',
+    });
     expect(screen.queryByLabelText('Regression pairs only')).toBeNull();
     expect(screen.queryByTestId('tp-report-pair-pair-regression')).toBeNull();
   });

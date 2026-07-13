@@ -1,5 +1,6 @@
 from dataclasses import asdict
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Header, Request, status
 from pydantic import BaseModel, Field
@@ -37,6 +38,27 @@ class ImportRunRequest(BaseModel):
 class FollowupRunRequest(BaseModel):
     execution: dict[str, object] | None = None
     skip_compatibility_check: bool = False
+    preview_token: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class FollowupLaneEpisodePreview(BaseModel):
+    episode_key: str
+    lane_key: str
+    reason: str
+    sequence_index: int | None = None
+    sequence_group_id: str | None = None
+
+
+class FollowupRunPreviewResponse(BaseModel):
+    schema_version: Literal[1]
+    run_id: str
+    kind: Literal["retry", "resume"]
+    source_run_attempt_id: str
+    source_attempt_no: int
+    preview_token: str
+    can_execute: bool
+    empty_reason: str | None
+    selected_lane_episodes: list[FollowupLaneEpisodePreview]
 
 
 @router.post("/runs", status_code=201)
@@ -252,6 +274,7 @@ def retry_run(
             run_id,
             execution_overrides=body.execution if body else None,
             skip_compatibility_check=body.skip_compatibility_check if body else False,
+            expected_preview_token=body.preview_token if body else None,
         )
     except RunDomainError as exc:
         raise _run_error(exc) from exc
@@ -273,7 +296,42 @@ def resume_run(
             run_id,
             execution_overrides=body.execution if body else None,
             skip_compatibility_check=body.skip_compatibility_check if body else False,
+            expected_preview_token=body.preview_token if body else None,
         )
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.get(
+    "/runs/{run_id}/retry/preview",
+    response_model=FollowupRunPreviewResponse,
+    response_model_exclude_unset=True,
+)
+def preview_retry_run(request: Request, run_id: str) -> FollowupRunPreviewResponse:
+    try:
+        preview = RunService(
+            get_database(request),
+            request.app.state.settings,
+            supervisor=request.app.state.supervisor,
+        ).preview_followup(run_id, kind="retry")
+        return FollowupRunPreviewResponse.model_validate(preview)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+
+
+@router.get(
+    "/runs/{run_id}/resume/preview",
+    response_model=FollowupRunPreviewResponse,
+    response_model_exclude_unset=True,
+)
+def preview_resume_run(request: Request, run_id: str) -> FollowupRunPreviewResponse:
+    try:
+        preview = RunService(
+            get_database(request),
+            request.app.state.settings,
+            supervisor=request.app.state.supervisor,
+        ).preview_followup(run_id, kind="resume")
+        return FollowupRunPreviewResponse.model_validate(preview)
     except RunDomainError as exc:
         raise _run_error(exc) from exc
 

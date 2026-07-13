@@ -86,8 +86,49 @@ const run: RunDetail = {
   target_revisions: [
     { target_id: 'target-1', target_revision_id: 'revision-1', metadata_hash: 'metadata-1' },
   ],
-  episode_identities: [],
-  episode_attempts: [],
+  episode_identities: [
+    {
+      episode_key: 'fake.Task::1',
+      pair_key: 'fake.Task::1',
+      task_base_id: 'fake.Task',
+      task_id: 'fake.Task',
+      instance_id: 0,
+      instance_seed: 1,
+      template_index: null,
+      trial_id: 0,
+      max_steps: 10,
+      sequence_index: null,
+      sequence_group_id: null,
+    },
+  ],
+  episode_attempts: [
+    {
+      episode_key: 'fake.Task::1',
+      lane_key: 'candidate',
+      run_attempt_id: 'attempt-1',
+      lane_attempt_id: 'lane-attempt-1',
+      episode_attempt_id: 'episode-attempt-1',
+      attempt_no: 1,
+      episode_attempt_no: 1,
+      state: 'failed',
+      outcome: 'FAIL',
+      error_code: 'ASSERTION_FAILURE',
+      artifact_root: 'lanes/candidate/attempts/0001/episode-1',
+    },
+    {
+      episode_key: 'fake.Task::1',
+      lane_key: 'candidate',
+      run_attempt_id: 'attempt-2',
+      lane_attempt_id: 'lane-attempt-2',
+      episode_attempt_id: 'episode-attempt-2',
+      attempt_no: 2,
+      episode_attempt_no: 1,
+      state: 'failed',
+      outcome: 'ERROR',
+      error_code: 'EXECUTION_ERROR',
+      artifact_root: 'lanes/candidate/attempts/0002/episode-1',
+    },
+  ],
   run_plan: {},
   gate_verdict: null,
   created_at: '2026-07-06T00:00:00.000Z',
@@ -139,7 +180,8 @@ describe('Test Platform retry/resume controls', () => {
   });
 
   it('shows attempt history, retries, and surfaces resume incompatibility details', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    let retryBody: unknown = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = requestPath(input);
       if (path === '/health/ready') {
         return jsonResponse({
@@ -157,7 +199,38 @@ describe('Test Platform retry/resume controls', () => {
       if (path === `/api/platform/v1/runs/${run.id}`) {
         return jsonResponse(run);
       }
+      if (path === `/api/platform/v1/runs/${run.id}/retry/preview`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind: 'retry',
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          preview_token: 'sha256:retry-preview',
+          can_execute: true,
+          empty_reason: null,
+          selected_lane_episodes: [
+            { episode_key: 'fake.Task::1', lane_key: 'candidate', reason: 'retry_error' },
+          ],
+        });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}/resume/preview`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind: 'resume',
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          preview_token: 'sha256:resume-preview',
+          can_execute: true,
+          empty_reason: null,
+          selected_lane_episodes: [
+            { episode_key: 'fake.Task::2', lane_key: 'candidate', reason: 'resume_missing' },
+          ],
+        });
+      }
       if (path === `/api/platform/v1/runs/${run.id}/retry`) {
+        retryBody = JSON.parse(String(init?.body ?? '{}'));
         return jsonResponse({
           run_id: run.id,
           run_attempt_id: 'attempt-3',
@@ -194,11 +267,31 @@ describe('Test Platform retry/resume controls', () => {
     expect(screen.getAllByText('initial').length).toBeGreaterThan(0);
     expect(screen.getAllByText('retry').length).toBeGreaterThan(0);
     expect(screen.getByText('lanes/candidate/attempts/0002')).toBeTruthy();
+    expect((await screen.findByTestId('tp-retry-preview')).textContent).toContain(
+      'candidate · fake.Task::1 · retry_error',
+    );
+    expect(screen.getByTestId('tp-resume-preview').textContent).toContain(
+      'candidate · fake.Task::2 · resume_missing',
+    );
+    const historicalAttemptLink = screen.getByRole('link', {
+      name: 'Open attempt 1 evidence',
+    });
+    const historicalHref = historicalAttemptLink.getAttribute('href');
+    const historicalUrl = new URL(historicalHref ?? '', window.location.origin);
+    expect(Object.fromEntries(historicalUrl.searchParams)).toEqual({
+      lane: 'candidate',
+      episode: 'fake.Task::1',
+      attempt: '1',
+      screenshot: 'annotated',
+      evidence: 'judge',
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry run' }));
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([input]) => requestPath(input as RequestInfo | URL) === `/api/platform/v1/runs/${run.id}/retry`)).toBe(true);
+      expect(retryBody).toEqual({ preview_token: 'sha256:retry-preview' });
     });
+    expect(screen.getByRole('link', { name: 'Open attempt 1 evidence' }).getAttribute('href'))
+      .toBe(historicalHref);
 
     fireEvent.click(screen.getByRole('button', { name: 'Resume run' }));
     const message = await screen.findByTestId('tp-followup-message');
@@ -227,6 +320,34 @@ describe('Test Platform retry/resume controls', () => {
       if (path === `/api/platform/v1/runs/${run.id}`) {
         return jsonResponse(runWithOnlineModelKey);
       }
+      if (path === `/api/platform/v1/runs/${run.id}/retry/preview`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind: 'retry',
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          preview_token: 'sha256:retry-preview',
+          can_execute: true,
+          empty_reason: null,
+          selected_lane_episodes: [
+            { episode_key: 'fake.Task::1', lane_key: 'candidate', reason: 'retry_error' },
+          ],
+        });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}/resume/preview`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind: 'resume',
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          preview_token: 'sha256:resume-preview',
+          can_execute: false,
+          empty_reason: 'No missing or service-restarted lane episodes are available to resume.',
+          selected_lane_episodes: [],
+        });
+      }
       if (path === `/api/platform/v1/runs/${run.id}/retry`) {
         retryBody = JSON.parse(String(init?.body ?? '{}'));
         return jsonResponse({
@@ -246,6 +367,7 @@ describe('Test Platform retry/resume controls', () => {
     render(<App />);
 
     expect(await screen.findByLabelText('Model API key')).toBeTruthy();
+    expect(await screen.findByTestId('tp-retry-preview')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Retry run' }));
     expect((await screen.findByTestId('tp-followup-message')).textContent).toContain(
       'Model API key is required',
@@ -262,8 +384,58 @@ describe('Test Platform retry/resume controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry run' }));
 
     await waitFor(() => {
-      expect(retryBody).toEqual({ execution: { model_api_key: 'sk-retry-secret' } });
+      expect(retryBody).toEqual({
+        execution: { model_api_key: 'sk-retry-secret' },
+        preview_token: 'sha256:retry-preview',
+      });
     });
     expect(JSON.stringify(retryBody)).not.toContain('model_base_url');
+  });
+
+  it('disables empty follow-up selections and explains why', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === '/health/ready') {
+        return jsonResponse({ ready: true, checks: {} });
+      }
+      if (path === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}`) {
+        return jsonResponse(run);
+      }
+      if (path.endsWith('/retry/preview') || path.endsWith('/resume/preview')) {
+        const kind = path.endsWith('/retry/preview') ? 'retry' : 'resume';
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind,
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          preview_token: `sha256:${kind}-empty`,
+          can_execute: false,
+          empty_reason: kind === 'retry'
+            ? 'No failed or errored lane episodes are available to retry.'
+            : 'No missing or service-restarted lane episodes are available to resume.',
+          selected_lane_episodes: [],
+        });
+      }
+      return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found', details: [] } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByTestId('tp-retry-preview')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Retry run' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect((screen.getByRole('button', { name: 'Resume run' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect(screen.getByTestId('tp-retry-preview').textContent).toContain(
+      'No failed or errored lane episodes are available to retry.',
+    );
+    expect(screen.getByTestId('tp-resume-preview').textContent).toContain(
+      'No missing or service-restarted lane episodes are available to resume.',
+    );
   });
 });

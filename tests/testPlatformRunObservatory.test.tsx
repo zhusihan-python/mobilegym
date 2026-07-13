@@ -1,5 +1,6 @@
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { BrowserRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -220,6 +221,16 @@ function requestUrl(input: RequestInfo | URL): URL {
   return new URL(input.url);
 }
 
+function renderRunObservatory(
+  runDetail: React.ComponentProps<typeof RunObservatory>['run'],
+) {
+  return render(
+    <BrowserRouter basename="/test-platform">
+      <RunObservatory run={runDetail} live={null} diagnostics={{ status: 'idle' }} />
+    </BrowserRouter>,
+  );
+}
+
 function replayBody(episodeKey: string) {
   const isFail = episodeKey.startsWith('fake.Fail');
   return {
@@ -366,6 +377,85 @@ describe('Run Observatory', () => {
       .toBe('answer_completion_accepted');
   });
 
+  it('round-trips replay selection, step, screenshot mode, and evidence tab through the URL', async () => {
+    window.history.pushState(
+      {},
+      '',
+      '/test-platform/runs/run-observatory'
+        + '?lane=candidate'
+        + '&episode=fake.Pass%7Ci0%7Cs1%7Cr1%7Ct0'
+        + '&attempt=1&step=1&screenshot=raw&evidence=response',
+    );
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const decodedPath = decodeURIComponent(url.pathname);
+      if (decodedPath.includes('/episodes/fake.Pass|i0|s1|r1|t0/replay')) {
+        return jsonResponse(replayBody('fake.Pass|i0|s1|r1|t0'));
+      }
+      if (decodedPath.includes('/episodes/fake.Fail|i0|s1|r1|t0/replay')) {
+        return jsonResponse(replayBody('fake.Fail|i0|s1|r1|t0'));
+      }
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    renderRunObservatory(run);
+
+    const picker = await screen.findByLabelText('Replay episode') as HTMLSelectElement;
+    await waitFor(() => {
+      expect(picker.selectedOptions[0]?.textContent).toContain('fake.Pass');
+    });
+    expect((await screen.findByTestId('tp-replay-screenshot') as HTMLImageElement).src)
+      .toContain('/artifacts/pass-raw-1/content');
+    expect(screen.getByRole('tab', { name: 'Response' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('link', { name: 'Open response artifact' }).getAttribute('href'))
+      .toContain('/artifacts/pass-response-1/content');
+
+    fireEvent.click(screen.getByRole('button', { name: /Step 2 COMPLETE/ }));
+    fireEvent.change(screen.getByLabelText('Replay screenshot mode'), {
+      target: { value: 'annotated' },
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompt' }));
+
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get('lane')).toBe('candidate');
+      expect(params.get('episode')).toBe('fake.Pass|i0|s1|r1|t0');
+      expect(params.get('attempt')).toBe('1');
+      expect(params.get('step')).toBe('2');
+      expect(params.get('screenshot')).toBe('annotated');
+      expect(params.get('evidence')).toBe('prompt');
+      expect(window.location.pathname).toBe('/test-platform/runs/run-observatory');
+    });
+  });
+
+  it('falls back deterministically for stale observatory URL values and explains the fallback', async () => {
+    window.history.pushState(
+      {},
+      '',
+      '/test-platform/runs/run-observatory'
+        + '?lane=removed&episode=missing&attempt=99&step=999'
+        + '&screenshot=broken&evidence=missing',
+    );
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const decodedPath = decodeURIComponent(url.pathname);
+      if (decodedPath.includes('/episodes/fake.Fail|i0|s1|r1|t0/replay')) {
+        return jsonResponse(replayBody('fake.Fail|i0|s1|r1|t0'));
+      }
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    renderRunObservatory(run);
+
+    expect((await screen.findByTestId('tp-observatory-location-notice')).textContent)
+      .toContain('no longer available');
+    const picker = screen.getByLabelText('Replay episode') as HTMLSelectElement;
+    expect(picker.selectedOptions[0]?.textContent).toContain('fake.Fail');
+    expect((await screen.findByTestId('tp-replay-screenshot') as HTMLImageElement).src)
+      .toContain('/artifacts/fail-annot-2/content');
+    expect(screen.getByRole('tab', { name: 'Judge' }).getAttribute('aria-selected')).toBe('true');
+  });
+
   it('follows the active live episode and shows waiting state before replay artifacts exist', async () => {
     vi.stubGlobal('EventSource', FakeEventSource);
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
@@ -464,6 +554,8 @@ describe('Run Observatory', () => {
     expect(screen.getByText('Live run is recording step 2; screenshots will appear after replay artifacts are available.'))
       .toBeTruthy();
     expect(screen.getByText('live 2 / 15')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Copy incident link' }) as HTMLButtonElement).disabled)
+      .toBe(true);
     fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }));
     expect(screen.getByText('Diagnostics are available after the run reaches a reportable state.'))
       .toBeTruthy();
@@ -532,7 +624,7 @@ describe('Run Observatory', () => {
       }),
     );
 
-    render(<RunObservatory run={manualSequenceRun} live={null} diagnostics={{ status: 'idle' }} />);
+    renderRunObservatory(manualSequenceRun);
 
     const picker = (await screen.findByLabelText('Replay episode')) as HTMLSelectElement;
     expect(Array.from(picker.options).map((option) => option.textContent)).toEqual([
@@ -553,6 +645,77 @@ describe('Run Observatory', () => {
     expect(
       (screen.getByTestId('tp-replay-screenshot') as HTMLImageElement).getAttribute('src'),
     ).toContain('/artifacts/pass-annot-2/content');
+  });
+
+  it('round-trips immutable replay selection, step, screenshot mode, and evidence tab', async () => {
+    const episodeKey = 'fake.Fail|i0|s1|r1|t0';
+    const params = new URLSearchParams({
+      lane: 'candidate',
+      episode: episodeKey,
+      attempt: '1',
+      step: '1',
+      screenshot: 'raw',
+      evidence: 'response',
+    });
+    window.history.replaceState(
+      {},
+      '',
+      `/test-platform/runs/${completedRetryRun.id}?${params.toString()}`,
+    );
+    const writeText = vi.fn(async (_value: string) => undefined);
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      expect(url.searchParams.get('lane_key')).toBe('candidate');
+      expect(url.searchParams.get('attempt_no')).toBe('1');
+      return jsonResponse(replayBody(episodeKey));
+    }));
+
+    renderRunObservatory(completedRetryRun);
+
+    const picker = await screen.findByLabelText('Replay episode') as HTMLSelectElement;
+    expect(picker.selectedOptions[0]?.textContent).toContain('attempt 1');
+    const screenshot = await screen.findByTestId('tp-replay-screenshot') as HTMLImageElement;
+    expect(screenshot.getAttribute('src')).toContain('/artifacts/fail-raw-1/content');
+    expect(screen.getByRole('button', { name: /Step 1 CLICK/ }).getAttribute('aria-current'))
+      .toBe('step');
+    expect(screen.getByRole('tab', { name: 'Response' }).getAttribute('aria-selected'))
+      .toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: /Step 2 ANSWER/ }));
+    fireEvent.change(screen.getByLabelText('Replay screenshot mode'), {
+      target: { value: 'annotated' },
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Prompt' }));
+
+    await waitFor(() => {
+      const updated = new URL(window.location.href);
+      expect(updated.pathname).toBe(`/test-platform/runs/${completedRetryRun.id}`);
+      expect(updated.searchParams.get('lane')).toBe('candidate');
+      expect(updated.searchParams.get('episode')).toBe(episodeKey);
+      expect(updated.searchParams.get('attempt')).toBe('1');
+      expect(updated.searchParams.get('step')).toBe('2');
+      expect(updated.searchParams.get('screenshot')).toBe('annotated');
+      expect(updated.searchParams.get('evidence')).toBe('prompt');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy incident link' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = new URL(String(writeText.mock.calls[0]?.[0]));
+    expect(copied.pathname).toBe(`/test-platform/runs/${completedRetryRun.id}`);
+    expect(Object.fromEntries(copied.searchParams)).toEqual({
+      lane: 'candidate',
+      episode: episodeKey,
+      attempt: '1',
+      step: '2',
+      screenshot: 'annotated',
+      evidence: 'prompt',
+    });
+    expect(copied.toString()).not.toContain('artifact_root');
+    expect(copied.toString()).not.toContain('secret');
   });
 
   it('defaults to the newest attempt when debug outcomes have the same priority', () => {

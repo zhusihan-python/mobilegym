@@ -1,5 +1,3 @@
-import { useState } from 'react';
-
 import type { ArtifactItem, EpisodeReplay, EpisodeReplayStep, RunDiagnostics } from '../../api/types';
 import {
   artifactContentHref,
@@ -10,14 +8,13 @@ import {
   terminalMarkerForReplay,
   type ReplayLoadState,
 } from './episodeReplay';
+import type { EvidenceTab } from './observatoryLocation';
 
 export type EvidenceDiagnosticsState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'loaded'; diagnostics: RunDiagnostics; artifacts: ArtifactItem[] }
   | { status: 'error'; message: string };
-
-type EvidenceTab = 'judge' | 'prompt' | 'response' | 'state' | 'diagnostics' | 'artifacts';
 
 const EVIDENCE_TABS: Array<{ id: EvidenceTab; label: string }> = [
   { id: 'judge', label: 'Judge' },
@@ -33,13 +30,16 @@ export function EvidenceDock({
   replayState,
   selectedStepIndex,
   diagnostics,
+  activeTab,
+  onActiveTabChange,
 }: {
   runId: string;
   replayState: ReplayLoadState;
   selectedStepIndex: number;
   diagnostics: EvidenceDiagnosticsState;
+  activeTab: EvidenceTab;
+  onActiveTabChange: (tab: EvidenceTab) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<EvidenceTab>('judge');
   const replay = replayFromState(replayState);
   const selectedStep = stepFromReplayState(replayState, selectedStepIndex);
 
@@ -56,7 +56,7 @@ export function EvidenceDock({
             type="button"
             role="tab"
             aria-selected={activeTab === tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => onActiveTabChange(tab.id)}
           >
             {tab.label}
           </button>

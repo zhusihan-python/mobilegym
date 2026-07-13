@@ -11,6 +11,7 @@ import type {
   Comparison,
   EpisodeReplay,
   FollowupRunAttempt,
+  FollowupRunPreview,
   Project,
   ReadinessResponse,
   RunDetail,
@@ -323,6 +324,7 @@ export function checkModelCompatibility(input: {
 }
 
 type FollowupRunInput = {
+  previewToken?: string;
   execution?: {
     modelApiKey?: string;
   };
@@ -330,14 +332,25 @@ type FollowupRunInput = {
 
 function followupRunBody(input?: FollowupRunInput): BodyInit | undefined {
   const modelApiKey = input?.execution?.modelApiKey?.trim();
-  if (!modelApiKey) {
-    return undefined;
+  const payload: Record<string, unknown> = {};
+  if (input?.previewToken) {
+    payload.preview_token = input.previewToken;
   }
-  return JSON.stringify({
-    execution: {
+  if (modelApiKey) {
+    payload.execution = {
       model_api_key: modelApiKey,
-    },
-  });
+    };
+  }
+  return Object.keys(payload).length > 0 ? JSON.stringify(payload) : undefined;
+}
+
+export function getFollowupPreview(
+  runId: string,
+  kind: 'retry' | 'resume',
+): Promise<FollowupRunPreview> {
+  return apiFetch<FollowupRunPreview>(
+    `/runs/${encodeURIComponent(runId)}/${kind}/preview`,
+  );
 }
 
 export function retryRun(runId: string, input?: FollowupRunInput): Promise<FollowupRunAttempt> {

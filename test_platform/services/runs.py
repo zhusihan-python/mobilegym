@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import threading
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from test_platform.config import PlatformSettings
 from test_platform.domain.canonical_json import canonical_json, canonical_sha256
@@ -37,6 +37,8 @@ from test_platform.persistence.repositories import (
 from test_platform.services.completion import RunCompletionPipeline
 
 logger = logging.getLogger(__name__)
+
+FollowupKind = Literal["retry", "resume"]
 
 # Run lifecycle states in which a cancel request is meaningful. Terminal states
 # (completed/failed/cancelled) ignore cancel and are reported as a no-op.
@@ -1221,14 +1223,17 @@ class RunService:
         *,
         execution_overrides: dict[str, Any] | None = None,
         skip_compatibility_check: bool = False,
+        expected_preview_token: str | None = None,
     ) -> dict[str, Any]:
-        run = RunRepository(self.database).get(run_id)
-        if run.state not in {"completed", "failed", "cancelled"}:
+        preview = self.preview_followup(run_id, kind="retry")
+        self._assert_followup_preview_token(preview, expected_preview_token)
+        selected = preview["selected_lane_episodes"]
+        if not selected:
             raise RunDomainError(
-                "RUN_RETRY_NOT_TERMINAL",
-                "Only terminal runs can be retried.",
+                "RUN_RETRY_SELECTION_EMPTY",
+                str(preview["empty_reason"]),
                 status_code=409,
-                details=[{"run_id": run_id, "state": run.state}],
+                details=[{"run_id": run_id}],
             )
 
         # TP-H10: preflight BEFORE registering secrets or creating attempt.
@@ -1245,26 +1250,14 @@ class RunService:
         compat_provenance = self._preflight_followup(
             run_id, skip_compatibility_check, candidate_api_key
         )
-        # Only NOW register secrets (after preflight passed).
-        self._register_followup_execution_secrets(run_id, execution_overrides)
-        source_attempt = self._latest_terminal_run_attempt(run_id)
-        planned = self._planned_lane_episodes(run_id)
-        latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
-        selected = select_retry_lane_episodes(planned, latest_attempts)
-        if not selected:
-            raise RunDomainError(
-                "RUN_RETRY_SELECTION_EMPTY",
-                "No failed or errored lane episodes are available to retry.",
-                status_code=409,
-                details=[{"run_id": run_id}],
-            )
-
         result = self._create_followup_attempt(
             run_id=run_id,
             reason="retry",
             selected=selected,
             compatibility_provenance=compat_provenance,
+            expected_preview_token=expected_preview_token,
         )
+        self._register_followup_execution_secrets(run_id, execution_overrides)
         self.supervisor.submit(run_id)
         return result
 
@@ -1274,14 +1267,17 @@ class RunService:
         *,
         execution_overrides: dict[str, Any] | None = None,
         skip_compatibility_check: bool = False,
+        expected_preview_token: str | None = None,
     ) -> dict[str, Any]:
-        run = RunRepository(self.database).get(run_id)
-        if run.state not in {"completed", "failed", "cancelled"}:
+        preview = self.preview_followup(run_id, kind="resume")
+        self._assert_followup_preview_token(preview, expected_preview_token)
+        selected = preview["selected_lane_episodes"]
+        if not selected:
             raise RunDomainError(
-                "RUN_RESUME_NOT_TERMINAL",
-                "Only terminal runs can be resumed.",
+                "RUN_RESUME_SELECTION_EMPTY",
+                str(preview["empty_reason"]),
                 status_code=409,
-                details=[{"run_id": run_id, "state": run.state}],
+                details=[{"run_id": run_id}],
             )
 
         # TP-H10: preflight BEFORE registering secrets or creating attempt.
@@ -1295,27 +1291,76 @@ class RunService:
         compat_provenance = self._preflight_followup(
             run_id, skip_compatibility_check, candidate_api_key
         )
-        self._register_followup_execution_secrets(run_id, execution_overrides)
-        source_attempt = self._latest_terminal_run_attempt(run_id)
-        planned = self._planned_lane_episodes(run_id)
-        latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
-        selected = select_resume_lane_episodes(planned, latest_attempts)
-        if not selected:
-            raise RunDomainError(
-                "RUN_RESUME_SELECTION_EMPTY",
-                "No missing or service-restarted lane episodes are available to resume.",
-                status_code=409,
-                details=[{"run_id": run_id}],
-            )
-
         result = self._create_followup_attempt(
             run_id=run_id,
             reason="resume",
             selected=selected,
             compatibility_provenance=compat_provenance,
+            expected_preview_token=expected_preview_token,
         )
+        self._register_followup_execution_secrets(run_id, execution_overrides)
         self.supervisor.submit(run_id)
         return result
+
+    def preview_followup(self, run_id: str, *, kind: FollowupKind) -> dict[str, Any]:
+        if kind not in {"retry", "resume"}:
+            raise ValueError(f"Unsupported follow-up kind: {kind}")
+        run = RunRepository(self.database).get(run_id)
+        if run.state not in {"completed", "failed", "cancelled"}:
+            past_tense = "retried" if kind == "retry" else "resumed"
+            raise RunDomainError(
+                f"RUN_{kind.upper()}_NOT_TERMINAL",
+                f"Only terminal runs can be {past_tense}.",
+                status_code=409,
+                details=[{"run_id": run_id, "state": run.state}],
+            )
+
+        source_attempt = self._latest_terminal_run_attempt(run_id)
+        planned = self._planned_lane_episodes(run_id)
+        latest_attempts = self._episode_attempts_for_run_attempt(source_attempt["id"])
+        selected = (
+            select_retry_lane_episodes(planned, latest_attempts)
+            if kind == "retry"
+            else select_resume_lane_episodes(planned, latest_attempts)
+        )
+        empty_reason = (
+            "No failed or errored lane episodes are available to retry."
+            if kind == "retry"
+            else "No missing or service-restarted lane episodes are available to resume."
+        )
+        token_payload = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "kind": kind,
+            "source_run_attempt_id": source_attempt["id"],
+            "source_attempt_no": source_attempt["attempt_no"],
+            "selected_lane_episodes": selected,
+        }
+        return {
+            **token_payload,
+            "preview_token": canonical_sha256(token_payload),
+            "can_execute": bool(selected),
+            "empty_reason": None if selected else empty_reason,
+        }
+
+    @staticmethod
+    def _assert_followup_preview_token(
+        preview: dict[str, Any], expected_preview_token: str | None
+    ) -> None:
+        if expected_preview_token is None or preview["preview_token"] == expected_preview_token:
+            return
+        raise RunDomainError(
+            "RUN_FOLLOWUP_PREVIEW_STALE",
+            "The follow-up selection changed after preview.",
+            status_code=409,
+            details=[
+                {
+                    "kind": preview["kind"],
+                    "expected_preview_token": expected_preview_token,
+                    "current_preview_token": preview["preview_token"],
+                }
+            ],
+        )
 
     def reconcile_startup(self) -> dict[str, Any]:
         from test_platform.services.execution import (
@@ -1700,9 +1745,10 @@ class RunService:
         self,
         *,
         run_id: str,
-        reason: str,
+        reason: FollowupKind,
         selected: list[dict[str, Any]],
         compatibility_provenance: list[dict[str, Any]] | None = None,
+        expected_preview_token: str | None = None,
     ) -> dict[str, Any]:
         now = _utc_timestamp()
         connection = self.database.connection
@@ -1737,6 +1783,26 @@ class RunService:
         with self.database._lock:  # noqa: SLF100
             connection.execute("BEGIN IMMEDIATE")
             try:
+                if expected_preview_token is not None:
+                    try:
+                        current_preview = self.preview_followup(run_id, kind=reason)
+                    except RunDomainError as exc:
+                        raise RunDomainError(
+                            "RUN_FOLLOWUP_PREVIEW_STALE",
+                            "The follow-up selection changed after preview.",
+                            status_code=409,
+                            details=[
+                                {
+                                    "kind": reason,
+                                    "expected_preview_token": expected_preview_token,
+                                    "current_preview_token": None,
+                                }
+                            ],
+                        ) from exc
+                    self._assert_followup_preview_token(
+                        current_preview, expected_preview_token
+                    )
+                    selected = current_preview["selected_lane_episodes"]
                 row = connection.execute(
                     """
                     SELECT COALESCE(MAX(attempt_no), 0) + 1

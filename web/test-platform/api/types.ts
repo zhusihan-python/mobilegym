@@ -467,6 +467,18 @@ export type BaselineDetail = {
   }>;
 };
 
+export type FollowupRunPreview = {
+  schema_version: 1;
+  run_id: string;
+  kind: 'retry' | 'resume';
+  source_run_attempt_id: string;
+  source_attempt_no: number;
+  preview_token: string;
+  can_execute: boolean;
+  empty_reason: string | null;
+  selected_lane_episodes: FollowupRunAttempt['selected_lane_episodes'];
+};
+
 export type BaselineEligibility = {
   run_id: string;
   run_attempt_id: string | null;
