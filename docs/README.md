@@ -27,6 +27,7 @@ All docs here are in English. Pick a track:
 | TDD-driven, independently verifiable vertical-slice development plan | [`test-platform/DEVELOPMENT_PLAN.md`](test-platform/DEVELOPMENT_PLAN.md) |
 | Post-MVP correctness, deterministic acceptance, model preflight, reporting, and diagnostics requirements | [`test-platform/HARDENING_PRD.md`](test-platform/HARDENING_PRD.md) |
 | Prioritized hardening milestones and agent-ready vertical task slices | [`test-platform/HARDENING_PLAN.md`](test-platform/HARDENING_PLAN.md) |
+| Final hardening release results, evidence index, warnings, and accepted debt | [`test-platform/evidence/2026-07-13-tp-h16-release-acceptance.md`](test-platform/evidence/2026-07-13-tp-h16-release-acceptance.md) |
 | Deferred Test Platform product directions that are recorded but not yet specified | [`test-platform/PRODUCT_BACKLOG.md`](test-platform/PRODUCT_BACKLOG.md) |
 | Manual Sequence v1 product and execution contract | [`test-platform/MANUAL_SEQUENCE_V1.md`](test-platform/MANUAL_SEQUENCE_V1.md) |
 | Run Observatory replay and live-inspection design | [`test-platform/VS-15_RUN_OBSERVATORY_DESIGN.md`](test-platform/VS-15_RUN_OBSERVATORY_DESIGN.md) |

@@ -4,10 +4,10 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft task breakdown for review |
+| Status | Complete through TP-H16 on 2026-07-13 |
 | Product requirements | [`HARDENING_PRD.md`](HARDENING_PRD.md) |
 | Delivery method | TDD tracer-bullet vertical slices |
-| Issue publication | Not published; user approval of granularity and dependencies is required first |
+| Issue publication | Not published; stable TP-H IDs retained for traceability |
 | Deferred direction | [`PRODUCT_BACKLOG.md`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 
 ## 1. Delivery rules
@@ -134,15 +134,15 @@ produce a green record.
 
 ### Acceptance criteria
 
-- [ ] The current commit and working-tree status are recorded.
-- [ ] All Test Platform Python tests run without a live model.
-- [ ] Relevant `bench_env` common tests run with live tests excluded.
-- [ ] Platform frontend tests and type checking run.
-- [ ] Repository runtime lint and the relevant simulator regression suite run.
-- [ ] Every failure has a stable reproduction command and classification.
-- [ ] The record distinguishes permission or environment failures from product
+- [x] The current commit and working-tree status are recorded.
+- [x] All Test Platform Python tests run without a live model.
+- [x] Relevant `bench_env` common tests run with live tests excluded.
+- [x] Platform frontend tests and type checking run.
+- [x] Repository runtime lint and the relevant simulator regression suite run.
+- [x] Every failure has a stable reproduction command and classification.
+- [x] The record distinguishes permission or environment failures from product
       failures.
-- [ ] No generated caches, secrets, run artifacts, or local machine paths are
+- [x] No generated caches, secrets, run artifacts, or local machine paths are
       committed.
 
 ### Test seam
@@ -981,22 +981,22 @@ mark the hardening program complete only when every required task has evidence.
 
 ### Acceptance criteria
 
-- [ ] TP-H00 through TP-H15 are complete or explicitly removed from scope by a
+- [x] TP-H00 through TP-H15 are complete or explicitly removed from scope by a
       reviewed PRD change.
-- [ ] The full Test Platform, relevant `bench_env`, platform frontend, simulator,
+- [x] The full Test Platform, relevant `bench_env`, platform frontend, simulator,
       type-check, and lint suites pass.
-- [ ] Deterministic Manual Sequence and paired browser smoke tests pass from a
+- [x] Deterministic Manual Sequence and paired browser smoke tests pass from a
       clean temporary environment.
-- [ ] A fake compatible and fake incompatible model provider pass preflight and
+- [x] A fake compatible and fake incompatible model provider pass preflight and
       fail-fast acceptance respectively.
-- [ ] Report v1 compatibility, report v2 reliability/infrastructure, named
+- [x] Report v1 compatibility, report v2 reliability/infrastructure, named
       baseline migration, diagnostic filters, recovery previews, and incident
       links are demonstrated.
-- [ ] Product, architecture, implementation, operator, and documentation-index
+- [x] Product, architecture, implementation, operator, and documentation-index
       status text reflects current behavior.
-- [ ] Remaining warnings and deferred work are recorded with owners or backlog
+- [x] Remaining warnings and deferred work are recorded with owners or backlog
       entries.
-- [ ] TP-FUTURE-01 remains deferred and has not acquired accidental schema or
+- [x] TP-FUTURE-01 remains deferred and has not acquired accidental schema or
       implementation commitments.
 
 ### Test seam

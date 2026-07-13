@@ -4,13 +4,17 @@
 
 | Field | Value |
 |---|---|
-| Status | Proposed for review |
-| Product phase | Post-MVP correctness and completion |
+| Status | Accepted and complete 2026-07-13 |
+| Product phase | Post-MVP hardening release complete |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Existing delivery plan | [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) |
 | Detailed delivery plan | [`HARDENING_PLAN.md`](HARDENING_PLAN.md) |
 | Deferred product direction | [`PRODUCT_BACKLOG.md`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Delivery method | Test-driven vertical slices |
+
+The problem statement below records the pre-hardening state that motivated this
+program. TP-H00 through TP-H16 are complete; the final reproducible acceptance
+record is [`evidence/2026-07-13-tp-h16-release-acceptance.md`](evidence/2026-07-13-tp-h16-release-acceptance.md).
 
 ## Priority order
 

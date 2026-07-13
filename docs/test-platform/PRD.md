@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft for implementation planning |
-| Product phase | Simulator-first MVP |
+| Status | Implemented; hardening release accepted 2026-07-13 |
+| Product phase | Simulator-first MVP, hardened |
 | Primary repository | `mobilegym` |
 | Primary execution engine | `bench_env` |
 | Real-device support | Interface and configuration reserved; execution deferred |

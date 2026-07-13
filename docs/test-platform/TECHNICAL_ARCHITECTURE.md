@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft for implementation |
-| Product phase | Simulator-first MVP |
+| Status | Implemented reference architecture; hardening accepted 2026-07-13 |
+| Product phase | Simulator-first MVP, hardened |
 | Source requirements | [`PRD.md`](PRD.md) |
 | Primary execution engine | `bench_env` |
 | Deployment model | Single-host modular monolith |
@@ -63,9 +63,15 @@ The architecture is intentionally additive:
 - Existing CLI and artifact compatibility.
 - A target adapter boundary that can later execute real devices.
 
-### 3.2 Current implementation constraints
+### 3.2 Pre-implementation constraints
 
-| Constraint | Current implementation consequence |
+The table below records the constraints observed before this architecture was
+implemented and is retained as design rationale, not as a current capability
+statement. The implemented compensating boundaries and hardening results are
+described in the later sections and in the
+[`TP-H16 release acceptance record`](evidence/2026-07-13-tp-h16-release-acceptance.md).
+
+| Pre-implementation constraint | Design consequence |
 |---|---|
 | `RunnerConfig` has one `env_url`. | One runner instance addresses one target. A multi-target run must coordinate separate lane runners. |
 | `EnvPool` has one URL and one device profile. | Workers within a lane share a target revision and profile. |

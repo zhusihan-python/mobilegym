@@ -6,7 +6,7 @@
 |---|---|
 | Status | Active backlog |
 | Scope | Product directions that are recorded but not yet specified |
-| Current delivery focus | [`HARDENING_PRD.md`](HARDENING_PRD.md) |
+| Current delivery focus | Hardening complete; no backlog item is authorized for implementation |
 
 Backlog entries describe opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
@@ -17,7 +17,7 @@ delivery plan.
 | Field | Value |
 |---|---|
 | Status | Deferred TODO |
-| Priority | Discuss after the current hardening and completion plan |
+| Priority | Discuss only after explicit product authorization |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
 | Not authorized yet | Schema, migration, secret, UI, comparison-policy, retry, or rollout implementation |
@@ -39,9 +39,10 @@ general arbitrary-DAG workflow system.
 
 ### Discussion gate
 
-Do not begin detailed design until the current items in
-[`HARDENING_PLAN.md`](HARDENING_PLAN.md) are complete and their acceptance
-evidence is recorded.
+The hardening plan is complete and its acceptance evidence is recorded. This
+removes the sequencing blocker, but it does not authorize design or
+implementation. Begin only after a separate product decision explicitly moves
+this item out of the backlog.
 
 The later discussion must resolve at least:
 

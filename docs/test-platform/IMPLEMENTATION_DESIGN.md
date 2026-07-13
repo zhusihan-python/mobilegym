@@ -4,12 +4,12 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft for implementation |
+| Status | Implemented reference design; hardening accepted 2026-07-13 |
 | Product requirements | [`PRD.md`](PRD.md) |
 | Technical architecture | [`TECHNICAL_ARCHITECTURE.md`](TECHNICAL_ARCHITECTURE.md) |
 | Delivery method | Test-driven development |
 | Task decomposition | Independently verifiable vertical slices |
-| Scope | Simulator-first MVP through paired comparison |
+| Scope | Simulator-first MVP through hardening release |
 
 ## 1. Purpose
 
@@ -2106,9 +2106,10 @@ Every simulator metadata slice must verify:
 - version fields are additive;
 - no user-visible App text is introduced.
 
-## 25. Implementation checkpoints
+## 25. Implementation completion checkpoints
 
-The implementation is ready to proceed when:
+This design was considered implemented when the following checkpoints were met.
+They are retained as release traceability rather than pending readiness gates:
 
 1. domain models and migrations can create and reload a project;
 2. a fake simulator target can be registered and resolved through the API;
@@ -2120,4 +2121,3 @@ The implementation is ready to proceed when:
 8. a comparison report classifies regression and fixed pairs;
 9. cancellation and restart tests leave no active workers;
 10. existing CLI and simulator test suites remain green.
-
