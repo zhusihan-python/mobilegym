@@ -32,6 +32,7 @@ All docs here are in English. Pick a track:
 | Test Platform canonical domain language | [`test-platform/CONTEXT.md`](test-platform/CONTEXT.md) |
 | Versioned Execution Profiles and execution-aware Lane product requirements | [`test-platform/EXECUTION_PROFILES_PRD.md`](test-platform/EXECUTION_PROFILES_PRD.md) |
 | Execution Profiles module seams, Run Plan v2, compatibility, and migration architecture | [`test-platform/EXECUTION_PROFILES_ARCHITECTURE.md`](test-platform/EXECUTION_PROFILES_ARCHITECTURE.md) |
+| Approved TDD tracer-bullet delivery slices for Versioned Execution Profiles | [`test-platform/EXECUTION_PROFILES_DELIVERY_PLAN.md`](test-platform/EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Test Platform product directions and delivery-authorization status | [`test-platform/PRODUCT_BACKLOG.md`](test-platform/PRODUCT_BACKLOG.md) |
 | Manual Sequence v1 product and execution contract | [`test-platform/MANUAL_SEQUENCE_V1.md`](test-platform/MANUAL_SEQUENCE_V1.md) |
 | Run Observatory replay and live-inspection design | [`test-platform/VS-15_RUN_OBSERVATORY_DESIGN.md`](test-platform/VS-15_RUN_OBSERVATORY_DESIGN.md) |

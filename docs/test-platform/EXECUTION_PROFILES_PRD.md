@@ -9,8 +9,9 @@
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
+| Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | Not granted; an approved delivery plan is still required |
+| Implementation authorization | Awaiting an explicit request to start TP-EP00 |
 
 ## 1. Summary
 
@@ -321,7 +322,9 @@ identity from loose Agent/model fields.
 
 ## 10. Delivery gate
 
-This PRD authorizes delivery planning only. Before implementation begins, a
-separate plan must define independently verifiable vertical slices, migration
-ordering, compatibility gates, deterministic adapters, rollback expectations,
-and final acceptance evidence.
+This PRD authorizes delivery planning only. The proposed slices are recorded in
+[`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
+Before implementation begins, that plan must be reviewed and must define
+independently verifiable vertical slices, migration ordering, compatibility
+gates, deterministic adapters, rollback expectations, and final acceptance
+evidence.

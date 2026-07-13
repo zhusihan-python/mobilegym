@@ -7,6 +7,7 @@
 | Status | Accepted architecture for delivery planning on 2026-07-13 |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Parent architecture | [`TECHNICAL_ARCHITECTURE.md`](TECHNICAL_ARCHITECTURE.md) |
+| Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Deployment model | Existing single-host modular monolith |
 | Implementation status | Not implemented and not yet authorized |

@@ -6,7 +6,7 @@
 |---|---|
 | Status | Active planning register |
 | Scope | Product directions from backlog discovery through delivery authorization |
-| Current delivery focus | TP-FUTURE-01 product and architecture accepted; delivery planning is next and implementation is not authorized |
+| Current delivery focus | TP-FUTURE-01 delivery plan approved; awaiting an explicit TP-EP00 start request |
 
 Backlog entries begin as opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
@@ -16,14 +16,15 @@ delivery plan, and a reviewed delivery plan before implementation.
 
 | Field | Value |
 |---|---|
-| Status | Product and architecture accepted; awaiting delivery plan |
-| Priority | Next planning candidate; implementation remains gated |
+| Status | Product, architecture, and delivery plan accepted |
+| Priority | Ready for TP-EP00 when implementation is explicitly started |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
+| Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Not authorized yet | Delivery issues, schema migration, runtime code, UI code, or rollout |
+| Not authorized yet | Issue publication or implementation before an explicit TP-EP00 start request |
 
 ### Opportunity
 
@@ -75,5 +76,8 @@ comparison modes, and compatibility principles. It does not authorize or fully
 specify SQL migrations, HTTP payloads, file layout, a production secret adapter,
 vertical delivery slices, rollout, or compatibility-window removal.
 
-Those decisions belong in a separately reviewed delivery plan and implementation
-design. No implementation begins before that review is explicitly authorized.
+The approved slices and dependencies are recorded in
+[`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
+The user accepted their granularity and dependency relationships on 2026-07-13.
+No issue has been published, and implementation begins only after an explicit
+request to start TP-EP00.
