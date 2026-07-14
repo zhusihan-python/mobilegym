@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP00 complete on 2026-07-13; TP-EP01 not started |
+| Status | TP-EP01 complete on 2026-07-15; TP-EP02 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 authorized and complete; TP-EP01 requires a separate start request |
+| Implementation authorization | TP-EP00 and TP-EP01 authorized and complete; TP-EP02 requires a separate start request |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 has not started.
+are complete. TP-EP01 is also complete; TP-EP02 has not started.
 
 ### Acceptance criteria
 
@@ -206,20 +206,26 @@ no-secret subject configuration: create/save a project-scoped draft, validate
 it, publish one immutable revision, discover it, and inspect its redacted public
 spec in the console.
 
+Current evidence:
+[`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
+The typed no-secret draft, static validation, immutable revision 1, canonical
+public hash, project isolation, and console create/publish/reload flow are
+complete. TP-EP02 has not started.
+
 ### Acceptance criteria
 
-- [ ] A Project can create one named Execution Profile draft containing typed
+- [x] A Project can create one named Execution Profile draft containing typed
       Agent, model, Image Input Format, generation, streaming, and inference
       timeout settings.
-- [ ] Static validation rejects missing required subject settings, unsupported
+- [x] Static validation rejects missing required subject settings, unsupported
       Image Input Format, credential-bearing URLs, and raw secret-like fields.
-- [ ] Publish creates immutable revision 1 with canonical public hash and no
+- [x] Publish creates immutable revision 1 with canonical public hash and no
       remote provider call.
-- [ ] List/detail interfaces return normalized public settings and never return a
+- [x] List/detail interfaces return normalized public settings and never return a
       secret value field.
-- [ ] The Execution Profiles console route creates, publishes, reloads, and
+- [x] The Execution Profiles console route creates, publishes, reloads, and
       displays the exact revision ID/hash.
-- [ ] A profile from another Project is not discoverable or publishable through
+- [x] A profile from another Project is not discoverable or publishable through
       the selected Project.
 
 ### Test seam
@@ -241,6 +247,7 @@ the exact immutable public settings and hash without contacting a model.
 
 ```bash
 python -m pytest -c test_platform/pytest.ini \
+  test_platform/tests/integration/test_execution_profiles_service.py \
   test_platform/tests/integration/test_execution_profiles_api.py -q
 npx vitest run --config vitest.platform.config.ts \
   tests/testPlatformExecutionProfiles.test.tsx
@@ -758,5 +765,6 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. Implementation begins only after an
-explicit request to start TP-EP00.
+No external issue has been published. TP-EP00 and TP-EP01 were implemented only
+after their separate explicit start requests. TP-EP02 has not started and still
+requires a separate explicit start request.

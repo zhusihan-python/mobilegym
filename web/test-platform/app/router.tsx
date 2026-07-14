@@ -7,6 +7,7 @@ import { TasksPage } from '../features/tasks/TasksPage';
 import { TargetsPage } from '../features/targets/TargetsPage';
 import { WorkflowsPage } from '../features/workflows/WorkflowsPage';
 import { BaselineDetailPage, BaselinesPage } from '../features/baselines/BaselinesPage';
+import { ExecutionProfilesPage } from '../features/execution-profiles/ExecutionProfilesPage';
 
 export function PlatformRoutes() {
   return (
@@ -20,6 +21,7 @@ export function PlatformRoutes() {
         <Route path="tasks" element={<TasksPage />} />
         <Route path="targets" element={<TargetsPage />} />
         <Route path="workflows" element={<WorkflowsPage />} />
+        <Route path="execution-profiles" element={<ExecutionProfilesPage />} />
         <Route path="*" element={<Navigate to="/runs" replace />} />
       </Route>
     </Routes>

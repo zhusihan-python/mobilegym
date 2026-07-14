@@ -30,6 +30,16 @@ from test_platform.domain.projects import (
     normalize_project_name,
 )
 from test_platform.domain.events import PersistedEvent
+from test_platform.domain.execution_profiles import (
+    ExecutionProfile,
+    ExecutionProfileDomainError,
+    ExecutionProfileRevision,
+    clean_execution_profile_name,
+    execution_profile_utc_timestamp,
+    new_execution_profile_id,
+    new_execution_profile_revision_id,
+    normalize_execution_profile_name,
+)
 from test_platform.domain.ids import new_id
 from test_platform.domain.reports.comparison import build_comparison_report
 from test_platform.domain.reports.functional import build_functional_report
@@ -300,6 +310,181 @@ class TargetRepository:
         if revision is None:
             raise TargetNotFound(target_id)
         return revision
+
+
+class ExecutionProfileRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        draft_spec: dict[str, Any],
+    ) -> ExecutionProfile:
+        ProjectRepository(self.database).get(project_id)
+        cleaned_name = clean_execution_profile_name(name)
+        now = execution_profile_utc_timestamp()
+        profile_id = new_execution_profile_id()
+        self.database.connection.execute(
+            """
+            INSERT INTO execution_profiles (
+              id, project_id, name, name_key, draft_spec_json,
+              head_revision_id, archived_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                profile_id,
+                project_id,
+                cleaned_name,
+                normalize_execution_profile_name(cleaned_name),
+                canonical_json(draft_spec),
+                now,
+                now,
+            ),
+        )
+        self.database.connection.commit()
+        return self.get(profile_id)
+
+    def get(self, profile_id: str) -> ExecutionProfile:
+        row = self.database.connection.execute(
+            """
+            SELECT id, project_id, name, name_key, draft_spec_json,
+                   head_revision_id, archived_at, created_at, updated_at
+            FROM execution_profiles
+            WHERE id = ?
+            """,
+            (profile_id,),
+        ).fetchone()
+        if row is None:
+            raise ExecutionProfileDomainError(
+                "EXECUTION_PROFILE_NOT_FOUND",
+                "Execution Profile was not found.",
+                status_code=404,
+                details=[{"execution_profile_id": profile_id}],
+            )
+        return _map_execution_profile(row)
+
+    def list(self, *, project_id: str) -> list[ExecutionProfile]:
+        ProjectRepository(self.database).get(project_id)
+        rows = self.database.connection.execute(
+            """
+            SELECT id, project_id, name, name_key, draft_spec_json,
+                   head_revision_id, archived_at, created_at, updated_at
+            FROM execution_profiles
+            WHERE project_id = ? AND archived_at IS NULL
+            ORDER BY created_at ASC, id ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        return [_map_execution_profile(row) for row in rows]
+
+    def update_draft(
+        self,
+        *,
+        execution_profile_id: str,
+        name: str,
+        draft_spec: dict[str, Any],
+    ) -> ExecutionProfile:
+        self.get(execution_profile_id)
+        cleaned_name = clean_execution_profile_name(name)
+        self.database.connection.execute(
+            """
+            UPDATE execution_profiles
+            SET name = ?, name_key = ?, draft_spec_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                cleaned_name,
+                normalize_execution_profile_name(cleaned_name),
+                canonical_json(draft_spec),
+                execution_profile_utc_timestamp(),
+                execution_profile_id,
+            ),
+        )
+        self.database.connection.commit()
+        return self.get(execution_profile_id)
+
+    def publish(
+        self,
+        *,
+        execution_profile_id: str,
+        public_spec: dict[str, Any],
+        public_spec_hash: str,
+        credential_binding_digest: str,
+    ) -> ExecutionProfileRevision:
+        profile = self.get(execution_profile_id)
+        connection = self.database.connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT COALESCE(MAX(revision_no), 0) AS revision_no
+                FROM execution_profile_revisions
+                WHERE execution_profile_id = ?
+                """,
+                (execution_profile_id,),
+            ).fetchone()
+            revision_no = int(row["revision_no"]) + 1
+            revision_id = new_execution_profile_revision_id()
+            published_at = execution_profile_utc_timestamp()
+            connection.execute(
+                """
+                INSERT INTO execution_profile_revisions (
+                  id, execution_profile_id, revision_no, public_spec_json,
+                  public_spec_hash, credential_binding_digest, published_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    revision_id,
+                    profile.id,
+                    revision_no,
+                    canonical_json(public_spec),
+                    public_spec_hash,
+                    credential_binding_digest,
+                    published_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE execution_profiles
+                SET head_revision_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (revision_id, published_at, profile.id),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        revision, _profile = self.get_revision(revision_id)
+        return revision
+
+    def get_revision(
+        self,
+        revision_id: str,
+    ) -> tuple[ExecutionProfileRevision, ExecutionProfile]:
+        row = self.database.connection.execute(
+            """
+            SELECT id, execution_profile_id, revision_no, public_spec_json,
+                   public_spec_hash, credential_binding_digest, published_at
+            FROM execution_profile_revisions
+            WHERE id = ?
+            """,
+            (revision_id,),
+        ).fetchone()
+        if row is None:
+            raise ExecutionProfileDomainError(
+                "EXECUTION_PROFILE_REVISION_NOT_FOUND",
+                "Execution Profile Revision was not found.",
+                status_code=404,
+                details=[{"execution_profile_revision_id": revision_id}],
+            )
+        revision = _map_execution_profile_revision(row)
+        return revision, self.get(revision.execution_profile_id)
 
 
 class WorkflowRepository:
@@ -2971,6 +3156,42 @@ def _map_target(row: sqlite3.Row) -> Target:
         config=json.loads(row["config_json"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _map_execution_profile(row: sqlite3.Row) -> ExecutionProfile:
+    return ExecutionProfile(
+        id=str(row["id"]),
+        project_id=str(row["project_id"]),
+        name=str(row["name"]),
+        name_key=str(row["name_key"]),
+        draft_spec=json.loads(row["draft_spec_json"]),
+        head_revision_id=(
+            str(row["head_revision_id"])
+            if row["head_revision_id"] is not None
+            else None
+        ),
+        archived_at=(
+            str(row["archived_at"])
+            if row["archived_at"] is not None
+            else None
+        ),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _map_execution_profile_revision(
+    row: sqlite3.Row,
+) -> ExecutionProfileRevision:
+    return ExecutionProfileRevision(
+        id=str(row["id"]),
+        execution_profile_id=str(row["execution_profile_id"]),
+        revision_no=int(row["revision_no"]),
+        public_spec=json.loads(row["public_spec_json"]),
+        public_spec_hash=str(row["public_spec_hash"]),
+        credential_binding_digest=str(row["credential_binding_digest"]),
+        published_at=str(row["published_at"]),
     )
 
 

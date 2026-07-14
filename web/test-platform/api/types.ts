@@ -411,6 +411,54 @@ export type DiagnosticItem = {
   recommended_action?: string | null;
 };
 
+export type ExecutionProfileSpec = {
+  schema_version: 1;
+  agent: {
+    id: 'generic_v2';
+  };
+  model: {
+    protocol: 'openai_chat_completions';
+    base_url: string;
+    name: string;
+  };
+  image_input: {
+    format: 'data_url' | 'bare_base64';
+  };
+  generation: {
+    temperature: number;
+    top_p: number;
+    max_tokens: number;
+    stream: boolean;
+  };
+  inference: {
+    timeout_seconds: number;
+  };
+  credentials: {
+    required_slots: string[];
+  };
+};
+
+export type ExecutionProfileRevision = {
+  id: string;
+  execution_profile_id: string;
+  revision_no: number;
+  public_spec: ExecutionProfileSpec;
+  public_spec_hash: string;
+  credential_binding_digest: string;
+  published_at: string;
+};
+
+export type ExecutionProfile = {
+  id: string;
+  project_id: string;
+  name: string;
+  draft_spec: ExecutionProfileSpec;
+  head_revision: ExecutionProfileRevision | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RunDiagnostics = {
   schema_version: number;
   run_id: string;

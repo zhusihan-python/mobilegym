@@ -23,6 +23,7 @@ from test_platform.api.routes.tasks import router as tasks_router
 from test_platform.api.routes.targets import router as targets_router
 from test_platform.api.routes.workflows import router as workflows_router
 from test_platform.api.routes.events import router as events_router
+from test_platform.api.routes.execution_profiles import router as execution_profiles_router
 from test_platform.config import PlatformSettings
 from test_platform.execution.sse_broker import SSEBroker
 from test_platform.persistence.database import Database
@@ -120,4 +121,5 @@ def create_app(
     app.include_router(targets_router)
     app.include_router(workflows_router)
     app.include_router(events_router)
+    app.include_router(execution_profiles_router)
     return app

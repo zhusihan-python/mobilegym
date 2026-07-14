@@ -10,6 +10,9 @@ import type {
   CompatibilityResult,
   Comparison,
   EpisodeReplay,
+  ExecutionProfile,
+  ExecutionProfileRevision,
+  ExecutionProfileSpec,
   FollowupRunAttempt,
   FollowupRunPreview,
   Project,
@@ -223,6 +226,43 @@ export function getDiagnostics(
   const query = params.toString();
   return apiFetch<RunDiagnostics>(
     `/runs/${encodeURIComponent(runId)}/diagnostics${query ? `?${query}` : ''}`,
+  );
+}
+
+export function listExecutionProfiles(
+  projectId: string,
+): Promise<CollectionResponse<ExecutionProfile>> {
+  return apiFetch<CollectionResponse<ExecutionProfile>>(
+    `/projects/${encodeURIComponent(projectId)}/execution-profiles`,
+  );
+}
+
+export function createExecutionProfile(input: {
+  projectId: string;
+  name: string;
+  draftSpec: ExecutionProfileSpec;
+}): Promise<ExecutionProfile> {
+  return apiFetch<ExecutionProfile>(
+    `/projects/${encodeURIComponent(input.projectId)}/execution-profiles`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name,
+        draft_spec: input.draftSpec,
+      }),
+    },
+  );
+}
+
+export function publishExecutionProfile(input: {
+  projectId: string;
+  executionProfileId: string;
+}): Promise<ExecutionProfileRevision> {
+  return apiFetch<ExecutionProfileRevision>(
+    `/projects/${encodeURIComponent(input.projectId)}/execution-profiles/${encodeURIComponent(
+      input.executionProfileId,
+    )}/publish`,
+    { method: 'POST' },
   );
 }
 

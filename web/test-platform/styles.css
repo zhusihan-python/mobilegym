@@ -89,6 +89,14 @@ select {
   padding: 8px 10px;
 }
 
+.tp-modal select {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #17202a;
+  padding: 8px 10px;
+}
+
 .tp-project-switcher button,
 .tp-empty button {
   background: #ffffff;
@@ -1261,6 +1269,34 @@ select {
 .tp-target-metadata {
   border-top: 1px solid #e1e7ee;
   padding-top: 12px;
+}
+
+.tp-profile-revision {
+  border-top: 1px solid #e1e7ee;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 12px;
+}
+
+.tp-profile-revision div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tp-profile-modal {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  width: min(520px, calc(100vw - 32px));
+}
+
+.tp-checkbox-field {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
 }
 
 .tp-target-metadata div {

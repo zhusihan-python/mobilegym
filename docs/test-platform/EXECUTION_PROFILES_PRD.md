@@ -4,14 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted for delivery planning on 2026-07-13 |
+| Status | Accepted; delivery complete through TP-EP01 on 2026-07-15 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 complete; later delivery slices require separate authorization |
+| Implementation authorization | TP-EP00 and TP-EP01 complete; TP-EP02 and later slices require separate authorization |
+| Current evidence | [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md) |
 
 ## 1. Summary
 

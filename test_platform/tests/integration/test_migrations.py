@@ -43,6 +43,8 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         "runs",
         "targets",
         "target_revisions",
+        "execution_profiles",
+        "execution_profile_revisions",
         "workflows",
         "workflow_versions",
         "run_attempts",
@@ -79,6 +81,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (13, "0013_run_attempt_compatibility.sql"),
         (14, "0014_named_baselines.sql"),
         (15, "0015_diagnostic_identity.sql"),
+        (16, "0016_execution_profiles.sql"),
     ]
 
 
@@ -307,6 +310,7 @@ def test_database_initialization_is_idempotent(tmp_path):
         (13, "0013_run_attempt_compatibility.sql"),
         (14, "0014_named_baselines.sql"),
         (15, "0015_diagnostic_identity.sql"),
+        (16, "0016_execution_profiles.sql"),
     ]
 
 
