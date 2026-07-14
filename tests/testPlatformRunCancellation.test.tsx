@@ -3,6 +3,7 @@ import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 const project = {
   id: 'project-1',
@@ -52,6 +53,7 @@ const runningRun = {
   episode_identities: [],
   episode_attempts: [],
   run_plan: {},
+  execution_identity: legacyExecutionIdentity,
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

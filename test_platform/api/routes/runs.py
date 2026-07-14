@@ -120,10 +120,11 @@ def list_runs(request: Request, project_id: str | None = None) -> dict[str, obje
             ],
         )
 
-    return {
-        "items": [asdict(run) for run in RunRepository(database).list(project_id=project_id)],
-        "next_cursor": None,
-    }
+    try:
+        runs = RunRepository(database).list(project_id=project_id)
+    except RunDomainError as exc:
+        raise _run_error(exc) from exc
+    return {"items": [asdict(run) for run in runs], "next_cursor": None}
 
 
 @router.get("/runs/{run_id}")

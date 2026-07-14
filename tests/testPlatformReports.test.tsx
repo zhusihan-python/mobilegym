@@ -10,6 +10,7 @@ import type {
   RunDetail,
   RunReport,
 } from '../web/test-platform/api/types';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 const originalCreateObjectUrl = URL.createObjectURL;
 const originalRevokeObjectUrl = URL.revokeObjectURL;
@@ -46,6 +47,7 @@ const run: RunDetail = {
   started_at: '2026-07-06T00:00:01.000Z',
   ended_at: '2026-07-06T00:00:10.000Z',
   run_plan: {},
+  execution_identity: legacyExecutionIdentity,
   run_attempts: [{
     id: 'attempt-1',
     attempt_no: 1,

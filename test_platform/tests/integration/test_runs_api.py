@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from test_platform.api.app import create_app
@@ -271,6 +273,98 @@ def test_runs_api_creates_idempotently_lists_and_returns_frozen_detail(tmp_path)
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_base_url"] == "http://127.0.0.1:1234/v1"
         assert body["run_plan"]["lanes"][0]["runner_config"]["model_name"] == "dogfood-model"
         assert body["run_plan"]["lanes"][0]["runner_config"]["image_url_format"] == "data_url"
+
+
+def test_run_detail_identifies_v1_run_as_legacy_execution(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=FakeRunSupervisor(),
+        compatibility_probe=FakeCompatibilityProbe(),
+    )
+
+    with TestClient(app) as client:
+        _project, _revision, version = _published_version(client)
+        created = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version["id"],
+                "name": "Legacy execution identity",
+                "overrides": {
+                    "seed": 321,
+                    "execution": _execution_overrides(),
+                },
+            },
+            headers={"Idempotency-Key": "legacy-execution-identity"},
+        )
+        assert created.status_code == 201
+
+        detail = client.get(f"/api/platform/v1/runs/{created.json()['id']}")
+
+        assert detail.status_code == 200
+        assert detail.json()["execution_identity"] == {
+            "kind": "legacy",
+            "label": "Legacy Execution Identity",
+            "schema_version": 1,
+        }
+
+
+def test_run_detail_rejects_unknown_run_plan_schema_without_rewriting_it(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=FakeRunSupervisor(),
+        compatibility_probe=FakeCompatibilityProbe(),
+    )
+
+    with TestClient(app) as client:
+        _project, _revision, version = _published_version(client)
+        created = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version["id"],
+                "name": "Future run plan",
+                "overrides": {
+                    "seed": 321,
+                    "execution": _execution_overrides(),
+                },
+            },
+            headers={"Idempotency-Key": "future-run-plan"},
+        )
+        assert created.status_code == 201
+        run_id = created.json()["id"]
+        stored = client.app.state.database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()["run_plan_json"]
+        future_plan = json.loads(stored)
+        future_plan["schema_version"] = 99
+        future_plan_json = json.dumps(future_plan, sort_keys=True, separators=(",", ":"))
+        client.app.state.database.connection.execute(
+            "UPDATE runs SET run_plan_json = ? WHERE id = ?",
+            (future_plan_json, run_id),
+        )
+        client.app.state.database.connection.commit()
+
+        detail = client.get(f"/api/platform/v1/runs/{run_id}")
+
+        assert detail.status_code == 409
+        assert detail.json()["error"] == {
+            "code": "RUN_PLAN_SCHEMA_UNSUPPORTED",
+            "message": "Run Plan schema version is not supported.",
+            "details": [
+                {
+                    "schema_version": 99,
+                    "supported_schema_versions": [1],
+                }
+            ],
+            "request_id": detail.json()["error"]["request_id"],
+        }
+        persisted = client.app.state.database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()["run_plan_json"]
+        assert persisted == future_plan_json
 
 
 def test_runs_api_exposes_manual_sequence_episode_metadata(tmp_path):

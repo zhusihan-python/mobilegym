@@ -7,6 +7,7 @@ from test_platform.api.dependencies import get_database
 from test_platform.api.errors import ApiError
 from test_platform.domain.projects import ProjectNotFound
 from test_platform.domain.task_catalog import build_task_catalog_snapshot
+from test_platform.domain.versioned_documents import read_workflow_definition
 from test_platform.domain.workflows import (
     Workflow,
     WorkflowCompiler,
@@ -222,13 +223,15 @@ def _workflow_definition(workflow: Workflow) -> WorkflowDefinition:
             status_code=400,
             details=[{"workflow_id": workflow.id}],
         )
-    return WorkflowDefinition.model_validate(workflow.draft_definition)
+    return _read_workflow_definition(workflow.draft_definition)
 
 
 def _workflow_response(
     workflow: Workflow,
     latest_version: WorkflowVersion | None,
 ) -> dict[str, object]:
+    if workflow.draft_definition is not None:
+        _read_workflow_definition(workflow.draft_definition)
     return {
         "id": workflow.id,
         "project_id": workflow.project_id,
@@ -241,6 +244,7 @@ def _workflow_response(
 
 
 def _workflow_version_response(version: WorkflowVersion) -> dict[str, object]:
+    _read_workflow_definition(version.definition)
     return {
         "id": version.id,
         "workflow_id": version.workflow_id,
@@ -251,6 +255,13 @@ def _workflow_version_response(version: WorkflowVersion) -> dict[str, object]:
         "created_at": version.created_at,
         "published_at": version.published_at,
     }
+
+
+def _read_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
+    try:
+        return read_workflow_definition(payload)
+    except WorkflowDomainError as exc:
+        raise _workflow_error(exc) from exc
 
 
 def _project_not_found_error(project_id: str) -> ApiError:

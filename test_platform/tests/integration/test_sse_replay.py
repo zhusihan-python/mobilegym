@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +28,26 @@ def _settings(tmp_path) -> PlatformSettings:
 
 def _seed_run(database: Database, run_id: str = "r1") -> str:
     c = database.connection
+    run_plan = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "workflow_version_id": "wv1",
+        "task_source": {
+            "repository_revision": "test-revision",
+            "registry_digest": "test-digest",
+            "selection": {},
+        },
+        "lanes": [],
+        "episodes": [],
+        "materialization": {},
+        "comparison": {},
+        "gates": {},
+        "agent": {},
+        "judge": {},
+        "artifacts": {},
+        "created_at": "2026-07-04T00:00:00.000Z",
+        "fingerprint": "h",
+    }
     c.execute(
         "INSERT INTO projects (id, name, slug, name_key, archived_at, created_at, updated_at) "
         "VALUES ('p1','P','p','p',NULL,'2026-07-04T00:00:00.000Z','2026-07-04T00:00:00.000Z')"
@@ -44,8 +65,9 @@ def _seed_run(database: Database, run_id: str = "r1") -> str:
         "INSERT INTO runs "
         "(id, project_id, workflow_version_id, name, state, run_plan_json, run_plan_hash, "
         " artifact_root, next_event_sequence, cancel_requested_at, created_at, updated_at) "
-        f"VALUES ('{run_id}','p1','wv1',NULL,'running','{{}}','h','runs/{run_id}', "
-        " 1, NULL, '2026-07-04T00:00:00.000Z', '2026-07-04T00:00:00.000Z')"
+        "VALUES (?, 'p1', 'wv1', NULL, 'running', ?, 'h', ?, "
+        "1, NULL, '2026-07-04T00:00:00.000Z', '2026-07-04T00:00:00.000Z')",
+        (run_id, json.dumps(run_plan, sort_keys=True), f"runs/{run_id}"),
     )
     c.commit()
     return run_id

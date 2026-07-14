@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | Approved on 2026-07-13; ready for implementation sequencing |
+| Status | TP-EP00 complete on 2026-07-13; TP-EP01 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | Awaiting an explicit request to start TP-EP00 |
+| Implementation authorization | TP-EP00 authorized and complete; TP-EP01 requires a separate start request |
 
 ## 1. Delivery rules
 
@@ -147,19 +147,25 @@ This task is the permitted prefactor: it replaces implicit shape assumptions
 with a deeper versioned-reader seam and proves parity through observable
 existing-run behavior in the same task.
 
+Current evidence:
+[`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
+Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
+unknown-version conflicts, and legacy follow-up/report/baseline compatibility
+are complete. TP-EP01 has not started.
+
 ### Acceptance criteria
 
-- [ ] Run Plan v1 and existing Workflow Version responses are read without data
+- [x] Run Plan v1 and existing Workflow Version responses are read without data
       rewrite or identity change.
-- [ ] Run detail and Observatory views display Legacy Execution Identity instead
+- [x] Run detail and Observatory views display Legacy Execution Identity instead
       of a missing, inferred, or synthetic Execution Profile Revision.
-- [ ] Existing Retry and Resume continue to use frozen inline runner config and
+- [x] Existing Retry and Resume continue to use frozen inline runner config and
       accept only the currently permitted secret reinjection.
-- [ ] Existing report v1/v2 and Strict Baseline views remain readable and
+- [x] Existing report v1/v2 and Strict Baseline views remain readable and
       exportable.
-- [ ] Version dispatch rejects an unknown future schema with a stable structured
+- [x] Version dispatch rejects an unknown future schema with a stable structured
       error instead of partial interpretation.
-- [ ] No Execution Profile table or fake revision is required to demonstrate the
+- [x] No Execution Profile table or fake revision is required to demonstrate the
       complete behavior.
 
 ### Test seam

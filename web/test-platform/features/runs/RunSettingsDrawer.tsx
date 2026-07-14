@@ -23,6 +23,10 @@ export function RunSettingsDrawer({
           <dd>{run.state}</dd>
         </div>
         <div>
+          <dt>Execution identity</dt>
+          <dd>{run.execution_identity.label}</dd>
+        </div>
+        <div>
           <dt>Fingerprint</dt>
           <dd className="tp-mono">{run.fingerprint}</dd>
         </div>

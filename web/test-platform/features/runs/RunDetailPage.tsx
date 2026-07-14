@@ -451,6 +451,10 @@ export function RunDetailPage() {
             <dd>{run.state}</dd>
           </div>
           <div>
+            <dt>Execution identity</dt>
+            <dd>{run.execution_identity.label}</dd>
+          </div>
+          <div>
             <dt>Verdict</dt>
             <dd>{run.gate_verdict ?? 'pending'}</dd>
           </div>

@@ -11,7 +11,7 @@
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | Awaiting an explicit request to start TP-EP00 |
+| Implementation authorization | TP-EP00 complete; later delivery slices require separate authorization |
 
 ## 1. Summary
 

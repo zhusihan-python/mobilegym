@@ -10,6 +10,7 @@ import type {
   RunDiagnostics,
   RunReport,
 } from '../web/test-platform/api/types';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 const project: Project = {
   id: 'project-1',
@@ -42,6 +43,7 @@ const run: RunDetail = {
   started_at: '2026-07-06T00:00:01.000Z',
   ended_at: '2026-07-06T00:00:10.000Z',
   run_plan: {},
+  execution_identity: legacyExecutionIdentity,
   target_revisions: [],
   episode_identities: [{
     episode_key: 'fake.Task::0',

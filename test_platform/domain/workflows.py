@@ -106,7 +106,7 @@ class WorkflowNode(BaseModel):
 
 
 class WorkflowDefinition(BaseModel):
-    schema_version: int = 1
+    schema_version: Literal[1] = 1
     name: str = Field(min_length=1)
     nodes: list[WorkflowNode] = Field(default_factory=list)
 

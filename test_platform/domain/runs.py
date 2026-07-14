@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 class RunDomainError(Exception):
@@ -41,6 +41,13 @@ class RunIdempotencyConflict(RunDomainError):
 
 
 @dataclass(frozen=True)
+class LegacyExecutionIdentity:
+    kind: Literal["legacy"] = "legacy"
+    label: str = "Legacy Execution Identity"
+    schema_version: Literal[1] = 1
+
+
+@dataclass(frozen=True)
 class RunSummary:
     id: str
     project_id: str
@@ -61,6 +68,7 @@ class RunSummary:
 @dataclass(frozen=True)
 class RunDetail(RunSummary):
     run_plan: dict[str, Any]
+    execution_identity: LegacyExecutionIdentity
     run_attempts: list[dict[str, Any]]
     lane_attempts: list[dict[str, Any]]
     target_revisions: list[dict[str, str]]

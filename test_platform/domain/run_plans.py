@@ -13,7 +13,7 @@ from test_platform.domain.workflows import WorkflowDefinition
 
 
 class TaskSourceRevision(BaseModel):
-    repository_revision: str
+    repository_revision: str | None
     registry_digest: str
     selection: dict[str, Any] = Field(default_factory=dict)
 

@@ -77,6 +77,11 @@ export type RunSummary = {
 
 export type RunDetail = RunSummary & {
   run_plan: Record<string, unknown>;
+  execution_identity: {
+    kind: 'legacy';
+    label: string;
+    schema_version: 1;
+  };
   run_attempts?: Array<{
     id: string;
     attempt_no: number;

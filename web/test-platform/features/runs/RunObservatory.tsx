@@ -246,6 +246,12 @@ export function RunObservatory({
         <div>
           <span className="tp-kicker">Run Observatory</span>
           <h2>Simulator replay</h2>
+          <span
+            className="tp-run-state"
+            data-testid="tp-observatory-execution-identity"
+          >
+            {run.execution_identity.label}
+          </span>
         </div>
         <div className="tp-observatory-actions">
           <EpisodePicker

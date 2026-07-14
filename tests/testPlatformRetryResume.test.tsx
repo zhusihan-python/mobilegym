@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
 import type { RunDetail } from '../web/test-platform/api/types';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 const project = {
   id: 'project-1',
@@ -130,6 +131,7 @@ const run: RunDetail = {
     },
   ],
   run_plan: {},
+  execution_identity: legacyExecutionIdentity,
   gate_verdict: null,
   created_at: '2026-07-06T00:00:00.000Z',
   started_at: '2026-07-06T00:00:01.000Z',

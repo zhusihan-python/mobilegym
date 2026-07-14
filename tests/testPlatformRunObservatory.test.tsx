@@ -4,8 +4,10 @@ import { BrowserRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
+import type { RunDetail } from '../web/test-platform/api/types';
 import { EpisodePicker } from '../web/test-platform/features/runs/EpisodePicker';
 import { RunObservatory } from '../web/test-platform/features/runs/RunObservatory';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 import {
   buildReplayOptions,
   chooseDefaultReplayOption,
@@ -101,11 +103,12 @@ const run = {
   lane_attempts: [],
   run_attempts: [],
   run_plan: {},
+  execution_identity: legacyExecutionIdentity,
   gate_verdict: null,
   created_at: '2026-07-03T00:00:03.000Z',
   started_at: '2026-07-03T00:00:04.000Z',
   ended_at: null,
-};
+} satisfies RunDetail;
 
 const liveRun = {
   ...run,
@@ -291,6 +294,13 @@ describe('Run Observatory', () => {
     cleanup();
     vi.unstubAllGlobals();
     window.localStorage.clear();
+  });
+
+  it('shows the frozen legacy execution identity in the observatory header', () => {
+    renderRunObservatory(run);
+
+    expect(screen.getByTestId('tp-observatory-execution-identity').textContent)
+      .toBe('Legacy Execution Identity');
   });
 
   it('selects the failed episode by default and renders the replay screenshot', async () => {

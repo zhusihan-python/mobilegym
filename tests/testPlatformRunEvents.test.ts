@@ -7,6 +7,7 @@ import {
   type RunLiveState,
   type ShardHealth,
 } from '../web/test-platform/features/runs/runEvents';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 function baseSnapshot(state = 'running'): RunDetail {
   return {
@@ -24,6 +25,7 @@ function baseSnapshot(state = 'running'): RunDetail {
     started_at: null,
     ended_at: null,
     run_plan: {},
+    execution_identity: legacyExecutionIdentity,
     target_revisions: [],
     episode_identities: [],
     episode_attempts: [],

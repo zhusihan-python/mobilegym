@@ -96,9 +96,29 @@ def test_imported_run_api_preserves_source_and_blocks_strict_baseline(tmp_path):
         detail_response = client.get(f"/api/platform/v1/runs/{imported['id']}")
         assert detail_response.status_code == 200
         detail = detail_response.json()
+        assert detail["execution_identity"] == {
+            "kind": "legacy",
+            "label": "Legacy Execution Identity",
+            "schema_version": 1,
+        }
         assert detail["run_plan"]["imported"]["source_name"] == "20260706_legacy"
         assert detail["lane_attempts"][0]["artifact_root"] == "."
         assert detail["episode_attempts"][0]["outcome"] == "PASS"
+
+        version = client.get(
+            f"/api/platform/v1/workflow-versions/{detail['workflow_version_id']}"
+        )
+        workflows = client.get(
+            f"/api/platform/v1/projects/{project['id']}/workflows"
+        )
+        assert version.status_code == 200
+        assert version.json()["definition"]["imported"]["source_name"] == (
+            "20260706_legacy"
+        )
+        assert workflows.status_code == 200
+        assert workflows.json()["items"][0]["latest_version"]["id"] == (
+            detail["workflow_version_id"]
+        )
 
         artifacts = client.get(f"/api/platform/v1/runs/{imported['id']}/artifacts")
         assert artifacts.status_code == 200

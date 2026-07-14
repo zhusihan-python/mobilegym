@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from test_platform.api.app import create_app
@@ -217,6 +219,122 @@ def test_workflow_api_validates_previews_publishes_and_freezes_versions(tmp_path
         frozen = client.get(f"/api/platform/v1/workflow-versions/{version['id']}")
         assert frozen.status_code == 200
         assert frozen.json()["definition"]["nodes"][1]["config"]["repeat_n"] == 2
+
+
+def test_create_run_rejects_unknown_workflow_schema_without_side_effects(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        project = _project(client)
+        target = _target(client, project["id"])
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={
+                "name": "Future workflow",
+                "definition": _definition(target["id"]),
+            },
+        ).json()
+        published = client.post(f"/api/platform/v1/workflows/{workflow['id']}/publish")
+        assert published.status_code == 200
+        version_id = published.json()["version"]["id"]
+        future_definition = published.json()["version"]["definition"]
+        future_definition["schema_version"] = 99
+        future_definition_json = json.dumps(
+            future_definition,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        client.app.state.database.connection.execute(
+            "UPDATE workflow_versions SET definition_json = ? WHERE id = ?",
+            (future_definition_json, version_id),
+        )
+        client.app.state.database.connection.commit()
+
+        created = client.post(
+            "/api/platform/v1/runs",
+            json={
+                "workflow_version_id": version_id,
+                "name": "Unsupported workflow schema",
+                "overrides": {
+                    "seed": 321,
+                    "execution": {
+                        "agent": "generic_v2",
+                        "model_base_url": "http://127.0.0.1:1234/v1",
+                        "model_name": "dogfood-model",
+                        "image_url_format": "data_url",
+                    },
+                },
+            },
+            headers={"Idempotency-Key": "future-workflow-schema"},
+        )
+
+        assert created.status_code == 409
+        assert created.json()["error"] == {
+            "code": "WORKFLOW_SCHEMA_UNSUPPORTED",
+            "message": "Workflow schema version is not supported.",
+            "details": [
+                {
+                    "schema_version": 99,
+                    "supported_schema_versions": [1],
+                }
+            ],
+            "request_id": created.json()["error"]["request_id"],
+        }
+        assert client.app.state.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM runs"
+        ).fetchone()["count"] == 0
+        persisted = client.app.state.database.connection.execute(
+            "SELECT definition_json FROM workflow_versions WHERE id = ?",
+            (version_id,),
+        ).fetchone()["definition_json"]
+        assert persisted == future_definition_json
+
+        version_response = client.get(
+            f"/api/platform/v1/workflow-versions/{version_id}"
+        )
+        assert version_response.status_code == 409
+        assert version_response.json()["error"]["code"] == (
+            "WORKFLOW_SCHEMA_UNSUPPORTED"
+        )
+
+
+def test_list_workflows_rejects_unknown_draft_schema_without_rewriting_it(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        project = _project(client)
+        target = _target(client, project["id"])
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={
+                "name": "Future draft",
+                "definition": _definition(target["id"]),
+            },
+        ).json()
+        future_definition = workflow["draft_definition"]
+        future_definition["schema_version"] = 99
+        future_definition_json = json.dumps(
+            future_definition,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        client.app.state.database.connection.execute(
+            "UPDATE workflows SET draft_definition_json = ? WHERE id = ?",
+            (future_definition_json, workflow["id"]),
+        )
+        client.app.state.database.connection.commit()
+
+        listed = client.get(
+            f"/api/platform/v1/projects/{project['id']}/workflows"
+        )
+
+        assert listed.status_code == 409
+        assert listed.json()["error"]["code"] == "WORKFLOW_SCHEMA_UNSUPPORTED"
+        persisted = client.app.state.database.connection.execute(
+            "SELECT draft_definition_json FROM workflows WHERE id = ?",
+            (workflow["id"],),
+        ).fetchone()["draft_definition_json"]
+        assert persisted == future_definition_json
 
 
 def test_publish_rejects_disabled_targets_with_structured_errors(tmp_path):

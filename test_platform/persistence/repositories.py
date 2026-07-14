@@ -39,6 +39,10 @@ from test_platform.domain.reports.performance import build_performance_report
 from test_platform.domain.reports.reliability import build_reliability_report
 from test_platform.domain.reports.sequence import build_sequence_report
 from test_platform.domain.runs import RunDetail, RunDomainError, RunNotFound, RunSummary
+from test_platform.domain.versioned_documents import (
+    execution_identity_for_run_plan,
+    read_run_plan,
+)
 from test_platform.domain.targets import (
     DuplicateTargetName,
     Target,
@@ -480,6 +484,8 @@ class RunRepository:
         if row is None:
             raise RunNotFound(run_id)
 
+        run_plan_payload = json.loads(row["run_plan_json"])
+        run_plan = read_run_plan(run_plan_payload)
         summary = self._summary(row)
         lane_rows = self.database.connection.execute(
             """
@@ -556,7 +562,8 @@ class RunRepository:
             **{
                 **summary.__dict__,
                 "lanes": lanes,
-                "run_plan": json.loads(row["run_plan_json"]),
+                "run_plan": run_plan_payload,
+                "execution_identity": execution_identity_for_run_plan(run_plan),
                 "target_revisions": [
                     {
                         "target_id": lane["target_id"],
@@ -628,6 +635,8 @@ class RunRepository:
         ]
 
     def _summary(self, row: sqlite3.Row) -> RunSummary:
+        run_plan_payload = _json_or_empty_object(row["run_plan_json"])
+        read_run_plan(run_plan_payload)
         counts = self.database.connection.execute(
             """
             SELECT
@@ -688,7 +697,7 @@ class RunRepository:
             created_at=row["created_at"],
             started_at=row["started_at"],
             ended_at=row["ended_at"],
-            imported=_imported_metadata(_json_or_empty_object(row["run_plan_json"])),
+            imported=_imported_metadata(run_plan_payload),
         )
 
 
@@ -748,7 +757,8 @@ class ReportInputRepository:
             raise RunNotFound(run_id)
 
         run_attempt_id = str(run_attempt["id"])
-        run_plan = _json_or_empty_object(run["run_plan_json"])
+        run_plan_payload = _json_or_empty_object(run["run_plan_json"])
+        run_plan = read_run_plan(run_plan_payload)
         lanes = self._lanes_for_attempt(run_id, run_attempt_id)
         episodes = self._episodes(run_id)
         episode_attempts = self._episode_attempts(run_id, run_attempt_id)
@@ -768,12 +778,14 @@ class ReportInputRepository:
             "run_attempt_id": run_attempt_id,
             "workflow_version_id": str(run["workflow_version_id"]),
             "run_plan_hash": str(run["run_plan_hash"]),
-            "task_source_digest": _task_source_digest(run_plan),
+            "task_source_digest": _task_source_digest(
+                run_plan.model_dump(mode="json")
+            ),
             "target_revision_ids": {
                 lane["lane_key"]: lane["target_revision_id"] for lane in lanes
             },
         }
-        imported = _imported_metadata(run_plan)
+        imported = _imported_metadata(run_plan_payload)
         if imported is not None:
             provenance["imported"] = imported
 
@@ -2786,9 +2798,8 @@ def _frozen_gate_thresholds(database: Database, run_id: str) -> dict[str, Any]:
     ).fetchone()
     if row is None:
         raise RunNotFound(run_id)
-    run_plan = _json_or_empty_object(row["run_plan_json"])
-    gates = run_plan.get("gates")
-    return gates if isinstance(gates, dict) else {}
+    run_plan = read_run_plan(_json_or_empty_object(row["run_plan_json"]))
+    return run_plan.gates
 
 
 def _default_baseline_lane_key(target_revision_ids: dict[str, Any]) -> str:

@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 const project = {
   id: 'project-1',
@@ -90,6 +91,7 @@ const run = {
     },
   ],
   run_plan: {},
+  execution_identity: legacyExecutionIdentity,
   gate_verdict: 'failed',
   created_at: '2026-07-03T00:00:03.000Z',
   started_at: '2026-07-03T00:00:04.000Z',

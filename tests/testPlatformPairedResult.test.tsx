@@ -7,6 +7,7 @@ import {
   type ShardHealth,
 } from '../web/test-platform/features/runs/runEvents';
 import { getComparison } from '../web/test-platform/api/client';
+import { legacyExecutionIdentity } from './testPlatformFixtures';
 
 function pairedSnapshot(state = 'running'): RunDetail {
   return {
@@ -32,6 +33,7 @@ function pairedSnapshot(state = 'running'): RunDetail {
     started_at: null,
     ended_at: null,
     run_plan: {},
+    execution_identity: legacyExecutionIdentity,
     target_revisions: [],
     episode_identities: [],
     episode_attempts: [],

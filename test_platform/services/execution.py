@@ -30,6 +30,7 @@ from test_platform.domain.pair_classification import (
 from test_platform.domain.run_plans import EpisodeTemplate, PlannedLane, RunPlan
 from test_platform.domain.runs import RunDetail, RunDomainError
 from test_platform.domain.state_projection import projection_hash_v1
+from test_platform.domain.versioned_documents import read_run_plan
 from test_platform.persistence.database import Database
 from test_platform.persistence.repositories import RunRepository
 
@@ -193,7 +194,7 @@ class SingleLaneMaterializer:
         ).fetchone()
         if row is None:
             raise RunDomainError("RUN_NOT_FOUND", "Run was not found.", status_code=404)
-        return RunPlan.model_validate(json.loads(row["run_plan_json"]))
+        return read_run_plan(json.loads(row["run_plan_json"]))
 
     def _source_lane(self, plan: RunPlan) -> PlannedLane:
         if len(plan.lanes) != 1:
@@ -1066,7 +1067,7 @@ class _RunExecutorBase:
         ).fetchone()
         if row is None:
             raise RunDomainError("RUN_NOT_FOUND", "Run was not found.", status_code=404)
-        return RunPlan.model_validate(json.loads(row["run_plan_json"]))
+        return read_run_plan(json.loads(row["run_plan_json"]))
 
     def _lane_attempt(self, run_id: str) -> dict[str, str]:
         run_attempt_id = _current_run_attempt_id(self.database, run_id)

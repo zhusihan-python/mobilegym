@@ -24,6 +24,7 @@ from test_platform.domain.retry_resume import (
     select_retry_lane_episodes,
 )
 from test_platform.domain.task_catalog import TaskCatalogSnapshot, build_task_catalog_snapshot
+from test_platform.domain.versioned_documents import read_run_plan, read_workflow_definition
 from test_platform.domain.workflows import WorkflowDefinition, WorkflowDomainError
 from test_platform.execution.event_writer import EventWriter
 from test_platform.execution.sse_broker import SSEBroker
@@ -526,11 +527,11 @@ class RunSupervisor:
         if row is None:
             return "serial"
         try:
-            plan = json.loads(row["run_plan_json"])
-            comparison = plan.get("comparison") or {}
+            plan = read_run_plan(json.loads(row["run_plan_json"]))
+            comparison = plan.comparison
             execution = comparison.get("execution")
             return str(execution) if execution in ("serial", "parallel") else "serial"
-        except (ValueError, TypeError):
+        except (json.JSONDecodeError, TypeError):
             return "serial"
 
     def _plan_lane_count(self, run_id: str) -> int:
@@ -759,6 +760,7 @@ class RunService:
         try:
             version = workflow_repository.get_version(workflow_version_id)
             workflow = workflow_repository.get(version.workflow_id)
+            definition = read_workflow_definition(version.definition)
         except WorkflowDomainError as exc:
             raise RunDomainError(
                 exc.code,
@@ -767,7 +769,6 @@ class RunService:
                 details=exc.details,
             ) from exc
 
-        definition = WorkflowDefinition.model_validate(version.definition)
         if execution_overrides:
             definition = _definition_with_execution_overrides(
                 definition,
@@ -1533,13 +1534,11 @@ class RunService:
                 status_code=404,
                 details=[{"run_id": run_id}],
             )
-        run_plan = json.loads(row["run_plan_json"])
-        task_source = run_plan.get("task_source")
-        if not isinstance(task_source, dict):
-            return
+        run_plan = read_run_plan(json.loads(row["run_plan_json"]))
+        task_source = run_plan.task_source
         current_catalog = self.catalog_builder()
-        expected_repository_revision = task_source.get("repository_revision")
-        expected_registry_digest = task_source.get("registry_digest")
+        expected_repository_revision = task_source.repository_revision
+        expected_registry_digest = task_source.registry_digest
         if (
             current_catalog.repository_revision != expected_repository_revision
             or current_catalog.digest != expected_registry_digest

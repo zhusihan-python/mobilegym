@@ -132,6 +132,44 @@ def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
         ] == ["SELECTED_LANE_INCOMPLETE", "SELECTED_LANE_OUTCOME_NOT_PASS"]
 
 
+def test_report_rejects_unknown_run_plan_schema_without_persisting_report(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        database = client.app.state.database
+        run_id = _make_completed_reportable_run(client)
+        stored = database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()["run_plan_json"]
+        future_plan = json.loads(stored)
+        future_plan["schema_version"] = 99
+        future_plan_json = json.dumps(
+            future_plan,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        database.connection.execute(
+            "UPDATE runs SET run_plan_json = ? WHERE id = ?",
+            (future_plan_json, run_id),
+        )
+        database.connection.commit()
+
+        response = client.get(f"/api/platform/v1/runs/{run_id}/report")
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "RUN_PLAN_SCHEMA_UNSUPPORTED"
+        assert database.connection.execute(
+            "SELECT COUNT(*) AS count FROM reports WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()["count"] == 0
+        persisted = database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()["run_plan_json"]
+        assert persisted == future_plan_json
+
+
 def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
     app = create_app(_settings(tmp_path))
 
