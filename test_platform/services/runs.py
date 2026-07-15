@@ -86,6 +86,11 @@ class _RuntimeRunSecretStore:
 _RUN_SECRET_STORE = _RuntimeRunSecretStore()
 
 
+def register_run_execution_secrets(run_id: str, secrets: dict[str, str]) -> None:
+    """Register transient execution secrets after durable launch commit."""
+    _RUN_SECRET_STORE.register(run_id, secrets)
+
+
 class FakeRunSupervisor:
     def __init__(self) -> None:
         self._queued_run_ids: list[str] = []

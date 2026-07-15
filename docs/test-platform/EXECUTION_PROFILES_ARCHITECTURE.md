@@ -10,7 +10,7 @@
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Deployment model | Existing single-host modular monolith |
-| Implementation status | TP-EP00 through TP-EP02 implemented; TP-EP03 not started |
+| Implementation status | TP-EP00 through TP-EP03 implemented; TP-EP04 not started |
 
 ## 1. Purpose
 

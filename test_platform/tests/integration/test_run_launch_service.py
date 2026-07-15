@@ -25,7 +25,9 @@ from test_platform.persistence.repositories import (
 )
 from test_platform.services.execution import SerialRunExecutor
 from test_platform.services.execution_profiles import ExecutionProfiles
+from test_platform.services.compatibility_preflight import CompatibilityPreflight
 from test_platform.services.run_launch import RunLaunch
+from test_platform.testing.fake_compat import FakeCompatibilityProbe
 from test_platform.testing.deterministic import (
     DeterministicAgent,
     DeterministicEnvironment,
@@ -282,6 +284,9 @@ def test_run_launch_create_persists_run_plan_v2_before_dispatch(tmp_path):
             settings=fixture.settings,
             supervisor=supervisor,
             catalog_builder=_catalog,
+            compatibility_preflight=CompatibilityPreflight(
+                FakeCompatibilityProbe()
+            ),
         )
         preview = launch.preview(_preview_command(fixture))
 
@@ -337,6 +342,9 @@ def test_stale_preview_token_has_no_run_dispatch_or_idempotency_side_effect(
             settings=fixture.settings,
             supervisor=supervisor,
             catalog_builder=_catalog,
+            compatibility_preflight=CompatibilityPreflight(
+                FakeCompatibilityProbe()
+            ),
         )
         command = _preview_command(fixture)
         preview = launch.preview(command)
@@ -390,6 +398,9 @@ def test_run_launch_artifact_write_failure_has_no_durable_or_file_side_effect(
             settings=fixture.settings,
             supervisor=supervisor,
             catalog_builder=_catalog,
+            compatibility_preflight=CompatibilityPreflight(
+                FakeCompatibilityProbe()
+            ),
         )
         preview = launch.preview(_preview_command(fixture))
 
@@ -432,6 +443,9 @@ async def test_profile_aware_run_plan_executes_through_the_single_lane_adapter(
             settings=fixture.settings,
             supervisor=supervisor,
             catalog_builder=_catalog,
+            compatibility_preflight=CompatibilityPreflight(
+                FakeCompatibilityProbe()
+            ),
         )
         preview = launch.preview(_preview_command(fixture))
         run = launch.create(

@@ -110,7 +110,7 @@ export type RunDetail = RunSummary & {
     state: string;
     started_at: string | null;
     ended_at: string | null;
-    compatibility?: Array<Record<string, unknown>> | null;
+    compatibility?: CompatibilityPreflightEvidence[] | null;
     created_at: string;
   }>;
   lane_attempts?: Array<{
@@ -432,6 +432,17 @@ export type DiagnosticItem = {
   recommended_action?: string | null;
 };
 
+export type CompatibilityPreflightEvidence = {
+  outcome: 'passed' | 'failed' | 'skipped';
+  code: string | null;
+  explanation: string;
+  latency_ms: number | null;
+  cached: boolean;
+  checked_model: string | null;
+  checked_image_format: string | null;
+  lane_keys: string[];
+};
+
 export type ExecutionProfileSpec = {
   schema_version: 1;
   agent: {
@@ -459,6 +470,22 @@ export type ExecutionProfileSpec = {
   };
 };
 
+export type CredentialReadiness = {
+  required_slots: string[];
+  bound_slots: string[];
+  missing_slots: string[];
+  ready: boolean;
+  binding_digest: string;
+};
+
+export type CredentialReferenceBindingInput = {
+  slot: 'model_api_key';
+  project_id: string;
+  backend: 'request';
+  reference_id: string;
+  private_locator: string;
+};
+
 export type ExecutionProfileRevision = {
   id: string;
   execution_profile_id: string;
@@ -466,6 +493,7 @@ export type ExecutionProfileRevision = {
   public_spec: ExecutionProfileSpec;
   public_spec_hash: string;
   credential_binding_digest: string;
+  credential_readiness: CredentialReadiness;
   published_at: string;
 };
 
@@ -474,6 +502,7 @@ export type ExecutionProfile = {
   project_id: string;
   name: string;
   draft_spec: ExecutionProfileSpec;
+  credential_readiness: CredentialReadiness;
   head_revision: ExecutionProfileRevision | null;
   archived_at: string | null;
   created_at: string;

@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from test_platform.adapters.targets import TargetAdapterRegistry
+from test_platform.adapters.execution_secrets import RequestSecretResolver
 from test_platform.api.errors import install_error_handlers
 from test_platform.api.middleware import (
     install_mutation_origin_middleware,
@@ -40,6 +41,7 @@ def create_app(
     executor_resolver: Callable[[Any], Any] | None = None,
     token_factory: Callable[[], Any] | None = None,
     compatibility_probe: object | None = None,
+    secret_resolver: object | None = None,
 ) -> FastAPI:
     platform_database = database or Database(settings)
     platform_adapter_registry = adapter_registry or TargetAdapterRegistry()
@@ -56,6 +58,7 @@ def create_app(
     from test_platform.services.compatibility_preflight import CompatibilityPreflight
 
     platform_preflight = CompatibilityPreflight(compatibility_probe)
+    platform_secret_resolver = secret_resolver or RequestSecretResolver()
     platform_supervisor = supervisor or RunSupervisor(
         platform_database,
         settings,
@@ -75,6 +78,8 @@ def create_app(
         app.state.adapter_registry = platform_adapter_registry
         app.state.supervisor = platform_supervisor
         app.state.sse_broker = platform_broker
+        app.state.secret_resolver = platform_secret_resolver
+        app.state.compatibility_preflight = platform_preflight
         platform_database.initialize()
         recovery = RunService(
             platform_database,
@@ -106,6 +111,7 @@ def create_app(
     app.state.sse_broker = platform_broker
     app.state.compatibility_probe = compatibility_probe
     app.state.compatibility_preflight = platform_preflight
+    app.state.secret_resolver = platform_secret_resolver
 
     install_request_id_middleware(app)
     install_mutation_origin_middleware(app)

@@ -31,6 +31,7 @@ from test_platform.domain.projects import (
 )
 from test_platform.domain.events import PersistedEvent
 from test_platform.domain.execution_profiles import (
+    CredentialReferenceBindingInput,
     ExecutionProfile,
     ExecutionProfileDomainError,
     ExecutionProfileRevision,
@@ -341,6 +342,7 @@ class ExecutionProfileRepository:
         project_id: str,
         name: str,
         draft_spec: dict[str, Any],
+        draft_credential_bindings: tuple[CredentialReferenceBindingInput, ...],
     ) -> ExecutionProfile:
         ProjectRepository(self.database).get(project_id)
         cleaned_name = clean_execution_profile_name(name)
@@ -350,9 +352,10 @@ class ExecutionProfileRepository:
             """
             INSERT INTO execution_profiles (
               id, project_id, name, name_key, draft_spec_json,
-              head_revision_id, archived_at, created_at, updated_at
+              draft_credential_bindings_json, head_revision_id, archived_at,
+              created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
             """,
             (
                 profile_id,
@@ -360,6 +363,7 @@ class ExecutionProfileRepository:
                 cleaned_name,
                 normalize_execution_profile_name(cleaned_name),
                 canonical_json(draft_spec),
+                canonical_json(_credential_bindings_payload(draft_credential_bindings)),
                 now,
                 now,
             ),
@@ -371,7 +375,8 @@ class ExecutionProfileRepository:
         row = self.database.connection.execute(
             """
             SELECT id, project_id, name, name_key, draft_spec_json,
-                   head_revision_id, archived_at, created_at, updated_at
+                   draft_credential_bindings_json, head_revision_id, archived_at,
+                   created_at, updated_at
             FROM execution_profiles
             WHERE id = ?
             """,
@@ -391,7 +396,8 @@ class ExecutionProfileRepository:
         rows = self.database.connection.execute(
             """
             SELECT id, project_id, name, name_key, draft_spec_json,
-                   head_revision_id, archived_at, created_at, updated_at
+                   draft_credential_bindings_json, head_revision_id, archived_at,
+                   created_at, updated_at
             FROM execution_profiles
             WHERE project_id = ? AND archived_at IS NULL
             ORDER BY created_at ASC, id ASC
@@ -406,19 +412,22 @@ class ExecutionProfileRepository:
         execution_profile_id: str,
         name: str,
         draft_spec: dict[str, Any],
+        draft_credential_bindings: tuple[CredentialReferenceBindingInput, ...],
     ) -> ExecutionProfile:
         self.get(execution_profile_id)
         cleaned_name = clean_execution_profile_name(name)
         self.database.connection.execute(
             """
             UPDATE execution_profiles
-            SET name = ?, name_key = ?, draft_spec_json = ?, updated_at = ?
+            SET name = ?, name_key = ?, draft_spec_json = ?,
+                draft_credential_bindings_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 cleaned_name,
                 normalize_execution_profile_name(cleaned_name),
                 canonical_json(draft_spec),
+                canonical_json(_credential_bindings_payload(draft_credential_bindings)),
                 execution_profile_utc_timestamp(),
                 execution_profile_id,
             ),
@@ -432,6 +441,7 @@ class ExecutionProfileRepository:
         execution_profile_id: str,
         public_spec: dict[str, Any],
         public_spec_hash: str,
+        credential_bindings: tuple[CredentialReferenceBindingInput, ...],
         credential_binding_digest: str,
     ) -> ExecutionProfileRevision:
         profile = self.get(execution_profile_id)
@@ -467,6 +477,24 @@ class ExecutionProfileRepository:
                     published_at,
                 ),
             )
+            for binding in credential_bindings:
+                connection.execute(
+                    """
+                    INSERT INTO execution_profile_revision_credential_bindings (
+                      execution_profile_revision_id, slot, project_id, backend,
+                      reference_id, private_locator
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        revision_id,
+                        binding.slot,
+                        binding.project_id,
+                        binding.backend,
+                        binding.reference_id,
+                        binding.private_locator,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE execution_profiles
@@ -503,6 +531,24 @@ class ExecutionProfileRepository:
                 details=[{"execution_profile_revision_id": revision_id}],
             )
         revision = _map_execution_profile_revision(row)
+        binding_rows = self.database.connection.execute(
+            """
+            SELECT slot, project_id, backend, reference_id, private_locator
+            FROM execution_profile_revision_credential_bindings
+            WHERE execution_profile_revision_id = ?
+            ORDER BY slot
+            """,
+            (revision_id,),
+        ).fetchall()
+        revision = ExecutionProfileRevision(
+            **{
+                **revision.__dict__,
+                "credential_bindings": tuple(
+                    _map_credential_binding(binding_row)
+                    for binding_row in binding_rows
+                ),
+            }
+        )
         return revision, self.get(revision.execution_profile_id)
 
 
@@ -3198,6 +3244,10 @@ def _map_execution_profile(row: sqlite3.Row) -> ExecutionProfile:
         name=str(row["name"]),
         name_key=str(row["name_key"]),
         draft_spec=json.loads(row["draft_spec_json"]),
+        draft_credential_bindings=tuple(
+            _map_credential_binding(binding)
+            for binding in json.loads(row["draft_credential_bindings_json"])
+        ),
         head_revision_id=(
             str(row["head_revision_id"])
             if row["head_revision_id"] is not None
@@ -3221,9 +3271,37 @@ def _map_execution_profile_revision(
         execution_profile_id=str(row["execution_profile_id"]),
         revision_no=int(row["revision_no"]),
         public_spec=json.loads(row["public_spec_json"]),
+        credential_bindings=(),
         public_spec_hash=str(row["public_spec_hash"]),
         credential_binding_digest=str(row["credential_binding_digest"]),
         published_at=str(row["published_at"]),
+    )
+
+
+def _credential_bindings_payload(
+    bindings: tuple[CredentialReferenceBindingInput, ...],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "slot": binding.slot,
+            "project_id": binding.project_id,
+            "backend": binding.backend,
+            "reference_id": binding.reference_id,
+            "private_locator": binding.private_locator,
+        }
+        for binding in bindings
+    ]
+
+
+def _map_credential_binding(
+    value: sqlite3.Row | dict[str, Any],
+) -> CredentialReferenceBindingInput:
+    return CredentialReferenceBindingInput(
+        slot=str(value["slot"]),
+        project_id=str(value["project_id"]),
+        backend=str(value["backend"]),
+        reference_id=str(value["reference_id"]),
+        private_locator=str(value["private_locator"]),
     )
 
 

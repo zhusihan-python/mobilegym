@@ -34,7 +34,15 @@ const publicSpec: ExecutionProfileSpec = {
     stream: true,
   },
   inference: { timeout_seconds: 300 },
-  credentials: { required_slots: [] },
+  credentials: { required_slots: ['model_api_key'] },
+};
+
+const credentialReadiness = {
+  required_slots: ['model_api_key'],
+  bound_slots: ['model_api_key'],
+  missing_slots: [],
+  ready: true,
+  binding_digest: 'sha256:credential-reference-binding',
 };
 
 const revision: ExecutionProfileRevision = {
@@ -44,6 +52,7 @@ const revision: ExecutionProfileRevision = {
   public_spec: publicSpec,
   public_spec_hash: 'sha256:3d71ef81a34bc6d78054f83d6c094360be1893f79b2d1ffac1bc79a90d29c37d',
   credential_binding_digest: 'sha256:empty-bindings',
+  credential_readiness: credentialReadiness,
   published_at: '2026-07-15T00:00:02.000Z',
 };
 
@@ -52,6 +61,7 @@ const draftProfile: ExecutionProfile = {
   project_id: project.id,
   name: 'Generic v2 / local model',
   draft_spec: publicSpec,
+  credential_readiness: credentialReadiness,
   head_revision: null,
   archived_at: null,
   created_at: '2026-07-15T00:00:01.000Z',
@@ -107,8 +117,15 @@ describe('Test Platform Execution Profiles workspace', () => {
         expect(body).toEqual({
           name: 'Generic v2 / local model',
           draft_spec: publicSpec,
+          credential_bindings: [{
+            slot: 'model_api_key',
+            project_id: project.id,
+            backend: 'request',
+            reference_id: 'primary-model-key',
+            private_locator: 'request://transient/model-api-key',
+          }],
         });
-        expect(String(init.body)).not.toContain('api_key');
+        expect(String(init.body)).not.toContain('sk-');
         expect(String(init.body)).not.toContain('secret_value');
         storedProfile = draftProfile;
         return jsonResponse(draftProfile, 201);
@@ -140,6 +157,10 @@ describe('Test Platform Execution Profiles workspace', () => {
     fireEvent.change(screen.getByLabelText('Model name'), {
       target: { value: 'local-model' },
     });
+    fireEvent.click(screen.getByLabelText('Require model credential'));
+    fireEvent.change(screen.getByLabelText('Credential reference ID'), {
+      target: { value: 'primary-model-key' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Create profile' }));
 
     expect(await screen.findByRole('heading', { name: 'Generic v2 / local model' })).toBeTruthy();
@@ -149,6 +170,8 @@ describe('Test Platform Execution Profiles workspace', () => {
     expect(screen.getByText(revision.public_spec_hash)).toBeTruthy();
     expect(screen.getByText('generic_v2')).toBeTruthy();
     expect(screen.getByText('local-model')).toBeTruthy();
+    expect(screen.getByText('Credential readiness')).toBeTruthy();
+    expect(screen.getByText('Ready')).toBeTruthy();
 
     cleanup();
     render(<App />);

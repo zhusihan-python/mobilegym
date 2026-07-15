@@ -99,7 +99,20 @@ class InferenceSpec(BaseModel):
 class CredentialRequirements(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    required_slots: list[str] = Field(default_factory=list, max_length=0)
+    required_slots: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("required_slots")
+    @classmethod
+    def validate_required_slots(cls, value: list[str]) -> list[str]:
+        cleaned = [slot.strip() for slot in value]
+        if any(not slot for slot in cleaned):
+            raise ValueError("credential slots must not be empty")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("credential slots must be unique")
+        unsupported = sorted(set(cleaned) - {"model_api_key"})
+        if unsupported:
+            raise ValueError("credential slot is not supported")
+        return cleaned
 
 
 class ExecutionProfileSpec(BaseModel):
@@ -115,12 +128,30 @@ class ExecutionProfileSpec(BaseModel):
 
 
 @dataclass(frozen=True)
+class CredentialReferenceBindingInput:
+    slot: str
+    project_id: str
+    backend: Literal["request"]
+    reference_id: str
+    private_locator: str
+
+
+class CredentialReadiness(BaseModel):
+    required_slots: list[str]
+    bound_slots: list[str]
+    missing_slots: list[str]
+    ready: bool
+    binding_digest: str
+
+
+@dataclass(frozen=True)
 class ExecutionProfile:
     id: str
     project_id: str
     name: str
     name_key: str
     draft_spec: dict[str, Any]
+    draft_credential_bindings: tuple[CredentialReferenceBindingInput, ...]
     head_revision_id: str | None
     archived_at: str | None
     created_at: str
@@ -133,6 +164,7 @@ class ExecutionProfileRevision:
     execution_profile_id: str
     revision_no: int
     public_spec: dict[str, Any]
+    credential_bindings: tuple[CredentialReferenceBindingInput, ...]
     public_spec_hash: str
     credential_binding_digest: str
     published_at: str
@@ -145,6 +177,7 @@ class ExecutionProfileRevisionView(BaseModel):
     public_spec: ExecutionProfileSpec
     public_spec_hash: str
     credential_binding_digest: str
+    credential_readiness: CredentialReadiness
     published_at: str
 
 
@@ -153,6 +186,7 @@ class ExecutionProfileView(BaseModel):
     project_id: str
     name: str
     draft_spec: ExecutionProfileSpec
+    credential_readiness: CredentialReadiness
     head_revision: ExecutionProfileRevisionView | None
     archived_at: str | None
     created_at: str
@@ -164,6 +198,7 @@ class SaveProfileDraft:
     project_id: str
     name: str
     draft_spec: dict[str, Any]
+    credential_bindings: tuple[CredentialReferenceBindingInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -178,6 +213,7 @@ class UpdateProfileDraft:
     execution_profile_id: str
     draft_spec: dict[str, Any]
     name: str | None = None
+    credential_bindings: tuple[CredentialReferenceBindingInput, ...] | None = None
 
 
 def new_execution_profile_id() -> str:

@@ -1,11 +1,12 @@
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from test_platform.api.dependencies import get_database
 from test_platform.api.errors import ApiError
 from test_platform.domain.execution_profiles import (
+    CredentialReferenceBindingInput,
     ExecutionProfileDomainError,
     PublishProfile,
     SaveProfileDraft,
@@ -17,14 +18,28 @@ from test_platform.services.execution_profiles import ExecutionProfiles
 router = APIRouter(prefix="/api/platform/v1")
 
 
+class CredentialReferenceBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    slot: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    backend: Literal["request"]
+    reference_id: str = Field(min_length=1)
+    private_locator: str = Field(min_length=1)
+
+
 class CreateExecutionProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     draft_spec: dict[str, Any]
+    credential_bindings: list[CredentialReferenceBindingRequest] = Field(
+        default_factory=list
+    )
 
 
 class UpdateExecutionProfileDraftRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     draft_spec: dict[str, Any]
+    credential_bindings: list[CredentialReferenceBindingRequest] | None = None
 
 
 @router.get("/projects/{project_id}/execution-profiles")
@@ -57,6 +72,10 @@ def create_execution_profile(
                 project_id=project_id,
                 name=body.name,
                 draft_spec=body.draft_spec,
+                credential_bindings=tuple(
+                    CredentialReferenceBindingInput(**binding.model_dump())
+                    for binding in body.credential_bindings
+                ),
             )
         )
     except ProjectNotFound as exc:
@@ -100,6 +119,14 @@ def update_execution_profile_draft(
                 execution_profile_id=execution_profile_id,
                 name=body.name,
                 draft_spec=body.draft_spec,
+                credential_bindings=(
+                    None
+                    if body.credential_bindings is None
+                    else tuple(
+                        CredentialReferenceBindingInput(**binding.model_dump())
+                        for binding in body.credential_bindings
+                    )
+                ),
             )
         )
     except ExecutionProfileDomainError as exc:

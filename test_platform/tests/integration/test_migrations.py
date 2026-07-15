@@ -45,6 +45,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         "target_revisions",
         "execution_profiles",
         "execution_profile_revisions",
+        "execution_profile_revision_credential_bindings",
         "workflows",
         "workflow_versions",
         "run_attempts",
@@ -83,6 +84,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (15, "0015_diagnostic_identity.sql"),
         (16, "0016_execution_profiles.sql"),
         (17, "0017_profile_aware_lanes.sql"),
+        (18, "0018_execution_profile_credentials.sql"),
     ]
 
 
@@ -198,6 +200,40 @@ def test_profile_aware_lane_columns_are_nullable_for_legacy_runs(tmp_path):
         } <= set(columns)
         assert columns["execution_profile_revision_id"][3] == 0
         assert columns["execution_profile_revision_hash"][3] == 0
+    finally:
+        database.close()
+
+
+def test_execution_profile_credentials_migration_keeps_bindings_private(tmp_path):
+    settings = PlatformSettings(
+        database_path=tmp_path / "platform.sqlite3",
+        runs_dir=tmp_path / "runs",
+    )
+    database = Database(settings)
+    try:
+        database.initialize()
+        profile_columns = {
+            row[1]: row
+            for row in database.connection.execute(
+                "PRAGMA table_info(execution_profiles)"
+            )
+        }
+        binding_columns = {
+            row[1]
+            for row in database.connection.execute(
+                "PRAGMA table_info(execution_profile_revision_credential_bindings)"
+            )
+        }
+
+        assert profile_columns["draft_credential_bindings_json"][3] == 1
+        assert {
+            "execution_profile_revision_id",
+            "slot",
+            "project_id",
+            "backend",
+            "reference_id",
+            "private_locator",
+        } <= binding_columns
     finally:
         database.close()
 
@@ -336,6 +372,7 @@ def test_database_initialization_is_idempotent(tmp_path):
         (15, "0015_diagnostic_identity.sql"),
         (16, "0016_execution_profiles.sql"),
         (17, "0017_profile_aware_lanes.sql"),
+        (18, "0018_execution_profile_credentials.sql"),
     ]
 
 

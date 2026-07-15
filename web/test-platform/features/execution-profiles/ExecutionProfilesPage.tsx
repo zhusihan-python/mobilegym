@@ -177,6 +177,14 @@ function ExecutionProfileCard({
         <div><dt>Temperature / top-p</dt><dd>{spec.generation.temperature} / {spec.generation.top_p}</dd></div>
         <div><dt>Max tokens</dt><dd>{spec.generation.max_tokens}</dd></div>
         <div><dt>Inference timeout</dt><dd>{spec.inference.timeout_seconds}s</dd></div>
+        <div>
+          <dt>Credential readiness</dt>
+          <dd>{profile.credential_readiness.ready ? 'Ready' : 'Missing binding'}</dd>
+        </div>
+        <div>
+          <dt>Credential slots</dt>
+          <dd>{profile.credential_readiness.required_slots.join(', ') || 'None'}</dd>
+        </div>
       </dl>
 
       {profile.head_revision ? (
@@ -208,6 +216,10 @@ function CreateExecutionProfileDialog({
   const [maxTokens, setMaxTokens] = useState('4096');
   const [stream, setStream] = useState(true);
   const [timeoutSeconds, setTimeoutSeconds] = useState('300');
+  const [requireModelCredential, setRequireModelCredential] = useState(false);
+  const [credentialReferenceId, setCredentialReferenceId] = useState(
+    'primary-model-key',
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -229,7 +241,9 @@ function CreateExecutionProfileDialog({
         stream,
       },
       inference: { timeout_seconds: Number(timeoutSeconds) },
-      credentials: { required_slots: [] },
+      credentials: {
+        required_slots: requireModelCredential ? ['model_api_key'] : [],
+      },
     };
     setSubmitting(true);
     setError(null);
@@ -237,6 +251,15 @@ function CreateExecutionProfileDialog({
       projectId,
       name: name.trim(),
       draftSpec,
+      credentialBindings: requireModelCredential
+        ? [{
+          slot: 'model_api_key',
+          project_id: projectId,
+          backend: 'request',
+          reference_id: credentialReferenceId.trim(),
+          private_locator: 'request://transient/model-api-key',
+        }]
+        : [],
     })
       .then(onCreated)
       .catch((apiError) => {
@@ -259,10 +282,35 @@ function CreateExecutionProfileDialog({
         <label>Max tokens<input type="number" value={maxTokens} onChange={(event) => setMaxTokens(event.target.value)} /></label>
         <label className="tp-checkbox-field"><input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} />Streaming</label>
         <label>Inference timeout<input type="number" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(event.target.value)} /></label>
+        <label className="tp-checkbox-field">
+          <input
+            type="checkbox"
+            checked={requireModelCredential}
+            onChange={(event) => setRequireModelCredential(event.target.checked)}
+          />
+          Require model credential
+        </label>
+        {requireModelCredential ? (
+          <label>
+            Credential reference ID
+            <input
+              value={credentialReferenceId}
+              onChange={(event) => setCredentialReferenceId(event.target.value)}
+            />
+          </label>
+        ) : null}
         {error ? <div className="tp-inline-alert" role="alert">{error}</div> : null}
         <div className="tp-modal-actions">
           <button type="button" onClick={onCancel}>Cancel</button>
-          <button type="submit" disabled={submitting}>{submitting ? 'Creating...' : 'Create profile'}</button>
+          <button
+            type="submit"
+            disabled={
+              submitting
+              || (requireModelCredential && !credentialReferenceId.trim())
+            }
+          >
+            {submitting ? 'Creating...' : 'Create profile'}
+          </button>
         </div>
       </form>
     </div>

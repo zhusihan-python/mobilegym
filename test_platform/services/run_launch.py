@@ -11,6 +11,11 @@ from typing import Any
 from test_platform.config import PlatformSettings
 from test_platform.domain.canonical_json import canonical_json, canonical_sha256
 from test_platform.domain.execution_profiles import ExecutionProfileDomainError
+from test_platform.domain.execution_secrets import (
+    SecretRequirement,
+    SecretResolutionError,
+    SecretResolver,
+)
 from test_platform.domain.run_launch import (
     CreateRunLaunch,
     PreviewRunLaunch,
@@ -39,6 +44,8 @@ from test_platform.persistence.repositories import (
     TargetRepository,
     WorkflowRepository,
 )
+from test_platform.services.compatibility_preflight import CompatibilityPreflight
+from test_platform.services.runs import register_run_execution_secrets
 
 
 _NON_EXACT_REVISION_SELECTORS = frozenset({"current", "draft", "head", "latest"})
@@ -52,11 +59,15 @@ class RunLaunch:
         settings: PlatformSettings | None = None,
         supervisor: Any = None,
         catalog_builder: Callable[[], TaskCatalogSnapshot] = build_task_catalog_snapshot,
+        secret_resolver: SecretResolver | None = None,
+        compatibility_preflight: CompatibilityPreflight | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
         self._supervisor = supervisor
         self._catalog_builder = catalog_builder
+        self._secret_resolver = secret_resolver
+        self._compatibility_preflight = compatibility_preflight
 
     def preview(self, command: PreviewRunLaunch) -> RunLaunchPreview:
         plan, workflow_version_hash = self._compile_plan(
@@ -76,11 +87,8 @@ class RunLaunch:
     ) -> RunDetail:
         if self._settings is None or self._supervisor is None:
             raise RuntimeError("RunLaunch create requires settings and a supervisor.")
-        if secret_bindings:
-            raise RunLaunchError(
-                "RUN_EXECUTION_SECRET_SLOT_INVALID",
-                "TP-EP02 does not accept secret bindings.",
-            )
+        if self._compatibility_preflight is None:
+            raise RuntimeError("RunLaunch create requires compatibility preflight.")
         request_hash = canonical_sha256(
             {
                 "command": asdict(command),
@@ -120,6 +128,12 @@ class RunLaunch:
             run_id=run_id,
             created_at=created_at,
         )
+        requirements = self._secret_requirements(
+            plan,
+            project_id=command.project_id,
+        )
+        execution_secrets = self._resolve_secrets(requirements, secret_bindings)
+        compatibility = self._preflight(plan, execution_secrets)
         temporary_root = self._settings.runs_dir / f".{run_id}.tmp"
         final_root = self._settings.runs_dir / run_id
         try:
@@ -164,6 +178,7 @@ class RunLaunch:
                 artifact_root=final_root,
                 idempotency_key=idempotency_key,
                 request_hash=request_hash,
+                compatibility=compatibility,
             )
             connection.commit()
         except Exception:
@@ -188,6 +203,8 @@ class RunLaunch:
                 details=[{"run_id": run_id}],
             ) from exc
 
+        if execution_secrets:
+            register_run_execution_secrets(run_id, execution_secrets)
         self._supervisor.submit(run_id)
         return RunRepository(self._database).get(run_id)
 
@@ -226,7 +243,15 @@ class RunLaunch:
             fingerprint_inputs=fingerprint_inputs,
             run_plan_fingerprint=plan.fingerprint,
             preview_token=preview_token,
-            credential_requirements=[],
+            credential_requirements=sorted(
+                {
+                    requirement.slot
+                    for requirement in self._secret_requirements(
+                        plan,
+                        project_id=command.project_id,
+                    )
+                }
+            ),
         )
 
     def _compile_plan(
@@ -367,15 +392,6 @@ class RunLaunch:
                     status_code=409,
                     details=[{"execution_profile_id": profile.id}],
                 )
-            required_slots = profile_revision.public_spec.get("credentials", {}).get(
-                "required_slots", []
-            )
-            if required_slots:
-                raise RunLaunchError(
-                    "RUN_EXECUTION_SECRET_MISSING",
-                    "TP-EP02 supports only no-secret Execution Profile Revisions.",
-                    details=[{"lane_slot": lane_slot, "required_slots": required_slots}],
-                )
             resolved_bindings[lane_slot] = ResolvedLanePlanBinding(
                 target=target,
                 target_revision=target_revision,
@@ -425,6 +441,199 @@ class RunLaunch:
             lane_fingerprint=lane.fingerprint,
         )
 
+    def _secret_requirements(
+        self,
+        plan: RunPlanV2,
+        *,
+        project_id: str,
+    ) -> tuple[SecretRequirement, ...]:
+        repository = ExecutionProfileRepository(self._database)
+        requirements: list[SecretRequirement] = []
+        for lane in plan.lanes:
+            snapshot = plan.execution_snapshots[lane.execution_snapshot_key]
+            required_slots = set(snapshot.public_spec.credentials.required_slots)
+            revision, profile = repository.get_revision(
+                lane.execution_profile_revision_id
+            )
+            if profile.project_id != project_id:
+                raise _cross_project_error(
+                    "execution_profile_revision",
+                    revision.id,
+                )
+            bindings = {binding.slot: binding for binding in revision.credential_bindings}
+            if set(bindings) != required_slots:
+                raise RunLaunchError(
+                    "RUN_EXECUTION_SECRET_UNAVAILABLE",
+                    "The frozen credential references are unavailable.",
+                    status_code=503,
+                    details=[
+                        {
+                            "lane_slot": lane.lane_key,
+                            "slots": sorted(required_slots),
+                        }
+                    ],
+                )
+            for slot in sorted(required_slots):
+                binding = bindings[slot]
+                if binding.project_id != project_id:
+                    raise RunLaunchError(
+                        "EXECUTION_PROFILE_CREDENTIAL_BINDING_CROSS_PROJECT",
+                        "A frozen Credential Reference belongs to another Project.",
+                        status_code=409,
+                        details=[{"lane_slot": lane.lane_key, "slot": slot}],
+                    )
+                requirements.append(
+                    SecretRequirement(
+                        slot=slot,
+                        project_id=project_id,
+                        execution_profile_revision_id=revision.id,
+                        backend=binding.backend,
+                        reference_id=binding.reference_id,
+                        private_locator=binding.private_locator,
+                        lane_keys=(lane.lane_key,),
+                    )
+                )
+        return tuple(requirements)
+
+    def _resolve_secrets(
+        self,
+        requirements: tuple[SecretRequirement, ...],
+        supplied_bindings: dict[str, str],
+    ) -> dict[str, str]:
+        required_slots = {requirement.slot for requirement in requirements}
+        supplied_slots = set(supplied_bindings)
+        missing_slots = sorted(
+            slot
+            for slot in required_slots
+            if slot not in supplied_bindings
+            or not isinstance(supplied_bindings[slot], str)
+            or not supplied_bindings[slot].strip()
+        )
+        if missing_slots:
+            raise RunLaunchError(
+                "RUN_EXECUTION_SECRET_MISSING",
+                "Required execution credentials were not supplied.",
+                details=[{"slots": missing_slots}],
+            )
+        extra_slots = sorted(supplied_slots - required_slots)
+        if extra_slots:
+            raise RunLaunchError(
+                "RUN_EXECUTION_SECRET_SLOT_INVALID",
+                "Execution credentials were supplied for undeclared slots.",
+                details=[{"slots": extra_slots}],
+            )
+        if not requirements:
+            return {}
+        if self._secret_resolver is None:
+            raise RuntimeError("RunLaunch create requires a SecretResolver.")
+        declared_bindings = {
+            slot: supplied_bindings[slot]
+            for slot in sorted(required_slots)
+        }
+        try:
+            lease = self._secret_resolver.resolve(requirements, declared_bindings)
+        except SecretResolutionError as exc:
+            code = (
+                exc.code
+                if exc.code
+                in {
+                    "RUN_EXECUTION_SECRET_MISSING",
+                    "RUN_EXECUTION_SECRET_SLOT_INVALID",
+                    "RUN_EXECUTION_SECRET_UNAVAILABLE",
+                }
+                else "RUN_EXECUTION_SECRET_UNAVAILABLE"
+            )
+            messages = {
+                "RUN_EXECUTION_SECRET_MISSING": (
+                    "Required execution credentials were not supplied."
+                ),
+                "RUN_EXECUTION_SECRET_SLOT_INVALID": (
+                    "Execution credentials were supplied for undeclared slots."
+                ),
+                "RUN_EXECUTION_SECRET_UNAVAILABLE": (
+                    "Required execution credentials are unavailable."
+                ),
+            }
+            raise RunLaunchError(
+                code,
+                messages[code],
+                status_code=(
+                    503 if code == "RUN_EXECUTION_SECRET_UNAVAILABLE" else 400
+                ),
+                details=[{"slots": sorted(required_slots)}],
+            ) from exc
+        values = {
+            key: value.strip()
+            for key, value in lease.values.items()
+            if key in required_slots
+            and isinstance(value, str)
+            and value.strip()
+        }
+        unresolved_slots = sorted(required_slots - set(values))
+        if unresolved_slots:
+            raise RunLaunchError(
+                "RUN_EXECUTION_SECRET_UNAVAILABLE",
+                "Required execution credentials are unavailable.",
+                status_code=503,
+                details=[{"slots": unresolved_slots}],
+            )
+        return values
+
+    def _preflight(
+        self,
+        plan: RunPlanV2,
+        execution_secrets: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        if self._compatibility_preflight is None:
+            raise RuntimeError("RunLaunch create requires compatibility preflight.")
+        grouped: dict[tuple[str, str, str, str, str], list[str]] = {}
+        lane_by_key = {lane.lane_key: lane for lane in plan.lanes}
+        for lane in plan.lanes:
+            config = lane.effective_runner_config
+            subject = (
+                str(config.get("agent") or ""),
+                str(config.get("model_base_url") or ""),
+                str(config.get("model_name") or ""),
+                str(config.get("image_url_format") or "data_url"),
+                str(execution_secrets.get("model_api_key") or ""),
+            )
+            grouped.setdefault(subject, []).append(lane.lane_key)
+
+        checks: list[dict[str, Any]] = []
+        for subject, lane_keys in grouped.items():
+            agent, base_url, model, image_url_format, api_key = subject
+            lane = lane_by_key[lane_keys[0]]
+            result = self._compatibility_preflight.check(
+                agent=agent,
+                base_url=base_url,
+                model=model,
+                image_url_format=image_url_format,
+                api_key=api_key,
+                timeout_seconds=float(
+                    lane.effective_runner_config.get("infer_timeout") or 15.0
+                ),
+            )
+            evidence = result.to_provenance()
+            evidence["lane_keys"] = sorted(lane_keys)
+            checks.append(evidence)
+            if result.outcome == "failed":
+                raise RunLaunchError(
+                    "RUN_COMPATIBILITY_CHECK_FAILED",
+                    result.explanation,
+                    status_code=409,
+                    details=[
+                        {
+                            "code": result.code,
+                            "lane_keys": sorted(lane_keys),
+                            "checked_model": result.checked_model or model,
+                            "checked_image_format": (
+                                result.checked_image_format or image_url_format
+                            ),
+                        }
+                    ],
+                )
+        return checks
+
     def _find_idempotent_run(
         self,
         idempotency_key: str,
@@ -464,6 +673,7 @@ class RunLaunch:
         artifact_root: Path,
         idempotency_key: str,
         request_hash: str,
+        compatibility: list[dict[str, Any]],
     ) -> None:
         plan_json = canonical_json(plan.model_dump(mode="json"))
         connection.execute(
@@ -491,11 +701,17 @@ class RunLaunch:
         connection.execute(
             """
             INSERT INTO run_attempts (
-              id, run_id, attempt_no, reason, state, created_at
+              id, run_id, attempt_no, reason, state, compatibility_json,
+              created_at
             )
-            VALUES (?, ?, 1, 'initial', 'queued', ?)
+            VALUES (?, ?, 1, 'initial', 'queued', ?, ?)
             """,
-            (run_attempt_id, plan.run_id, plan.created_at),
+            (
+                run_attempt_id,
+                plan.run_id,
+                canonical_json(compatibility),
+                plan.created_at,
+            ),
         )
         for node in definition.nodes:
             connection.execute(

@@ -13,6 +13,7 @@ import type {
   ExecutionProfile,
   ExecutionProfileRevision,
   ExecutionProfileSpec,
+  CredentialReferenceBindingInput,
   FollowupRunAttempt,
   FollowupRunPreview,
   Project,
@@ -253,6 +254,7 @@ export function createRunLaunch(input: {
   command: RunLaunchCommand;
   previewToken: string;
   idempotencyKey: string;
+  secretBindings?: Record<string, string>;
 }): Promise<RunDetail> {
   return apiFetch<RunDetail>(
     `/projects/${encodeURIComponent(input.command.project_id)}/run-launch`,
@@ -266,6 +268,7 @@ export function createRunLaunch(input: {
         comparison_intent: input.command.comparison_intent,
         lane_bindings: input.command.lane_bindings,
         preview_token: input.previewToken,
+        secret_bindings: input.secretBindings ?? {},
       }),
     },
   );
@@ -283,6 +286,7 @@ export function createExecutionProfile(input: {
   projectId: string;
   name: string;
   draftSpec: ExecutionProfileSpec;
+  credentialBindings?: CredentialReferenceBindingInput[];
 }): Promise<ExecutionProfile> {
   return apiFetch<ExecutionProfile>(
     `/projects/${encodeURIComponent(input.projectId)}/execution-profiles`,
@@ -291,6 +295,7 @@ export function createExecutionProfile(input: {
       body: JSON.stringify({
         name: input.name,
         draft_spec: input.draftSpec,
+        credential_bindings: input.credentialBindings ?? [],
       }),
     },
   );

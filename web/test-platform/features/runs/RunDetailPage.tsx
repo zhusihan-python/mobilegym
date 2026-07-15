@@ -286,6 +286,12 @@ export function RunDetailPage() {
   const run = liveRef.current?.snapshot ?? state.run;
   const followupRequiresModelApiKey = runRequiresModelApiKey(run);
   const runAttempts = run.run_attempts ?? [];
+  const compatibilityEvidence = runAttempts.flatMap((attempt) =>
+    (attempt.compatibility ?? []).map((evidence) => ({
+      attemptNo: attempt.attempt_no,
+      ...evidence,
+    })),
+  );
   const laneAttempts = run.lane_attempts ?? [];
   const episodeAttempts = run.episode_attempts ?? [];
   const replayOptions = buildReplayOptions(run);
@@ -672,6 +678,38 @@ export function RunDetailPage() {
                   </td>
                   <td className="tp-mono">{binding.execution_profile_public_hash}</td>
                   <td className="tp-mono">{binding.lane_fingerprint}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {compatibilityEvidence.length > 0 ? (
+        <section className="tp-panel">
+          <h2>Compatibility Preflight</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Attempt</th>
+                <th>Outcome</th>
+                <th>Code</th>
+                <th>Checked model</th>
+                <th>Image Input Format</th>
+                <th>Cache</th>
+                <th>Lanes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {compatibilityEvidence.map((evidence, index) => (
+                <tr key={`${evidence.attemptNo}-${evidence.code ?? 'none'}-${index}`}>
+                  <td>{evidence.attemptNo}</td>
+                  <td>{evidence.outcome}</td>
+                  <td>{evidence.code ?? 'none'}</td>
+                  <td className="tp-mono">{evidence.checked_model ?? 'not checked'}</td>
+                  <td>{evidence.checked_image_format ?? 'not checked'}</td>
+                  <td>{evidence.cached ? 'Cached' : 'Live'}</td>
+                  <td>{evidence.lane_keys.join(', ')}</td>
                 </tr>
               ))}
             </tbody>

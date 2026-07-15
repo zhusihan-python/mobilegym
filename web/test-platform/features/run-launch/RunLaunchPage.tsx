@@ -37,6 +37,7 @@ export function RunLaunchPage() {
   const [name, setName] = useState('');
   const [seed, setSeed] = useState('20260715');
   const [preview, setPreview] = useState<RunLaunchPreview | null>(null);
+  const [secretBindings, setSecretBindings] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<'preview' | 'create' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +45,7 @@ export function RunLaunchPage() {
     let active = true;
     setCatalog({ status: 'loading' });
     setPreview(null);
+    setSecretBindings({});
     Promise.all([
       listWorkflows(selectedProject.id),
       listTargets(selectedProject.id),
@@ -94,6 +96,7 @@ export function RunLaunchPage() {
 
   const clearPreview = () => {
     setPreview(null);
+    setSecretBindings({});
     setError(null);
   };
 
@@ -101,7 +104,10 @@ export function RunLaunchPage() {
     setBusy('preview');
     setError(null);
     previewRunLaunch(command())
-      .then(setPreview)
+      .then((value) => {
+        setSecretBindings({});
+        setPreview(value);
+      })
       .catch((previewError) => {
         setPreview(null);
         setError(previewError instanceof Error ? previewError.message : 'Launch preview failed.');
@@ -117,8 +123,12 @@ export function RunLaunchPage() {
       command: command(),
       previewToken: preview.preview_token,
       idempotencyKey: crypto.randomUUID(),
+      secretBindings,
     })
-      .then((run) => navigate(`/runs/${run.id}`))
+      .then((run) => {
+        setSecretBindings({});
+        navigate(`/runs/${run.id}`);
+      })
       .catch((createError) => {
         setError(createError instanceof Error ? createError.message : 'Run creation failed.');
       })
@@ -138,6 +148,9 @@ export function RunLaunchPage() {
     && profileRevisionId
     && Number.isInteger(Number(seed)),
   );
+  const secretsReady = preview?.credential_requirements.every(
+    (slot) => Boolean(secretBindings[slot]?.trim()),
+  ) ?? false;
 
   return (
     <>
@@ -208,7 +221,11 @@ export function RunLaunchPage() {
               <h2>Exact launch preview</h2>
               <p>{preview.episode_count} Prepared Episode / {preview.comparison_intent}</p>
             </div>
-            <button type="button" onClick={create} disabled={busy !== null}>
+            <button
+              type="button"
+              onClick={create}
+              disabled={busy !== null || !secretsReady}
+            >
               {busy === 'create' ? 'Creating...' : 'Create run'}
             </button>
           </div>
@@ -218,6 +235,31 @@ export function RunLaunchPage() {
             <div><dt>Run Plan fingerprint</dt><dd className="tp-mono">{preview.run_plan_fingerprint}</dd></div>
             <div><dt>Preview token</dt><dd className="tp-mono">{preview.preview_token}</dd></div>
           </dl>
+          {preview.credential_requirements.length > 0 ? (
+            <div className="tp-form-grid">
+              <h3>Transient credentials</h3>
+              {preview.credential_requirements.map((slot) => (
+                <label key={slot}>
+                  <span>{credentialSlotLabel(slot)}</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={secretBindings[slot] ?? ''}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setSecretBindings((current) => ({
+                        ...current,
+                        [slot]: value,
+                      }));
+                    }}
+                  />
+                </label>
+              ))}
+              <p className="tp-kicker">
+                Values are used only for this launch and are not stored by the browser.
+              </p>
+            </div>
+          ) : null}
           {preview.lane_bindings.map((binding) => (
             <dl className="tp-run-facts" key={binding.lane_slot}>
               <div><dt>Lane Slot</dt><dd>{binding.lane_slot}</dd></div>
@@ -232,4 +274,8 @@ export function RunLaunchPage() {
       ) : null}
     </>
   );
+}
+
+function credentialSlotLabel(slot: string): string {
+  return slot === 'model_api_key' ? 'Model API key' : slot;
 }

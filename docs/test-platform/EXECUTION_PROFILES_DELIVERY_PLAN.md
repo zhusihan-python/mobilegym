@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP02 complete on 2026-07-15; TP-EP03 not started |
+| Status | TP-EP03 complete on 2026-07-15; TP-EP04 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP02 authorized and complete; TP-EP03 requires a separate start request |
+| Implementation authorization | TP-EP00 through TP-EP03 authorized and complete; TP-EP04 and later slices require separate start requests |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 and TP-EP02 are also complete; TP-EP03 has not started.
+are complete. TP-EP01 through TP-EP03 are also complete; TP-EP04 has not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 is also complete; TP-EP03 has not started.
+complete. TP-EP02 and TP-EP03 are also complete; TP-EP04 has not started.
 
 ### Acceptance criteria
 
@@ -266,7 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 has not started.
+console preview/create/reload flow are complete. TP-EP03 is also complete;
+TP-EP04 has not started.
 
 ### Acceptance criteria
 
@@ -323,22 +324,28 @@ resolve only declared slots at launch through the `SecretResolver` port, run
 Compatibility Preflight on the frozen effective subject, and store redacted
 evidence on the initial Run Attempt.
 
+Current evidence:
+[`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
+Private Credential Reference publication, transient request-backed resolution,
+zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
+the credential-ready console flow are complete. TP-EP04 has not started.
+
 ### Acceptance criteria
 
-- [ ] A profile draft binds declared credential slots to non-secret reference
+- [x] A profile draft binds declared credential slots to non-secret reference
       identity without exposing sensitive backend paths in public responses.
-- [ ] Credential Reference binding identity participates in the frozen revision
+- [x] Credential Reference binding identity participates in the frozen revision
       identity; rotating the value behind the same reference does not change it.
-- [ ] The console shows credential readiness and accepts transient launch
+- [x] The console shows credential readiness and accepts transient launch
       bindings without browser persistence.
-- [ ] Missing, extra, unavailable, or cross-Project credential bindings fail with
+- [x] Missing, extra, unavailable, or cross-Project credential bindings fail with
       stable errors before durable side effects.
-- [ ] Compatible subject tuples create the initial Run Attempt with redacted
+- [x] Compatible subject tuples create the initial Run Attempt with redacted
       preflight outcome, checked model/Image Input Format, cache status, and Lane
       keys.
-- [ ] Incompatible and indeterminate subjects fail before Run/artifact creation;
+- [x] Incompatible and indeterminate subjects fail before Run/artifact creation;
       provider text and secret values never appear in errors or logs.
-- [ ] Initial preflight is no longer stored as mutable/global Run Plan agent
+- [x] Initial preflight is no longer stored as mutable/global Run Plan agent
       identity.
 
 ### Test seam
@@ -771,6 +778,6 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP02 were implemented
-only after their separate explicit start requests. TP-EP03 has not started and
+No external issue has been published. TP-EP00 through TP-EP03 were implemented
+only after their separate explicit start requests. TP-EP04 has not started and
 still requires a separate explicit start request.

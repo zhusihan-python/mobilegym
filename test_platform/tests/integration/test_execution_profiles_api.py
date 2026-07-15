@@ -292,7 +292,7 @@ def test_saving_a_changed_draft_does_not_mutate_published_revision(tmp_path):
     [
         ("missing_model_name", "model.name"),
         ("unsupported_image_format", "image_input.format"),
-        ("credential_slots_before_binding_support", "credentials.required_slots"),
+        ("unsupported_credential_slot", "credentials.required_slots"),
         ("coerced_stream", "generation.stream"),
     ],
 )
@@ -313,8 +313,8 @@ def test_static_validation_rejects_incomplete_or_unsupported_specs(
             spec["model"].pop("name")
         elif case == "unsupported_image_format":
             spec["image_input"]["format"] = "remote_url"
-        elif case == "credential_slots_before_binding_support":
-            spec["credentials"]["required_slots"] = ["model_api_key"]
+        elif case == "unsupported_credential_slot":
+            spec["credentials"]["required_slots"] = ["provider_token"]
         else:
             spec["generation"]["stream"] = 1
 

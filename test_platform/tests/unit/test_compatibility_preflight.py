@@ -5,8 +5,10 @@ from __future__ import annotations
 from test_platform.domain.model_compatibility import (
     AUTHENTICATION_FAILURE,
     COMPATIBLE,
+    INDETERMINATE,
     UNSUPPORTED_VISION,
     CompatibilityResult,
+    explanation_for,
 )
 from test_platform.services.compatibility_preflight import CompatibilityPreflight
 
@@ -71,6 +73,26 @@ class TestPreflightOutcome:
         )
         assert result.outcome == "failed"
         assert result.code == AUTHENTICATION_FAILURE
+
+    def test_unknown_probe_code_is_redacted_as_indeterminate(self):
+        sentinel_code = "provider-secret-sk-sentinel"
+        sentinel_explanation = "provider response exposed secret-token-sentinel"
+        probe = _FakeProbe(
+            [_result(sentinel_code, explanation=sentinel_explanation)]
+        )
+        pf = CompatibilityPreflight(probe)
+
+        result = pf.check(
+            agent="generic_v2",
+            base_url="http://provider.invalid/v1",
+            model="test-model",
+            image_url_format="data_url",
+        )
+
+        assert result.outcome == "failed"
+        assert result.code == INDETERMINATE
+        assert result.explanation == explanation_for(INDETERMINATE)
+        assert "sentinel" not in str(result.to_provenance())
 
     def test_skip_returns_skipped_without_probe_call(self):
         probe = _FakeProbe([])

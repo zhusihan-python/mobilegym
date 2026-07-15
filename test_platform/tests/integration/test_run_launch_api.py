@@ -3,6 +3,7 @@ import pytest
 
 from test_platform.api.app import create_app
 from test_platform.config import PlatformSettings
+from test_platform.testing.fake_compat import FakeCompatibilityProbe
 
 
 def _settings(tmp_path):
@@ -286,6 +287,7 @@ def test_run_launch_http_previews_creates_and_reloads_exact_identity(tmp_path):
         _settings(tmp_path),
         adapter_registry=FakeRegistry(),
         supervisor=supervisor,
+        compatibility_probe=FakeCompatibilityProbe(),
     )
 
     with TestClient(app) as client:

@@ -92,7 +92,15 @@ const publicSpec = {
   image_input: { format: 'data_url' as const },
   generation: { temperature: 0, top_p: 1, max_tokens: 4096, stream: true },
   inference: { timeout_seconds: 300 },
-  credentials: { required_slots: [] },
+  credentials: { required_slots: ['model_api_key'] },
+};
+
+const credentialReadiness = {
+  required_slots: ['model_api_key'],
+  bound_slots: ['model_api_key'],
+  missing_slots: [],
+  ready: true,
+  binding_digest: 'sha256:credential-binding-ep03',
 };
 
 const profileRevision = {
@@ -102,6 +110,7 @@ const profileRevision = {
   public_spec: publicSpec,
   public_spec_hash: 'sha256:profile-public-ep02',
   credential_binding_digest: 'sha256:empty-binding',
+  credential_readiness: credentialReadiness,
   published_at: '2026-07-15T00:00:03.000Z',
 };
 
@@ -110,6 +119,7 @@ const profile = {
   project_id: project.id,
   name: 'Deterministic generic v2',
   draft_spec: publicSpec,
+  credential_readiness: credentialReadiness,
   head_revision: profileRevision,
   archived_at: null,
   created_at: '2026-07-15T00:00:03.000Z',
@@ -142,7 +152,7 @@ const preview = {
   fingerprint_inputs: {},
   run_plan_fingerprint: 'sha256:run-plan-ep02',
   preview_token: 'sha256:preview-ep02',
-  credential_requirements: [],
+  credential_requirements: ['model_api_key'],
 };
 
 const run = {
@@ -176,7 +186,25 @@ const run = {
     schema_version: 2,
     lane_bindings: [laneIdentity],
   },
-  run_attempts: [],
+  run_attempts: [{
+    id: 'run-attempt-ep03',
+    attempt_no: 1,
+    reason: 'initial',
+    state: 'queued',
+    started_at: null,
+    ended_at: null,
+    compatibility: [{
+      outcome: 'passed',
+      code: 'compatible',
+      explanation: 'The model accepted the screenshot request.',
+      latency_ms: 42,
+      cached: false,
+      checked_model: publicSpec.model.name,
+      checked_image_format: publicSpec.image_input.format,
+      lane_keys: ['candidate'],
+    }],
+    created_at: '2026-07-15T00:00:04.000Z',
+  }],
   lane_attempts: [],
   target_revisions: [{
     target_id: target.id,
@@ -270,6 +298,23 @@ describe('Test Platform profile-aware Run Launch', () => {
     expect(await screen.findByText(preview.run_plan_fingerprint)).toBeTruthy();
     expect(screen.getByText(profileRevision.public_spec_hash)).toBeTruthy();
     expect(screen.getByText(laneIdentity.lane_fingerprint)).toBeTruthy();
+    const staleSecret = 'sk-cleared-preview-sentinel';
+    const initialSecretInput = screen.getByLabelText('Model API key');
+    fireEvent.change(initialSecretInput, { target: { value: staleSecret } });
+    fireEvent.change(screen.getByLabelText('Seed'), {
+      target: { value: '20260716' },
+    });
+    expect(screen.queryByLabelText('Model API key')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Seed'), {
+      target: { value: '20260715' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview launch' }));
+    const secretInput = await screen.findByLabelText('Model API key');
+    expect((secretInput as HTMLInputElement).value).toBe('');
+
+    const secret = 'sk-console-transient-sentinel';
+    expect(secretInput.getAttribute('type')).toBe('password');
+    fireEvent.change(secretInput, { target: { value: secret } });
     fireEvent.click(screen.getByRole('button', { name: 'Create run' }));
 
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
@@ -279,6 +324,8 @@ describe('Test Platform profile-aware Run Launch', () => {
     expect(screen.getByText(profileRevision.id, { exact: false })).toBeTruthy();
     expect(screen.getByText(targetRevision.id)).toBeTruthy();
     expect(screen.getByText(laneIdentity.lane_fingerprint)).toBeTruthy();
+    expect(screen.getByText('Compatibility Preflight')).toBeTruthy();
+    expect(screen.getByText(publicSpec.model.name)).toBeTruthy();
 
     const previewRequest = requests.find((item) => item.path.endsWith('/run-launch/preview'));
     expect(previewRequest?.body).toEqual({
@@ -299,7 +346,14 @@ describe('Test Platform profile-aware Run Launch', () => {
     expect(createRequest?.body).toEqual({
       ...(previewRequest?.body as object),
       preview_token: preview.preview_token,
+      secret_bindings: { model_api_key: secret },
     });
+    const persistedBrowserState = Array.from(
+      { length: window.localStorage.length },
+      (_, index) => window.localStorage.getItem(window.localStorage.key(index) ?? ''),
+    ).join('\n');
+    expect(persistedBrowserState).not.toContain(secret);
+    expect(persistedBrowserState).not.toContain(staleSecret);
 
     cleanup();
     render(<App />);

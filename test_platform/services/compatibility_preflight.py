@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from test_platform.domain.model_compatibility import (
+    ALL_CODES,
     COMPATIBLE,
+    INDETERMINATE,
     CompatibilityResult,
     SCREENSHOT_REQUIRED_AGENTS,
     explanation_for,
@@ -40,18 +42,20 @@ class PreflightResult:
     code: str | None
     explanation: str
     latency_ms: int | None
+    checked_model: str | None
     checked_image_format: str | None
     cached: bool
 
     def to_provenance(self) -> dict[str, Any]:
-        """Return a redacted summary for run_plan provenance."""
+        """Return a redacted summary for Run Attempt provenance."""
         return {
             "outcome": self.outcome,
             "code": self.code,
             "explanation": self.explanation,
             "latency_ms": self.latency_ms,
-            "image_format": self.checked_image_format,
             "cached": self.cached,
+            "checked_model": self.checked_model,
+            "checked_image_format": self.checked_image_format,
         }
 
 
@@ -105,6 +109,7 @@ class CompatibilityPreflight:
                 code=None,
                 explanation="Agent does not require screenshot compatibility.",
                 latency_ms=None,
+                checked_model=None,
                 checked_image_format=None,
                 cached=False,
             )
@@ -119,6 +124,7 @@ class CompatibilityPreflight:
                 code=None,
                 explanation="Compatibility check was explicitly skipped.",
                 latency_ms=None,
+                checked_model=model,
                 checked_image_format=image_url_format,
                 cached=False,
             )
@@ -138,7 +144,12 @@ class CompatibilityPreflight:
                 if cached_entry is not None:
                     result, expires_at = cached_entry
                     if self._clock() < expires_at:
-                        return self._result_from_probe(result, cached=True)
+                        return self._result_from_probe(
+                            result,
+                            cached=True,
+                            checked_model=model,
+                            checked_image_format=image_url_format,
+                        )
 
         # Live check.
         result = self._probe.check(
@@ -154,25 +165,38 @@ class CompatibilityPreflight:
             with self._lock:
                 self._cache[key] = (result, self._clock() + self._cache_ttl)
 
-        return self._result_from_probe(result, cached=False)
+        return self._result_from_probe(
+            result,
+            cached=False,
+            checked_model=model,
+            checked_image_format=image_url_format,
+        )
 
     def _result_from_probe(
-        self, result: CompatibilityResult, *, cached: bool
+        self,
+        result: CompatibilityResult,
+        *,
+        cached: bool,
+        checked_model: str,
+        checked_image_format: str,
     ) -> PreflightResult:
-        if result.code == COMPATIBLE:
+        code = result.code if result.code in ALL_CODES else INDETERMINATE
+        if code == COMPATIBLE:
             return PreflightResult(
                 outcome="passed",
-                code=result.code,
-                explanation=result.explanation,
+                code=code,
+                explanation=explanation_for(code),
                 latency_ms=result.latency_ms,
-                checked_image_format=result.checked_image_format,
+                checked_model=checked_model,
+                checked_image_format=checked_image_format,
                 cached=cached,
             )
         return PreflightResult(
             outcome="failed",
-            code=result.code,
-            explanation=explanation_for(result.code),
+            code=code,
+            explanation=explanation_for(code),
             latency_ms=result.latency_ms,
-            checked_image_format=result.checked_image_format,
+            checked_model=checked_model,
+            checked_image_format=checked_image_format,
             cached=cached,
         )

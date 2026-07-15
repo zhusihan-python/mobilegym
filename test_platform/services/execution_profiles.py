@@ -3,6 +3,8 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from test_platform.domain.execution_profiles import (
+    CredentialReadiness,
+    CredentialReferenceBindingInput,
     ExecutionProfile,
     ExecutionProfileDomainError,
     ExecutionProfileSpec,
@@ -28,11 +30,17 @@ class ExecutionProfiles:
     def save_draft(self, command: SaveProfileDraft) -> ExecutionProfileView:
         name = require_execution_profile_name(command.name)
         normalized_spec = self._normalize_spec(command.draft_spec)
+        bindings = self._normalize_bindings(
+            project_id=command.project_id,
+            required_slots=normalized_spec.credentials.required_slots,
+            bindings=command.credential_bindings,
+        )
 
         profile = self._repository.create(
             project_id=command.project_id,
             name=name,
             draft_spec=normalized_spec.model_dump(mode="json"),
+            draft_credential_bindings=bindings,
         )
         return self._profile_view(profile)
 
@@ -45,10 +53,20 @@ class ExecutionProfiles:
             else require_execution_profile_name(command.name)
         )
         normalized_spec = self._normalize_spec(command.draft_spec)
+        bindings = self._normalize_bindings(
+            project_id=command.project_id,
+            required_slots=normalized_spec.credentials.required_slots,
+            bindings=(
+                profile.draft_credential_bindings
+                if command.credential_bindings is None
+                else command.credential_bindings
+            ),
+        )
         updated = self._repository.update_draft(
             execution_profile_id=profile.id,
             name=name,
             draft_spec=normalized_spec.model_dump(mode="json"),
+            draft_credential_bindings=bindings,
         )
         return self._profile_view(updated)
 
@@ -78,11 +96,22 @@ class ExecutionProfiles:
                 status_code=409,
             )
         normalized_spec = self._normalize_spec(profile.draft_spec)
+        readiness = self._credential_readiness(
+            normalized_spec.credentials.required_slots,
+            profile.draft_credential_bindings,
+        )
+        if not readiness.ready:
+            raise ExecutionProfileDomainError(
+                "EXECUTION_PROFILE_CREDENTIAL_BINDING_MISSING",
+                "Every required credential slot must have a Credential Reference binding.",
+                details=[{"slots": readiness.missing_slots}],
+            )
         revision = self._repository.publish(
             execution_profile_id=profile.id,
             public_spec=normalized_spec.model_dump(mode="json"),
             public_spec_hash=canonical_sha256(normalized_spec.model_dump(mode="json")),
-            credential_binding_digest=canonical_sha256({}),
+            credential_bindings=profile.draft_credential_bindings,
+            credential_binding_digest=readiness.binding_digest,
         )
         return self._revision_view(revision)
 
@@ -121,6 +150,82 @@ class ExecutionProfiles:
             ) from exc
 
     @staticmethod
+    def _normalize_bindings(
+        *,
+        project_id: str,
+        required_slots: list[str],
+        bindings: tuple[CredentialReferenceBindingInput, ...],
+    ) -> tuple[CredentialReferenceBindingInput, ...]:
+        normalized: dict[str, CredentialReferenceBindingInput] = {}
+        for binding in bindings:
+            slot = binding.slot.strip()
+            if not slot or slot in normalized:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_CREDENTIAL_BINDING_INVALID",
+                    "Credential Reference binding slots must be non-empty and unique.",
+                    details=[{"slot": slot}],
+                )
+            if binding.backend != "request":
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_CREDENTIAL_BACKEND_UNSUPPORTED",
+                    "Credential Reference backend is not supported.",
+                    details=[{"slot": slot}],
+                )
+            if binding.project_id != project_id:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_CREDENTIAL_BINDING_CROSS_PROJECT",
+                    "Credential Reference bindings must belong to the selected Project.",
+                    status_code=409,
+                    details=[{"slot": slot}],
+                )
+            if slot not in required_slots:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_CREDENTIAL_BINDING_EXTRA",
+                    "Credential Reference binding was supplied for an undeclared slot.",
+                    details=[{"slot": slot}],
+                )
+            reference_id = binding.reference_id.strip()
+            private_locator = binding.private_locator.strip()
+            if not reference_id or not private_locator:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_CREDENTIAL_BINDING_INVALID",
+                    "Credential Reference identity is incomplete.",
+                    details=[{"slot": slot}],
+                )
+            normalized[slot] = CredentialReferenceBindingInput(
+                slot=slot,
+                project_id=project_id,
+                backend=binding.backend,
+                reference_id=reference_id,
+                private_locator=private_locator,
+            )
+        return tuple(normalized[slot] for slot in sorted(normalized))
+
+    @staticmethod
+    def _credential_readiness(
+        required_slots: list[str],
+        bindings: tuple[CredentialReferenceBindingInput, ...],
+    ) -> CredentialReadiness:
+        bound_slots = sorted(binding.slot for binding in bindings)
+        missing_slots = sorted(set(required_slots) - set(bound_slots))
+        identity = {
+            binding.slot: {
+                "project_id": binding.project_id,
+                "backend": binding.backend,
+                "reference_id": binding.reference_id,
+                "private_locator": binding.private_locator,
+            }
+            for binding in bindings
+        }
+        return CredentialReadiness(
+            required_slots=sorted(required_slots),
+            bound_slots=bound_slots,
+            missing_slots=missing_slots,
+            ready=not missing_slots,
+            binding_digest=canonical_sha256(identity),
+        )
+
+    @staticmethod
     def _assert_project(actual_project_id: str, expected_project_id: str) -> None:
         if actual_project_id != expected_project_id:
             raise ExecutionProfileDomainError(
@@ -133,17 +238,23 @@ class ExecutionProfiles:
     def _revision_view(
         revision: ExecutionProfileRevision,
     ) -> ExecutionProfileRevisionView:
+        spec = ExecutionProfileSpec.model_validate(revision.public_spec)
         return ExecutionProfileRevisionView(
             id=revision.id,
             execution_profile_id=revision.execution_profile_id,
             revision_no=revision.revision_no,
-            public_spec=ExecutionProfileSpec.model_validate(revision.public_spec),
+            public_spec=spec,
             public_spec_hash=revision.public_spec_hash,
             credential_binding_digest=revision.credential_binding_digest,
+            credential_readiness=ExecutionProfiles._credential_readiness(
+                spec.credentials.required_slots,
+                revision.credential_bindings,
+            ),
             published_at=revision.published_at,
         )
 
     def _profile_view(self, profile: ExecutionProfile) -> ExecutionProfileView:
+        draft_spec = self._normalize_spec(profile.draft_spec)
         head_revision = None
         if profile.head_revision_id is not None:
             revision, _profile = self._repository.get_revision(
@@ -154,7 +265,11 @@ class ExecutionProfiles:
             id=profile.id,
             project_id=profile.project_id,
             name=profile.name,
-            draft_spec=self._normalize_spec(profile.draft_spec),
+            draft_spec=draft_spec,
+            credential_readiness=self._credential_readiness(
+                draft_spec.credentials.required_slots,
+                profile.draft_credential_bindings,
+            ),
             head_revision=head_revision,
             archived_at=profile.archived_at,
             created_at=profile.created_at,

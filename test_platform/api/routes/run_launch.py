@@ -38,6 +38,7 @@ class PreviewRunLaunchRequest(BaseModel):
 
 class CreateRunLaunchRequest(PreviewRunLaunchRequest):
     preview_token: str = Field(min_length=1)
+    secret_bindings: dict[str, str] = Field(default_factory=dict)
 
 
 @router.post("/projects/{project_id}/run-launch/preview")
@@ -71,10 +72,12 @@ def create_run_launch(
             get_database(request),
             settings=request.app.state.settings,
             supervisor=request.app.state.supervisor,
+            secret_resolver=request.app.state.secret_resolver,
+            compatibility_preflight=request.app.state.compatibility_preflight,
         ).create(
             CreateRunLaunch(**preview_command.__dict__),
             expected_preview_token=body.preview_token,
-            secret_bindings={},
+            secret_bindings=body.secret_bindings,
             idempotency_key=idempotency_key,
         )
     except RunDomainError as exc:
