@@ -63,6 +63,9 @@ export type RunSummary = {
     role: string;
     target_id: string;
     target_revision_id: string;
+    execution_profile_revision_id?: string | null;
+    execution_profile_revision_hash?: string | null;
+    lane_fingerprint?: string | null;
   }>;
   gate_verdict: string | null;
   created_at: string;
@@ -77,11 +80,29 @@ export type RunSummary = {
 
 export type RunDetail = RunSummary & {
   run_plan: Record<string, unknown>;
-  execution_identity: {
-    kind: 'legacy';
-    label: string;
-    schema_version: 1;
-  };
+  execution_identity:
+    | {
+      kind: 'legacy';
+      label: string;
+      schema_version: 1;
+    }
+    | {
+      kind: 'profile_aware';
+      label: string;
+      schema_version: 2;
+      lane_bindings: Array<{
+        lane_slot: string;
+        target_revision_id: string;
+        target_revision_hash: string;
+        execution_profile_id: string;
+        execution_profile_name: string;
+        execution_profile_revision_id: string;
+        execution_profile_revision_no: number;
+        execution_profile_public_hash: string;
+        execution_profile_revision_hash: string;
+        lane_fingerprint: string;
+      }>;
+    };
   run_attempts?: Array<{
     id: string;
     attempt_no: number;
@@ -459,6 +480,46 @@ export type ExecutionProfile = {
   updated_at: string;
 };
 
+export type RunLaunchLaneBindingInput = {
+  lane_slot: string;
+  target_revision_id: string;
+  execution_profile_revision_id: string;
+};
+
+export type RunLaunchCommand = {
+  project_id: string;
+  workflow_version_id: string;
+  name?: string;
+  seed: number;
+  comparison_intent: 'single';
+  lane_bindings: RunLaunchLaneBindingInput[];
+};
+
+export type RunLaunchPreview = {
+  workflow_version_id: string;
+  workflow_version_hash: string;
+  comparison_intent: 'single';
+  lane_bindings: Array<{
+    lane_slot: string;
+    role: string;
+    target_id: string;
+    target_revision_id: string;
+    target_revision_hash: string;
+    execution_profile_id: string;
+    execution_profile_name: string;
+    execution_profile_revision_id: string;
+    execution_profile_revision_no: number;
+    execution_profile_public_hash: string;
+    execution_profile_revision_hash: string;
+    lane_fingerprint: string;
+  }>;
+  episode_count: number;
+  fingerprint_inputs: Record<string, unknown>;
+  run_plan_fingerprint: string;
+  preview_token: string;
+  credential_requirements: string[];
+};
+
 export type RunDiagnostics = {
   schema_version: number;
   run_id: string;
@@ -661,7 +722,7 @@ export type WorkflowNode = {
 };
 
 export type WorkflowDefinition = {
-  schema_version: 1;
+  schema_version: 1 | 2;
   name: string;
   nodes: WorkflowNode[];
 };

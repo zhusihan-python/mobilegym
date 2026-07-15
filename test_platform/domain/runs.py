@@ -48,6 +48,28 @@ class LegacyExecutionIdentity:
 
 
 @dataclass(frozen=True)
+class ProfileAwareLaneIdentity:
+    lane_slot: str
+    target_revision_id: str
+    target_revision_hash: str
+    execution_profile_id: str
+    execution_profile_name: str
+    execution_profile_revision_id: str
+    execution_profile_revision_no: int
+    execution_profile_public_hash: str
+    execution_profile_revision_hash: str
+    lane_fingerprint: str
+
+
+@dataclass(frozen=True)
+class ProfileAwareExecutionIdentity:
+    lane_bindings: list[ProfileAwareLaneIdentity]
+    kind: Literal["profile_aware"] = "profile_aware"
+    label: str = "Execution Profile Revision"
+    schema_version: Literal[2] = 2
+
+
+@dataclass(frozen=True)
 class RunSummary:
     id: str
     project_id: str
@@ -68,7 +90,7 @@ class RunSummary:
 @dataclass(frozen=True)
 class RunDetail(RunSummary):
     run_plan: dict[str, Any]
-    execution_identity: LegacyExecutionIdentity
+    execution_identity: LegacyExecutionIdentity | ProfileAwareExecutionIdentity
     run_attempts: list[dict[str, Any]]
     lane_attempts: list[dict[str, Any]]
     target_revisions: list[dict[str, str]]

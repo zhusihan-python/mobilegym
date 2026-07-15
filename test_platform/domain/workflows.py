@@ -111,6 +111,12 @@ class WorkflowDefinition(BaseModel):
     nodes: list[WorkflowNode] = Field(default_factory=list)
 
 
+class WorkflowDefinitionV2(BaseModel):
+    schema_version: Literal[2] = 2
+    name: str = Field(min_length=1)
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+
+
 class WorkflowIssue(BaseModel):
     code: str
     message: str
@@ -201,7 +207,16 @@ class WorkflowValidator:
             if node.type == "task_selection":
                 issues.extend(_validate_task_selection(node, node_index, catalog, catalog_by_id))
             if node.type == "matrix":
-                issues.extend(_validate_matrix_targets(node, node_index, targets))
+                issues.extend(
+                    _validate_matrix_targets(
+                        node,
+                        node_index,
+                        targets,
+                        schema_version=definition.schema_version,
+                    )
+                )
+            if node.type == "execute" and definition.schema_version == 2:
+                issues.extend(_validate_v2_execute_subject_free(node, node_index))
             if node.type == "compare":
                 issues.extend(_validate_compare_config(node, node_index))
             if node.type == "gate":
@@ -233,7 +248,8 @@ class WorkflowCompiler:
                     selected_ids.add(item.task_base_id)
 
         matrix_node = next((node for node in definition.nodes if node.type == "matrix"), None)
-        lanes = matrix_node.config.get("lanes", {}) if matrix_node else {}
+        lane_config_key = "lane_slots" if definition.schema_version == 2 else "lanes"
+        lanes = matrix_node.config.get(lane_config_key, {}) if matrix_node else {}
         if not isinstance(lanes, dict):
             lanes = {}
         repeat_n = _positive_int(matrix_node.config.get("repeat_n") if matrix_node else None, default=1)
@@ -299,8 +315,12 @@ def _validate_matrix_targets(
     node: WorkflowNode,
     node_index: int,
     targets: dict[str, Any],
+    *,
+    schema_version: int,
 ) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
+    if schema_version == 2:
+        return _validate_lane_slots(node, node_index)
     lanes = node.config.get("lanes")
     if not isinstance(lanes, dict) or not lanes:
         return [
@@ -358,6 +378,103 @@ def _validate_matrix_targets(
             )
 
     return issues
+
+
+def _validate_lane_slots(
+    node: WorkflowNode,
+    node_index: int,
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    lane_slots = node.config.get("lane_slots")
+    pointer = f"/nodes/{node_index}/config/lane_slots"
+    if not isinstance(lane_slots, dict) or not lane_slots:
+        return [
+            WorkflowIssue(
+                code="WORKFLOW_LANE_SLOTS_MISSING",
+                message="Workflow v2 matrix requires Lane Slots.",
+                pointer=pointer,
+                node_id=node.id,
+            )
+        ]
+    if set(lane_slots) != {"candidate"}:
+        return [
+            WorkflowIssue(
+                code="WORKFLOW_LANE_SLOTS_UNSUPPORTED",
+                message="TP-EP02 requires exactly one candidate Lane Slot.",
+                pointer=pointer,
+                node_id=node.id,
+            )
+        ]
+
+    slot = lane_slots["candidate"]
+    if not isinstance(slot, dict) or slot.get("role") != "candidate":
+        return [
+            WorkflowIssue(
+                code="WORKFLOW_LANE_SLOT_INVALID",
+                message="The candidate Lane Slot must declare role candidate.",
+                pointer=f"{pointer}/candidate",
+                node_id=node.id,
+            )
+        ]
+    forbidden = (
+        "target_id",
+        "target_revision_id",
+        "execution_profile_id",
+        "execution_profile_revision_id",
+    )
+    for field in forbidden:
+        if field in slot:
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_LANE_SLOT_MUTABLE_RESOURCE_FORBIDDEN",
+                    message="Workflow v2 Lane Slots must not embed resource identities.",
+                    pointer=f"{pointer}/candidate/{field}",
+                    node_id=node.id,
+                )
+            )
+    if "lanes" in node.config:
+        issues.append(
+            WorkflowIssue(
+                code="WORKFLOW_LANE_SLOT_MUTABLE_RESOURCE_FORBIDDEN",
+                message="Workflow v2 uses Lane Slots instead of bound lanes.",
+                pointer=f"/nodes/{node_index}/config/lanes",
+                node_id=node.id,
+            )
+        )
+    return issues
+
+
+_V2_INLINE_SUBJECT_FIELDS = frozenset(
+    {
+        "agent",
+        "image_url_format",
+        "infer_timeout",
+        "max_tokens",
+        "model_api_key",
+        "model_base_url",
+        "model_name",
+        "no_stream",
+        "temperature",
+        "top_p",
+    }
+)
+
+
+def _validate_v2_execute_subject_free(
+    node: WorkflowNode,
+    node_index: int,
+) -> list[WorkflowIssue]:
+    return [
+        WorkflowIssue(
+            code="WORKFLOW_EXECUTION_SUBJECT_FORBIDDEN",
+            message=(
+                "Workflow v2 execute config must not embed Agent or model settings."
+            ),
+            pointer=f"/nodes/{node_index}/config/{field}",
+            node_id=node.id,
+        )
+        for field in sorted(_V2_INLINE_SUBJECT_FIELDS.intersection(node.config))
+    ]
 
 
 _VALID_TARGET_CONSTRAINTS = {"same_app", "same_device", "same_data"}

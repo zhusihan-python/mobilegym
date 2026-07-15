@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP01 complete on 2026-07-15; TP-EP02 not started |
+| Status | TP-EP02 complete on 2026-07-15; TP-EP03 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 and TP-EP01 authorized and complete; TP-EP02 requires a separate start request |
+| Implementation authorization | TP-EP00 through TP-EP02 authorized and complete; TP-EP03 requires a separate start request |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 is also complete; TP-EP02 has not started.
+are complete. TP-EP01 and TP-EP02 are also complete; TP-EP03 has not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 has not started.
+complete. TP-EP02 is also complete; TP-EP03 has not started.
 
 ### Acceptance criteria
 
@@ -262,22 +262,28 @@ deterministic subject: a Workflow v2 with one Lane Slot, exact Target and
 Execution Profile revision selection, preview token, Run Plan v2, durable Single
 Run, dedicated launch console, and Observatory identity display.
 
+Current evidence:
+[`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
+Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
+fingerprints, durable Run Plan v2 identity, transactional create, and the
+console preview/create/reload flow are complete. TP-EP03 has not started.
+
 ### Acceptance criteria
 
-- [ ] Workflow v2 publishes one `candidate` Lane Slot without embedding mutable
+- [x] Workflow v2 publishes one `candidate` Lane Slot without embedding mutable
       Target or Execution Profile heads.
-- [ ] Launch preview accepts exact same-Project revision IDs and returns the
+- [x] Launch preview accepts exact same-Project revision IDs and returns the
       resolved Lane Binding, public hashes, episode count, fingerprint inputs,
       and canonical preview token without writes.
-- [ ] `latest`, drafts, cross-Project revisions, stale Target
+- [x] `latest`, drafts, cross-Project revisions, stale Target
       Revisions, missing Lane Slots, and token drift fail structurally.
-- [ ] Create persists Run Plan v2 with one exact Lane Binding and a self-contained
+- [x] Create persists Run Plan v2 with one exact Lane Binding and a self-contained
       public execution snapshot before dispatch.
-- [ ] Run Plan and Lane fingerprints are stable for the same semantic inputs and
+- [x] Run Plan and Lane fingerprints are stable for the same semantic inputs and
       change when either revision changes.
-- [ ] The dedicated Run Launch console previews, creates, navigates to the Run,
+- [x] The dedicated Run Launch console previews, creates, navigates to the Run,
       reloads, and shows exact Workflow/Target/Profile identities.
-- [ ] Failure before commit creates no Run, Run Attempt, artifact, event, or
+- [x] Failure before commit creates no Run, Run Attempt, artifact, event, or
       idempotency record.
 
 ### Test seam
@@ -765,6 +771,6 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 and TP-EP01 were implemented only
-after their separate explicit start requests. TP-EP02 has not started and still
-requires a separate explicit start request.
+No external issue has been published. TP-EP00 through TP-EP02 were implemented
+only after their separate explicit start requests. TP-EP03 has not started and
+still requires a separate explicit start request.

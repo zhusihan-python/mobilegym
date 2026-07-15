@@ -275,7 +275,7 @@ def test_create_run_rejects_unknown_workflow_schema_without_side_effects(tmp_pat
             "details": [
                 {
                     "schema_version": 99,
-                    "supported_schema_versions": [1],
+                        "supported_schema_versions": [1, 2],
                 }
             ],
             "request_id": created.json()["error"]["request_id"],

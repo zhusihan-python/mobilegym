@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import random
 from typing import Any, Literal
 import zlib
@@ -8,8 +9,14 @@ import zlib
 from pydantic import BaseModel, Field
 
 from test_platform.domain.canonical_json import canonical_sha256
+from test_platform.domain.execution_profiles import (
+    ExecutionProfile,
+    ExecutionProfileRevision,
+    ExecutionProfileSpec,
+)
 from test_platform.domain.task_catalog import TaskCatalogItem, TaskCatalogSnapshot
-from test_platform.domain.workflows import WorkflowDefinition
+from test_platform.domain.targets import Target, TargetRevision
+from test_platform.domain.workflows import WorkflowDefinition, WorkflowDefinitionV2
 
 
 class TaskSourceRevision(BaseModel):
@@ -55,6 +62,61 @@ class RunPlan(BaseModel):
     gates: dict[str, Any] = Field(default_factory=dict)
     agent: dict[str, Any]
     judge: dict[str, Any]
+    artifacts: dict[str, Any]
+    created_at: str
+    fingerprint: str
+
+
+class FrozenExecutionSnapshot(BaseModel):
+    execution_profile_id: str
+    execution_profile_name: str
+    execution_profile_revision_id: str
+    execution_profile_revision_no: int
+    public_spec_hash: str
+    revision_hash: str
+    credential_binding_digest: str
+    public_spec: ExecutionProfileSpec
+
+
+@dataclass(frozen=True)
+class ResolvedLanePlanBinding:
+    target: Target
+    target_revision: TargetRevision
+    execution_profile: ExecutionProfile
+    execution_profile_revision: ExecutionProfileRevision
+
+
+class PlannedLaneV2(BaseModel):
+    lane_id: str
+    lane_key: str
+    role: str
+    target_id: str
+    target_revision_id: str
+    target_revision_hash: str
+    execution_profile_revision_id: str
+    execution_profile_revision_hash: str
+    execution_snapshot_key: str
+    effective_runner_config: dict[str, Any]
+    fingerprint: str
+
+    @property
+    def runner_config(self) -> dict[str, Any]:
+        return self.effective_runner_config
+
+
+class RunPlanV2(BaseModel):
+    schema_version: Literal[2] = 2
+    run_id: str
+    workflow_version_id: str
+    workflow_version_hash: str
+    task_source: TaskSourceRevision
+    execution_snapshots: dict[str, FrozenExecutionSnapshot]
+    lanes: list[PlannedLaneV2]
+    episodes: list[EpisodeTemplate]
+    materialization: dict[str, Any]
+    evaluation: dict[str, Any]
+    comparison: dict[str, Any]
+    gates: dict[str, Any] = Field(default_factory=dict)
     artifacts: dict[str, Any]
     created_at: str
     fingerprint: str
@@ -170,6 +232,165 @@ class RunPlanCompiler:
             gates=gates,
             agent=agent,
             judge=judge,
+            artifacts=artifacts,
+            created_at=created_at,
+            fingerprint=canonical_sha256(fingerprint_payload),
+        )
+
+
+class RunPlanV2Compiler:
+    def compile(
+        self,
+        *,
+        run_id: str,
+        workflow_version_id: str,
+        workflow_version_hash: str,
+        definition: WorkflowDefinitionV2,
+        catalog: TaskCatalogSnapshot,
+        bindings: dict[str, ResolvedLanePlanBinding],
+        seed: int,
+        created_at: str,
+        comparison_intent: Literal["single"],
+    ) -> RunPlanV2:
+        task_node = _required_node(definition, "task_selection")
+        matrix_node = _required_node(definition, "matrix")
+        execute_node = _required_node(definition, "execute")
+        selected_tasks = _selected_tasks(task_node.config, catalog)
+        sample_n = _positive_int(task_node.config.get("sample_n"), default=1)
+        repeat_n = _positive_int(matrix_node.config.get("repeat_n"), default=1)
+        lane_slots = matrix_node.config.get("lane_slots")
+        if not isinstance(lane_slots, dict):
+            raise ValueError("Workflow v2 matrix lane_slots must be an object.")
+
+        workflow_execution = _workflow_execution_projection(execute_node.config)
+        snapshots: dict[str, FrozenExecutionSnapshot] = {}
+        lanes: list[PlannedLaneV2] = []
+        for lane_slot in sorted(lane_slots):
+            slot_config = lane_slots[lane_slot]
+            resolved = bindings.get(lane_slot)
+            if not isinstance(slot_config, dict) or resolved is None:
+                raise ValueError(f"Lane Slot '{lane_slot}' was not resolved.")
+            target = resolved.target
+            target_revision = resolved.target_revision
+            profile = resolved.execution_profile
+            profile_revision = resolved.execution_profile_revision
+            public_spec = ExecutionProfileSpec.model_validate(
+                _field(profile_revision, "public_spec")
+            )
+            public_spec_hash = str(_field(profile_revision, "public_spec_hash"))
+            credential_binding_digest = str(
+                _field(profile_revision, "credential_binding_digest")
+            )
+            revision_hash = canonical_sha256(
+                {
+                    "public_spec_hash": public_spec_hash,
+                    "credential_binding_digest": credential_binding_digest,
+                }
+            )
+            snapshot_key = str(_field(profile_revision, "id"))
+            snapshots[snapshot_key] = FrozenExecutionSnapshot(
+                execution_profile_id=str(_field(profile, "id")),
+                execution_profile_name=str(_field(profile, "name")),
+                execution_profile_revision_id=snapshot_key,
+                execution_profile_revision_no=int(
+                    _field(profile_revision, "revision_no")
+                ),
+                public_spec_hash=public_spec_hash,
+                revision_hash=revision_hash,
+                credential_binding_digest=credential_binding_digest,
+                public_spec=public_spec,
+            )
+            effective_runner_config = _compose_profile_aware_runner_config(
+                target=target,
+                workflow_execution=workflow_execution,
+                public_spec=public_spec,
+            )
+            lane_payload = {
+                "lane_key": lane_slot,
+                "role": str(slot_config.get("role") or lane_slot),
+                "target_id": str(_field(target, "id")),
+                "target_revision_id": str(_field(target_revision, "id")),
+                "target_revision_hash": str(
+                    _field(target_revision, "metadata_hash")
+                ),
+                "execution_profile_revision_id": snapshot_key,
+                "execution_profile_revision_hash": revision_hash,
+                "execution_snapshot_key": snapshot_key,
+                "effective_runner_config": effective_runner_config,
+            }
+            lane_fingerprint = canonical_sha256(lane_payload)
+            lanes.append(
+                PlannedLaneV2(
+                    lane_id=f"{run_id}:{lane_slot}",
+                    **lane_payload,
+                    fingerprint=lane_fingerprint,
+                )
+            )
+
+        episodes = _compile_episodes(
+            selected_tasks,
+            sample_n=sample_n,
+            repeat_n=repeat_n,
+            seed=seed,
+            execute_config=execute_node.config,
+        )
+        task_source = TaskSourceRevision(
+            repository_revision=catalog.repository_revision,
+            registry_digest=catalog.digest,
+            selection={
+                "task_ids": [item.task_base_id for item in selected_tasks],
+                "sample_n": sample_n,
+                "seed": seed,
+            },
+        )
+        materialization = {
+            "source_lane_slot": lanes[0].lane_key if lanes else None,
+            "policy": "shared_explicit_params",
+            "strict_data_revision": True,
+            "strict_time_location": True,
+        }
+        evaluation = _pick_config(
+            execute_node.config,
+            ("judge_mode", "judge_model", "judge_base_url", "eval_mode"),
+        )
+        comparison = {"intent": comparison_intent}
+        gates = _gate_thresholds(definition)
+        artifacts = {
+            "run_plan": "platform/run-plan.json",
+            "target_revisions": "platform/target-revisions.json",
+        }
+        fingerprint_payload = {
+            "schema_version": 2,
+            "workflow_version_id": workflow_version_id,
+            "workflow_version_hash": workflow_version_hash,
+            "task_source": task_source.model_dump(mode="json"),
+            "execution_snapshots": {
+                key: snapshot.model_dump(
+                    mode="json",
+                    exclude={"execution_profile_name"},
+                )
+                for key, snapshot in sorted(snapshots.items())
+            },
+            "lane_fingerprints": [lane.fingerprint for lane in lanes],
+            "episodes": [episode.model_dump(mode="json") for episode in episodes],
+            "materialization": materialization,
+            "evaluation": evaluation,
+            "comparison": comparison,
+            "gates": gates,
+            "artifacts": artifacts,
+        }
+        return RunPlanV2(
+            run_id=run_id,
+            workflow_version_id=workflow_version_id,
+            workflow_version_hash=workflow_version_hash,
+            task_source=task_source,
+            execution_snapshots=snapshots,
+            lanes=lanes,
+            episodes=episodes,
+            materialization=materialization,
+            evaluation=evaluation,
+            comparison=comparison,
+            gates=gates,
             artifacts=artifacts,
             created_at=created_at,
             fingerprint=canonical_sha256(fingerprint_payload),
@@ -368,6 +589,69 @@ def _max_steps(task: TaskCatalogItem, execute_config: dict[str, Any]) -> int:
     if execute_config.get("eval_mode", "grounded") == "grounded" and task.answer_fields:
         steps += 15
     return steps
+
+
+_PROFILE_AWARE_WORKFLOW_EXECUTION_KEYS = (
+    "eval_mode",
+    "execution_strategy",
+    "failure_policy",
+    "judge_base_url",
+    "judge_mode",
+    "judge_model",
+    "max_steps",
+    "parallel",
+    "processes",
+    "sample_templates",
+    "state_policy",
+)
+
+
+def _workflow_execution_projection(config: dict[str, Any]) -> dict[str, Any]:
+    return _pick_config(config, _PROFILE_AWARE_WORKFLOW_EXECUTION_KEYS)
+
+
+def _compose_profile_aware_runner_config(
+    *,
+    target: Any,
+    workflow_execution: dict[str, Any],
+    public_spec: ExecutionProfileSpec,
+) -> dict[str, Any]:
+    target_config = deepcopy(_field(target, "config", {}))
+    connection = target_config.get("connection", {})
+    device_profile = target_config.get("device_profile", {})
+    if not isinstance(connection, dict):
+        connection = {}
+    if not isinstance(device_profile, dict):
+        device_profile = {}
+    return _sanitize(
+        {
+            "device": (
+                "sim" if target_config.get("kind") == "simulator" else "real"
+            ),
+            "env_url": connection.get("env_url"),
+            "proxy_configured": bool(connection.get("proxy_secret_ref")),
+            "viewport_size": [
+                device_profile.get("viewport_width"),
+                device_profile.get("viewport_height"),
+            ],
+            "physical_size": [
+                device_profile.get("physical_width"),
+                device_profile.get("physical_height"),
+            ],
+            "device_scale_factor": device_profile.get("device_scale_factor"),
+            "runtime": target_config.get("runtime", {}),
+            **workflow_execution,
+            "agent": public_spec.agent.id,
+            "model_base_url": public_spec.model.base_url,
+            "model_name": public_spec.model.name,
+            "image_url_format": public_spec.image_input.format,
+            "temperature": public_spec.generation.temperature,
+            "top_p": public_spec.generation.top_p,
+            "max_tokens": public_spec.generation.max_tokens,
+            "no_stream": not public_spec.generation.stream,
+            "infer_timeout": public_spec.inference.timeout_seconds,
+        }
+    )
 
 
 def _sanitize(value: Any) -> Any:

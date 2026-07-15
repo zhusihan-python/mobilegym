@@ -58,6 +58,7 @@ from test_platform.domain.targets import (
     Target,
     TargetNotFound,
     TargetRevision,
+    TargetRevisionNotFound,
     canonical_metadata_hash,
     new_target_id,
     new_target_revision_id,
@@ -265,6 +266,24 @@ class TargetRepository:
             (target_id,),
         ).fetchone()
         return _map_target_revision(row) if row is not None else None
+
+    def get_revision(
+        self,
+        target_revision_id: str,
+    ) -> tuple[TargetRevision, Target]:
+        row = self.database.connection.execute(
+            """
+            SELECT id, target_id, metadata_json, metadata_hash,
+                   health_status, warnings_json, resolved_at
+            FROM target_revisions
+            WHERE id = ?
+            """,
+            (target_revision_id,),
+        ).fetchone()
+        if row is None:
+            raise TargetRevisionNotFound(target_revision_id)
+        revision = _map_target_revision(row)
+        return revision, self.get(revision.target_id)
 
     def record_revision(
         self,
@@ -675,6 +694,9 @@ class RunRepository:
         lane_rows = self.database.connection.execute(
             """
             SELECT l.id, l.lane_key, l.role, l.target_id, l.target_revision_id,
+                   l.execution_profile_revision_id,
+                   l.execution_profile_revision_hash,
+                   l.reproducibility_fingerprint,
                    tr.metadata_hash
             FROM lanes AS l
             JOIN target_revisions AS tr ON tr.id = l.target_revision_id
@@ -740,6 +762,13 @@ class RunRepository:
                 "role": lane["role"],
                 "target_id": lane["target_id"],
                 "target_revision_id": lane["target_revision_id"],
+                "execution_profile_revision_id": lane[
+                    "execution_profile_revision_id"
+                ],
+                "execution_profile_revision_hash": lane[
+                    "execution_profile_revision_hash"
+                ],
+                "lane_fingerprint": lane["reproducibility_fingerprint"],
             }
             for lane in lane_rows
         ]
@@ -844,7 +873,10 @@ class RunRepository:
         ).fetchone()
         lane_rows = self.database.connection.execute(
             """
-            SELECT id, lane_key, role, target_id, target_revision_id
+            SELECT id, lane_key, role, target_id, target_revision_id,
+                   execution_profile_revision_id,
+                   execution_profile_revision_hash,
+                   reproducibility_fingerprint AS lane_fingerprint
             FROM lanes
             WHERE run_id = ?
             ORDER BY lane_key

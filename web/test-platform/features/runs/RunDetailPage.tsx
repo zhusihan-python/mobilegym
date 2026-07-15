@@ -455,6 +455,10 @@ export function RunDetailPage() {
             <dd>{run.execution_identity.label}</dd>
           </div>
           <div>
+            <dt>Workflow Version</dt>
+            <dd className="tp-mono">{run.workflow_version_id}</dd>
+          </div>
+          <div>
             <dt>Verdict</dt>
             <dd>{run.gate_verdict ?? 'pending'}</dd>
           </div>
@@ -644,6 +648,36 @@ export function RunDetailPage() {
           </tbody>
         </table>
       </section>
+
+      {run.execution_identity.kind === 'profile_aware' ? (
+        <section className="tp-panel" data-testid="tp-profile-aware-identity">
+          <h2>Execution Profile Revisions</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>Execution Profile</th>
+                <th>Revision</th>
+                <th>Public hash</th>
+                <th>Lane fingerprint</th>
+              </tr>
+            </thead>
+            <tbody>
+              {run.execution_identity.lane_bindings.map((binding) => (
+                <tr key={binding.lane_slot}>
+                  <td>{binding.lane_slot}</td>
+                  <td>{binding.execution_profile_name}</td>
+                  <td className="tp-mono">
+                    {binding.execution_profile_revision_no} / {binding.execution_profile_revision_id}
+                  </td>
+                  <td className="tp-mono">{binding.execution_profile_public_hash}</td>
+                  <td className="tp-mono">{binding.lane_fingerprint}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
 
       {episodeAttempts.length > 0 ? (
         <section className="tp-panel" data-testid="tp-episode-attempts">

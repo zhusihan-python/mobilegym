@@ -18,6 +18,8 @@ import type {
   Project,
   ReadinessResponse,
   RunDetail,
+  RunLaunchCommand,
+  RunLaunchPreview,
   RunEvent,
   RunDiagnostics,
   RunReport,
@@ -226,6 +228,46 @@ export function getDiagnostics(
   const query = params.toString();
   return apiFetch<RunDiagnostics>(
     `/runs/${encodeURIComponent(runId)}/diagnostics${query ? `?${query}` : ''}`,
+  );
+}
+
+export function previewRunLaunch(
+  input: RunLaunchCommand,
+): Promise<RunLaunchPreview> {
+  return apiFetch<RunLaunchPreview>(
+    `/projects/${encodeURIComponent(input.project_id)}/run-launch/preview`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        workflow_version_id: input.workflow_version_id,
+        name: input.name,
+        seed: input.seed,
+        comparison_intent: input.comparison_intent,
+        lane_bindings: input.lane_bindings,
+      }),
+    },
+  );
+}
+
+export function createRunLaunch(input: {
+  command: RunLaunchCommand;
+  previewToken: string;
+  idempotencyKey: string;
+}): Promise<RunDetail> {
+  return apiFetch<RunDetail>(
+    `/projects/${encodeURIComponent(input.command.project_id)}/run-launch`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': input.idempotencyKey },
+      body: JSON.stringify({
+        workflow_version_id: input.command.workflow_version_id,
+        name: input.command.name,
+        seed: input.command.seed,
+        comparison_intent: input.command.comparison_intent,
+        lane_bindings: input.command.lane_bindings,
+        preview_token: input.previewToken,
+      }),
+    },
   );
 }
 

@@ -19,6 +19,7 @@ from test_platform.api.routes.projects import router as projects_router
 from test_platform.api.routes.replay import router as replay_router
 from test_platform.api.routes.reports import router as reports_router
 from test_platform.api.routes.runs import router as runs_router
+from test_platform.api.routes.run_launch import router as run_launch_router
 from test_platform.api.routes.tasks import router as tasks_router
 from test_platform.api.routes.targets import router as targets_router
 from test_platform.api.routes.workflows import router as workflows_router
@@ -117,6 +118,7 @@ def create_app(
     app.include_router(replay_router)
     app.include_router(reports_router)
     app.include_router(runs_router)
+    app.include_router(run_launch_router)
     app.include_router(tasks_router)
     app.include_router(targets_router)
     app.include_router(workflows_router)

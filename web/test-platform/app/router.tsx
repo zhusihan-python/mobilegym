@@ -8,6 +8,7 @@ import { TargetsPage } from '../features/targets/TargetsPage';
 import { WorkflowsPage } from '../features/workflows/WorkflowsPage';
 import { BaselineDetailPage, BaselinesPage } from '../features/baselines/BaselinesPage';
 import { ExecutionProfilesPage } from '../features/execution-profiles/ExecutionProfilesPage';
+import { RunLaunchPage } from '../features/run-launch/RunLaunchPage';
 
 export function PlatformRoutes() {
   return (
@@ -22,6 +23,7 @@ export function PlatformRoutes() {
         <Route path="targets" element={<TargetsPage />} />
         <Route path="workflows" element={<WorkflowsPage />} />
         <Route path="execution-profiles" element={<ExecutionProfilesPage />} />
+        <Route path="run-launch" element={<RunLaunchPage />} />
         <Route path="*" element={<Navigate to="/runs" replace />} />
       </Route>
     </Routes>

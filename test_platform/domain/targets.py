@@ -36,6 +36,16 @@ class TargetNotFound(TargetDomainError):
         )
 
 
+class TargetRevisionNotFound(TargetDomainError):
+    def __init__(self, target_revision_id: str) -> None:
+        super().__init__(
+            "TARGET_REVISION_NOT_FOUND",
+            "Target Revision was not found.",
+            status_code=404,
+            details=[{"target_revision_id": target_revision_id}],
+        )
+
+
 class DuplicateTargetName(TargetDomainError):
     def __init__(self, name: str) -> None:
         super().__init__(

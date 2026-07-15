@@ -355,7 +355,7 @@ def test_run_detail_rejects_unknown_run_plan_schema_without_rewriting_it(tmp_pat
             "details": [
                 {
                     "schema_version": 99,
-                    "supported_schema_versions": [1],
+                    "supported_schema_versions": [1, 2],
                 }
             ],
             "request_id": detail.json()["error"]["request_id"],

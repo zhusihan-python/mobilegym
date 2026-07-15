@@ -150,6 +150,7 @@ export function PlatformShell() {
           <NavLink to="/targets">Targets</NavLink>
           <NavLink to="/workflows">Workflows</NavLink>
           <NavLink to="/execution-profiles">Execution Profiles</NavLink>
+          <NavLink to="/run-launch">Run Launch</NavLink>
         </nav>
       </aside>
 
@@ -389,6 +390,7 @@ function pageTitle(pathname: string) {
   if (pathname.startsWith('/targets')) return 'Targets';
   if (pathname.startsWith('/workflows')) return 'Workflows';
   if (pathname.startsWith('/execution-profiles')) return 'Execution Profiles';
+  if (pathname.startsWith('/run-launch')) return 'Run Launch';
   return 'Runs';
 }
 

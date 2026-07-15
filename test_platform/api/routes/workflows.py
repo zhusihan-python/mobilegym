@@ -12,6 +12,7 @@ from test_platform.domain.workflows import (
     Workflow,
     WorkflowCompiler,
     WorkflowDefinition,
+    WorkflowDefinitionV2,
     WorkflowDomainError,
     WorkflowValidator,
     WorkflowVersion,
@@ -23,12 +24,12 @@ router = APIRouter(prefix="/api/platform/v1")
 
 class CreateWorkflowRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    definition: WorkflowDefinition
+    definition: WorkflowDefinition | WorkflowDefinitionV2
 
 
 class UpdateWorkflowDraftRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    definition: WorkflowDefinition
+    definition: WorkflowDefinition | WorkflowDefinitionV2
 
 
 @router.post("/projects/{project_id}/workflows", status_code=201)

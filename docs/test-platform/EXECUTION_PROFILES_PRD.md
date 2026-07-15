@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP01 on 2026-07-15 |
+| Status | Accepted; delivery complete through TP-EP02 on 2026-07-15 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 and TP-EP01 complete; TP-EP02 and later slices require separate authorization |
-| Current evidence | [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md) |
+| Implementation authorization | TP-EP00 through TP-EP02 complete; TP-EP03 and later slices require separate authorization |
+| Current evidence | [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md) |
 
 ## 1. Summary
 
@@ -288,7 +288,7 @@ identity from loose Agent/model fields.
 
 - [ ] A user can publish two immutable Execution Profile Revisions and inspect a
       redacted field diff.
-- [ ] A Single Run freezes one exact Target Revision and one exact Execution
+- [x] A Single Run freezes one exact Target Revision and one exact Execution
       Profile Revision in its Run Plan and public provenance.
 - [ ] An Execution Comparison runs two profiles against one exact Target
       Revision and one shared set of Prepared Episodes.
@@ -323,9 +323,8 @@ identity from loose Agent/model fields.
 
 ## 10. Delivery gate
 
-This PRD authorizes delivery planning only. The proposed slices are recorded in
+The delivery-planning gate was satisfied by the approved slices in
 [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
-Before implementation begins, that plan must be reviewed and must define
-independently verifiable vertical slices, migration ordering, compatibility
-gates, deterministic adapters, rollback expectations, and final acceptance
-evidence.
+Implementation continues only through separately authorized slices with
+independently verifiable seams, migration ordering, compatibility gates,
+deterministic adapters, rollback expectations, and acceptance evidence.
