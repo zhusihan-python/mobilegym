@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from collections import Counter
 from datetime import UTC, datetime
 import hashlib
@@ -333,8 +334,14 @@ class TargetRepository:
 
 
 class ExecutionProfileRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
         self.database = database
+        self._now = clock or execution_profile_utc_timestamp
 
     def create(
         self,
@@ -346,37 +353,45 @@ class ExecutionProfileRepository:
     ) -> ExecutionProfile:
         ProjectRepository(self.database).get(project_id)
         cleaned_name = clean_execution_profile_name(name)
-        now = execution_profile_utc_timestamp()
+        now = self._now()
         profile_id = new_execution_profile_id()
-        self.database.connection.execute(
-            """
-            INSERT INTO execution_profiles (
-              id, project_id, name, name_key, draft_spec_json,
-              draft_credential_bindings_json, head_revision_id, archived_at,
-              created_at, updated_at
+        name_key = normalize_execution_profile_name(cleaned_name)
+        try:
+            self.database.connection.execute(
+                """
+                INSERT INTO execution_profiles (
+                  id, project_id, name, name_key, draft_spec_json,
+                  draft_credential_bindings_json, draft_version, head_revision_id,
+                  archived_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)
+                """,
+                (
+                    profile_id,
+                    project_id,
+                    cleaned_name,
+                    name_key,
+                    canonical_json(draft_spec),
+                    canonical_json(
+                        _credential_bindings_payload(draft_credential_bindings)
+                    ),
+                    now,
+                    now,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
-            """,
-            (
-                profile_id,
-                project_id,
-                cleaned_name,
-                normalize_execution_profile_name(cleaned_name),
-                canonical_json(draft_spec),
-                canonical_json(_credential_bindings_payload(draft_credential_bindings)),
-                now,
-                now,
-            ),
-        )
-        self.database.connection.commit()
+            self.database.connection.commit()
+        except sqlite3.IntegrityError as exc:
+            self.database.connection.rollback()
+            self._raise_name_conflict(project_id, name_key, exc)
+            raise
         return self.get(profile_id)
 
     def get(self, profile_id: str) -> ExecutionProfile:
         row = self.database.connection.execute(
             """
             SELECT id, project_id, name, name_key, draft_spec_json,
-                   draft_credential_bindings_json, head_revision_id, archived_at,
-                   created_at, updated_at
+                   draft_credential_bindings_json, draft_version,
+                   head_revision_id, archived_at, created_at, updated_at
             FROM execution_profiles
             WHERE id = ?
             """,
@@ -391,15 +406,21 @@ class ExecutionProfileRepository:
             )
         return _map_execution_profile(row)
 
-    def list(self, *, project_id: str) -> list[ExecutionProfile]:
+    def list(
+        self,
+        *,
+        project_id: str,
+        include_archived: bool = False,
+    ) -> list[ExecutionProfile]:
         ProjectRepository(self.database).get(project_id)
+        archived_filter = "" if include_archived else "AND archived_at IS NULL"
         rows = self.database.connection.execute(
-            """
+            f"""
             SELECT id, project_id, name, name_key, draft_spec_json,
-                   draft_credential_bindings_json, head_revision_id, archived_at,
-                   created_at, updated_at
+                   draft_credential_bindings_json, draft_version,
+                   head_revision_id, archived_at, created_at, updated_at
             FROM execution_profiles
-            WHERE project_id = ? AND archived_at IS NULL
+            WHERE project_id = ? {archived_filter}
             ORDER BY created_at ASC, id ASC
             """,
             (project_id,),
@@ -413,27 +434,175 @@ class ExecutionProfileRepository:
         name: str,
         draft_spec: dict[str, Any],
         draft_credential_bindings: tuple[CredentialReferenceBindingInput, ...],
+        expected_draft_version: int,
     ) -> ExecutionProfile:
-        self.get(execution_profile_id)
         cleaned_name = clean_execution_profile_name(name)
-        self.database.connection.execute(
-            """
-            UPDATE execution_profiles
-            SET name = ?, name_key = ?, draft_spec_json = ?,
-                draft_credential_bindings_json = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                cleaned_name,
+        connection = self.database.connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE execution_profiles
+                SET name = ?, name_key = ?, draft_spec_json = ?,
+                    draft_credential_bindings_json = ?,
+                    draft_version = draft_version + 1, updated_at = ?
+                WHERE id = ? AND draft_version = ? AND archived_at IS NULL
+                """,
+                (
+                    cleaned_name,
+                    normalize_execution_profile_name(cleaned_name),
+                    canonical_json(draft_spec),
+                    canonical_json(
+                        _credential_bindings_payload(draft_credential_bindings)
+                    ),
+                    self._now(),
+                    execution_profile_id,
+                    expected_draft_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                current = connection.execute(
+                    """
+                    SELECT draft_version, archived_at
+                    FROM execution_profiles
+                    WHERE id = ?
+                    """,
+                    (execution_profile_id,),
+                ).fetchone()
+                if current is None:
+                    raise ExecutionProfileDomainError(
+                        "EXECUTION_PROFILE_NOT_FOUND",
+                        "Execution Profile was not found.",
+                        status_code=404,
+                    )
+                if current["archived_at"] is not None:
+                    raise ExecutionProfileDomainError(
+                        "EXECUTION_PROFILE_ARCHIVED",
+                        "Archived Execution Profiles cannot be changed.",
+                        status_code=409,
+                    )
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_DRAFT_STALE",
+                    "Execution Profile draft changed after it was loaded.",
+                    status_code=409,
+                    details=[
+                        {
+                            "expected_draft_version": expected_draft_version,
+                            "current_draft_version": int(current["draft_version"]),
+                        }
+                    ],
+                )
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            self._raise_name_conflict(
+                self.get(execution_profile_id).project_id,
                 normalize_execution_profile_name(cleaned_name),
-                canonical_json(draft_spec),
-                canonical_json(_credential_bindings_payload(draft_credential_bindings)),
-                execution_profile_utc_timestamp(),
-                execution_profile_id,
-            ),
-        )
-        self.database.connection.commit()
+                exc,
+                excluding_execution_profile_id=execution_profile_id,
+            )
+            raise
+        except Exception:
+            connection.rollback()
+            raise
         return self.get(execution_profile_id)
+
+    def archive(
+        self,
+        *,
+        execution_profile_id: str,
+        expected_draft_version: int,
+        expected_head_revision_id: str | None,
+    ) -> ExecutionProfile:
+        connection = self.database.connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT draft_version, head_revision_id, archived_at
+                FROM execution_profiles
+                WHERE id = ?
+                """,
+                (execution_profile_id,),
+            ).fetchone()
+            if row is None:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_NOT_FOUND",
+                    "Execution Profile was not found.",
+                    status_code=404,
+                )
+            if row["archived_at"] is not None:
+                connection.commit()
+                return self.get(execution_profile_id)
+            current_head_revision_id = (
+                str(row["head_revision_id"])
+                if row["head_revision_id"] is not None
+                else None
+            )
+            if (
+                int(row["draft_version"]) != expected_draft_version
+                or current_head_revision_id != expected_head_revision_id
+            ):
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_ARCHIVE_STALE",
+                    "Execution Profile draft or head changed after it was loaded.",
+                    status_code=409,
+                    details=[
+                        {
+                            "expected_draft_version": expected_draft_version,
+                            "current_draft_version": int(row["draft_version"]),
+                            "expected_head_revision_id": expected_head_revision_id,
+                            "current_head_revision_id": current_head_revision_id,
+                        }
+                    ],
+                )
+            now = self._now()
+            connection.execute(
+                """
+                UPDATE execution_profiles
+                SET archived_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, execution_profile_id),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        return self.get(execution_profile_id)
+
+    def _raise_name_conflict(
+        self,
+        project_id: str,
+        name_key: str,
+        cause: sqlite3.IntegrityError,
+        *,
+        excluding_execution_profile_id: str | None = None,
+    ) -> None:
+        exclusion = "" if excluding_execution_profile_id is None else "AND id <> ?"
+        params: tuple[str, ...] = (
+            (project_id, name_key)
+            if excluding_execution_profile_id is None
+            else (project_id, name_key, excluding_execution_profile_id)
+        )
+        conflict = self.database.connection.execute(
+            f"""
+            SELECT id
+            FROM execution_profiles
+            WHERE project_id = ? AND name_key = ? AND archived_at IS NULL
+              {exclusion}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if conflict is None:
+            raise cause
+        raise ExecutionProfileDomainError(
+            "EXECUTION_PROFILE_NAME_CONFLICT",
+            "An active Execution Profile with this name already exists in the Project.",
+            status_code=409,
+            details=[{"conflicting_execution_profile_id": str(conflict["id"])}],
+        ) from cause
 
     def publish(
         self,
@@ -443,11 +612,83 @@ class ExecutionProfileRepository:
         public_spec_hash: str,
         credential_bindings: tuple[CredentialReferenceBindingInput, ...],
         credential_binding_digest: str,
+        expected_draft_version: int,
+        expected_head_revision_id: str | None,
     ) -> ExecutionProfileRevision:
-        profile = self.get(execution_profile_id)
         connection = self.database.connection
         try:
             connection.execute("BEGIN IMMEDIATE")
+            profile_row = connection.execute(
+                """
+                SELECT draft_version, head_revision_id, archived_at
+                FROM execution_profiles
+                WHERE id = ?
+                """,
+                (execution_profile_id,),
+            ).fetchone()
+            if profile_row is None:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_NOT_FOUND",
+                    "Execution Profile was not found.",
+                    status_code=404,
+                )
+            if profile_row["archived_at"] is not None:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_ARCHIVED",
+                    "Archived Execution Profiles cannot be published.",
+                    status_code=409,
+                )
+            current_head_revision_id = (
+                str(profile_row["head_revision_id"])
+                if profile_row["head_revision_id"] is not None
+                else None
+            )
+            if int(profile_row["draft_version"]) != expected_draft_version:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_PUBLICATION_STALE",
+                    "Execution Profile draft or head changed after it was loaded.",
+                    status_code=409,
+                    details=[
+                        {
+                            "expected_draft_version": expected_draft_version,
+                            "current_draft_version": int(profile_row["draft_version"]),
+                            "expected_head_revision_id": expected_head_revision_id,
+                            "current_head_revision_id": current_head_revision_id,
+                        }
+                    ],
+                )
+            if current_head_revision_id is not None:
+                head_row = connection.execute(
+                    """
+                    SELECT public_spec_hash, credential_binding_digest
+                    FROM execution_profile_revisions
+                    WHERE id = ?
+                    """,
+                    (current_head_revision_id,),
+                ).fetchone()
+                if (
+                    head_row is not None
+                    and head_row["public_spec_hash"] == public_spec_hash
+                    and head_row["credential_binding_digest"]
+                    == credential_binding_digest
+                ):
+                    connection.commit()
+                    revision, _profile = self.get_revision(current_head_revision_id)
+                    return revision
+            if current_head_revision_id != expected_head_revision_id:
+                raise ExecutionProfileDomainError(
+                    "EXECUTION_PROFILE_PUBLICATION_STALE",
+                    "Execution Profile draft or head changed after it was loaded.",
+                    status_code=409,
+                    details=[
+                        {
+                            "expected_draft_version": expected_draft_version,
+                            "current_draft_version": int(profile_row["draft_version"]),
+                            "expected_head_revision_id": expected_head_revision_id,
+                            "current_head_revision_id": current_head_revision_id,
+                        }
+                    ],
+                )
             row = connection.execute(
                 """
                 SELECT COALESCE(MAX(revision_no), 0) AS revision_no
@@ -458,7 +699,7 @@ class ExecutionProfileRepository:
             ).fetchone()
             revision_no = int(row["revision_no"]) + 1
             revision_id = new_execution_profile_revision_id()
-            published_at = execution_profile_utc_timestamp()
+            published_at = self._now()
             connection.execute(
                 """
                 INSERT INTO execution_profile_revisions (
@@ -469,7 +710,7 @@ class ExecutionProfileRepository:
                 """,
                 (
                     revision_id,
-                    profile.id,
+                    execution_profile_id,
                     revision_no,
                     canonical_json(public_spec),
                     public_spec_hash,
@@ -501,7 +742,7 @@ class ExecutionProfileRepository:
                 SET head_revision_id = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (revision_id, published_at, profile.id),
+                (revision_id, published_at, execution_profile_id),
             )
             connection.commit()
         except Exception:
@@ -550,6 +791,22 @@ class ExecutionProfileRepository:
             }
         )
         return revision, self.get(revision.execution_profile_id)
+
+    def list_revisions(
+        self,
+        execution_profile_id: str,
+    ) -> list[ExecutionProfileRevision]:
+        self.get(execution_profile_id)
+        rows = self.database.connection.execute(
+            """
+            SELECT id
+            FROM execution_profile_revisions
+            WHERE execution_profile_id = ?
+            ORDER BY revision_no ASC
+            """,
+            (execution_profile_id,),
+        ).fetchall()
+        return [self.get_revision(str(row["id"]))[0] for row in rows]
 
 
 class WorkflowRepository:
@@ -3248,6 +3505,7 @@ def _map_execution_profile(row: sqlite3.Row) -> ExecutionProfile:
             _map_credential_binding(binding)
             for binding in json.loads(row["draft_credential_bindings_json"])
         ),
+        draft_version=int(row["draft_version"]),
         head_revision_id=(
             str(row["head_revision_id"])
             if row["head_revision_id"] is not None

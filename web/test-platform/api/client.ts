@@ -12,6 +12,7 @@ import type {
   EpisodeReplay,
   ExecutionProfile,
   ExecutionProfileRevision,
+  ExecutionProfileRevisionDiff,
   ExecutionProfileSpec,
   CredentialReferenceBindingInput,
   FollowupRunAttempt,
@@ -276,9 +277,11 @@ export function createRunLaunch(input: {
 
 export function listExecutionProfiles(
   projectId: string,
+  includeArchived = false,
 ): Promise<CollectionResponse<ExecutionProfile>> {
+  const query = includeArchived ? '?include_archived=true' : '';
   return apiFetch<CollectionResponse<ExecutionProfile>>(
-    `/projects/${encodeURIComponent(projectId)}/execution-profiles`,
+    `/projects/${encodeURIComponent(projectId)}/execution-profiles${query}`,
   );
 }
 
@@ -304,12 +307,104 @@ export function createExecutionProfile(input: {
 export function publishExecutionProfile(input: {
   projectId: string;
   executionProfileId: string;
+  expectedDraftVersion: number;
+  expectedHeadRevisionId: string | null;
 }): Promise<ExecutionProfileRevision> {
   return apiFetch<ExecutionProfileRevision>(
     `/projects/${encodeURIComponent(input.projectId)}/execution-profiles/${encodeURIComponent(
       input.executionProfileId,
     )}/publish`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_draft_version: input.expectedDraftVersion,
+        expected_head_revision_id: input.expectedHeadRevisionId,
+      }),
+    },
+  );
+}
+
+export function updateExecutionProfileDraft(input: {
+  projectId: string;
+  executionProfileId: string;
+  name: string;
+  draftSpec: ExecutionProfileSpec;
+  expectedDraftVersion: number;
+  credentialBindings?: CredentialReferenceBindingInput[];
+}): Promise<ExecutionProfile> {
+  return apiFetch<ExecutionProfile>(
+    `/projects/${encodeURIComponent(input.projectId)}/execution-profiles/${encodeURIComponent(
+      input.executionProfileId,
+    )}/draft`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: input.name,
+        draft_spec: input.draftSpec,
+        expected_draft_version: input.expectedDraftVersion,
+        ...(input.credentialBindings === undefined
+          ? {}
+          : { credential_bindings: input.credentialBindings }),
+      }),
+    },
+  );
+}
+
+export function listExecutionProfileRevisions(input: {
+  projectId: string;
+  executionProfileId: string;
+}): Promise<CollectionResponse<ExecutionProfileRevision>> {
+  return apiFetch<CollectionResponse<ExecutionProfileRevision>>(
+    `/projects/${encodeURIComponent(input.projectId)}/execution-profiles/${encodeURIComponent(
+      input.executionProfileId,
+    )}/revisions`,
+  );
+}
+
+export function diffExecutionProfileRevisions(input: {
+  projectId: string;
+  fromRevisionId: string;
+  toRevisionId: string;
+}): Promise<ExecutionProfileRevisionDiff> {
+  const params = new URLSearchParams({
+    from_revision_id: input.fromRevisionId,
+    to_revision_id: input.toRevisionId,
+  });
+  return apiFetch<ExecutionProfileRevisionDiff>(
+    `/projects/${encodeURIComponent(input.projectId)}`
+      + `/execution-profile-revision-diff?${params.toString()}`,
+  );
+}
+
+export function cloneExecutionProfileRevision(input: {
+  projectId: string;
+  revisionId: string;
+  name: string;
+}): Promise<ExecutionProfile> {
+  return apiFetch<ExecutionProfile>(
+    `/projects/${encodeURIComponent(input.projectId)}`
+      + `/execution-profile-revisions/${encodeURIComponent(input.revisionId)}/clone`,
+    { method: 'POST', body: JSON.stringify({ name: input.name }) },
+  );
+}
+
+export function archiveExecutionProfile(input: {
+  projectId: string;
+  executionProfileId: string;
+  expectedDraftVersion: number;
+  expectedHeadRevisionId: string | null;
+}): Promise<ExecutionProfile> {
+  return apiFetch<ExecutionProfile>(
+    `/projects/${encodeURIComponent(input.projectId)}/execution-profiles/${encodeURIComponent(
+      input.executionProfileId,
+    )}/archive`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        expected_draft_version: input.expectedDraftVersion,
+        expected_head_revision_id: input.expectedHeadRevisionId,
+      }),
+    },
   );
 }
 

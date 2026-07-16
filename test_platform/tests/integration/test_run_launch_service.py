@@ -203,6 +203,8 @@ def _prepare_launch(tmp_path) -> PreparedLaunch:
         PublishProfile(
             project_id=project.id,
             execution_profile_id=profile.id,
+            expected_draft_version=profile.draft_version,
+            expected_head_revision_id=None,
         )
     )
     return PreparedLaunch(
@@ -485,6 +487,7 @@ def test_run_and_lane_fingerprints_are_stable_and_revision_sensitive(tmp_path):
                 project_id=fixture.project.id,
                 execution_profile_id=fixture.profile.id,
                 draft_spec=_profile_spec(),
+                expected_draft_version=fixture.profile.draft_version,
                 name="Renamed deterministic generic v2",
             )
         )
@@ -503,6 +506,8 @@ def test_run_and_lane_fingerprints_are_stable_and_revision_sensitive(tmp_path):
             PublishProfile(
                 project_id=fixture.project.id,
                 execution_profile_id=changed_profile.id,
+                expected_draft_version=changed_profile.draft_version,
+                expected_head_revision_id=None,
             )
         )
         profile_changed_command = PreviewRunLaunch(

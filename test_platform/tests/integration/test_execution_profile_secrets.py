@@ -194,6 +194,8 @@ def _prepare_credential_launch(tmp_path) -> _PreparedCredentialLaunch:
         PublishProfile(
             project_id=project.id,
             execution_profile_id=profile.id,
+            expected_draft_version=profile.draft_version,
+            expected_head_revision_id=None,
         )
     )
     return _PreparedCredentialLaunch(
@@ -337,6 +339,8 @@ def test_profile_revision_publishes_private_credential_reference_as_redacted_ide
             PublishProfile(
                 project_id=project.id,
                 execution_profile_id=draft.id,
+                expected_draft_version=draft.draft_version,
+                expected_head_revision_id=None,
             )
         )
         reloaded = profiles.get_revision(
@@ -432,6 +436,8 @@ def test_profile_publication_rejects_missing_credential_reference_binding(tmp_pa
                 PublishProfile(
                     project_id=project.id,
                     execution_profile_id=draft.id,
+                    expected_draft_version=draft.draft_version,
+                    expected_head_revision_id=None,
                 )
             )
 
@@ -590,6 +596,8 @@ def test_credential_reference_identity_changes_revision_binding_digest(tmp_path)
                     PublishProfile(
                         project_id=project.id,
                         execution_profile_id=draft.id,
+                        expected_draft_version=draft.draft_version,
+                        expected_head_revision_id=None,
                     )
                 )
             )
@@ -641,12 +649,15 @@ def test_updating_public_draft_fields_preserves_private_binding_when_omitted(
                 project_id=project.id,
                 execution_profile_id=draft.id,
                 draft_spec=changed_spec,
+                expected_draft_version=draft.draft_version,
             )
         )
         revision = profiles.publish(
             PublishProfile(
                 project_id=project.id,
                 execution_profile_id=draft.id,
+                expected_draft_version=updated.draft_version,
+                expected_head_revision_id=None,
             )
         )
 

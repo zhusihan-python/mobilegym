@@ -6,7 +6,7 @@
 |---|---|
 | Status | Active planning register |
 | Scope | Product directions from backlog discovery through delivery authorization |
-| Current delivery focus | TP-EP03 complete; TP-EP04 not started |
+| Current delivery focus | TP-EP04 complete; TP-EP05 not started |
 
 Backlog entries begin as opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
@@ -16,15 +16,15 @@ delivery plan, and a reviewed delivery plan before implementation.
 
 | Field | Value |
 |---|---|
-| Status | Delivery active; complete through TP-EP03 |
-| Priority | TP-EP04 awaits separate explicit authorization |
+| Status | Delivery active; complete through TP-EP04 |
+| Priority | TP-EP05 awaits separate explicit authorization |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Not authorized yet | TP-EP04 and later implementation without their required explicit start requests |
+| Not authorized yet | TP-EP05 and later implementation without their required explicit start requests |
 
 ### Opportunity
 
@@ -78,10 +78,12 @@ Execution Profile Revision, and TP-EP02 delivered the first exact
 profile-aware Single Run through Workflow v2, Run Plan v2, SQLite, HTTP, and the
 console. TP-EP03 added immutable private Credential Reference bindings,
 transient launch resolution, and redacted initial Run Attempt Compatibility
-Preflight evidence.
+Preflight evidence. TP-EP04 completed active-name and concurrency rules,
+immutable revision history and redacted diff, clone, archive, archived
+discovery, and the complete Execution Profiles console lifecycle.
 
 The approved slices and dependencies are recorded in
 [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
 The user accepted their granularity and dependency relationships on 2026-07-13.
-No issue has been published. TP-EP03 is complete. TP-EP04 has not started and
+No issue has been published. TP-EP04 is complete. TP-EP05 has not started and
 requires a separate explicit start request.

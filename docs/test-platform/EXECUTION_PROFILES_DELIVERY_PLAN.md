@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP03 complete on 2026-07-15; TP-EP04 not started |
+| Status | TP-EP04 complete on 2026-07-15; TP-EP05 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP03 authorized and complete; TP-EP04 and later slices require separate start requests |
+| Implementation authorization | TP-EP00 through TP-EP04 authorized and complete; TP-EP05 and later slices require separate start requests |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 through TP-EP03 are also complete; TP-EP04 has not started.
+are complete. TP-EP01 through TP-EP04 are also complete; TP-EP05 has not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 and TP-EP03 are also complete; TP-EP04 has not started.
+complete. TP-EP02 through TP-EP04 are also complete; TP-EP05 has not started.
 
 ### Acceptance criteria
 
@@ -266,8 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 is also complete;
-TP-EP04 has not started.
+console preview/create/reload flow are complete. TP-EP03 and TP-EP04 are also
+complete; TP-EP05 has not started.
 
 ### Acceptance criteria
 
@@ -328,7 +328,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
 Private Credential Reference publication, transient request-backed resolution,
 zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
-the credential-ready console flow are complete. TP-EP04 has not started.
+the credential-ready console flow are complete. TP-EP04 is also complete;
+TP-EP05 has not started.
 
 ### Acceptance criteria
 
@@ -386,22 +387,29 @@ name uniqueness, draft concurrency, multiple revisions, unchanged-publication
 idempotency, public diff, clone, archive, archived discovery, and historical
 revision readability.
 
+Current evidence:
+[`evidence/2026-07-15-tp-ep04-profile-lifecycle-revision-discovery.md`](evidence/2026-07-15-tp-ep04-profile-lifecycle-revision-discovery.md).
+Active-name uniqueness, optimistic draft/head concurrency, monotonic and
+idempotent publication, redacted revision diff, clone, archive, historical
+discovery, frozen-Run stability, and the complete console lifecycle are done.
+TP-EP05 has not started.
+
 ### Acceptance criteria
 
-- [ ] Active normalized profile names are unique per Project and reusable only
+- [x] Active normalized profile names are unique per Project and reusable only
       after archive under the accepted naming policy.
-- [ ] Concurrent draft/head changes return structured stale-state conflicts.
-- [ ] Publishing changed canonical content advances revision number; publishing
+- [x] Concurrent draft/head changes return structured stale-state conflicts.
+- [x] Publishing changed canonical content advances revision number; publishing
       unchanged public and private binding identity returns the current head.
-- [ ] Changing Credential Reference binding identity advances revision identity;
+- [x] Changing Credential Reference binding identity advances revision identity;
       rotating the value behind the same reference does not.
-- [ ] Public revision diff identifies subject fields without exposing private
+- [x] Public revision diff identifies subject fields without exposing private
       Credential Reference payloads.
-- [ ] Clone creates a new editable profile draft from one exact revision and
+- [x] Clone creates a new editable profile draft from one exact revision and
       copies no secret value.
-- [ ] Archive removes the profile from default launch discovery and blocks new
+- [x] Archive removes the profile from default launch discovery and blocks new
       initial Runs while preserving revision detail and historical Run views.
-- [ ] A newer head or archive does not change an already frozen Run Plan.
+- [x] A newer head or archive does not change an already frozen Run Plan.
 
 ### Test seam
 
@@ -778,6 +786,6 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP03 were implemented
-only after their separate explicit start requests. TP-EP04 has not started and
+No external issue has been published. TP-EP00 through TP-EP04 were implemented
+only after their separate explicit start requests. TP-EP05 has not started and
 still requires a separate explicit start request.

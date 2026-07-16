@@ -497,12 +497,25 @@ export type ExecutionProfileRevision = {
   published_at: string;
 };
 
+export type ExecutionProfileRevisionFieldChange = {
+  path: string;
+  before: unknown;
+  after: unknown;
+};
+
+export type ExecutionProfileRevisionDiff = {
+  from_revision_id: string;
+  to_revision_id: string;
+  changes: ExecutionProfileRevisionFieldChange[];
+};
+
 export type ExecutionProfile = {
   id: string;
   project_id: string;
   name: string;
   draft_spec: ExecutionProfileSpec;
   credential_readiness: CredentialReadiness;
+  draft_version: number;
   head_revision: ExecutionProfileRevision | null;
   archived_at: string | null;
   created_at: string;

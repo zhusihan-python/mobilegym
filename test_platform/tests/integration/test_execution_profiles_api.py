@@ -116,9 +116,7 @@ def test_publish_creates_immutable_revision_one_without_remote_provider_call(
     assert probe.calls == []
 
 
-def test_publishing_another_revision_remains_unavailable_before_lifecycle_slice(
-    tmp_path,
-):
+def test_http_exposes_revision_diff_clone_archive_and_archived_discovery(tmp_path):
     app = create_app(_settings(tmp_path))
 
     with TestClient(app) as client:
@@ -132,23 +130,148 @@ def test_publishing_another_revision_remains_unavailable_before_lifecycle_slice(
         ).json()
         first_revision = client.post(
             f"/api/platform/v1/projects/{project['id']}"
-            f"/execution-profiles/{profile['id']}/publish"
+            f"/execution-profiles/{profile['id']}/publish",
+            json={
+                "expected_draft_version": profile["draft_version"],
+                "expected_head_revision_id": None,
+            },
         ).json()
-
-        second_publish = client.post(
+        unchanged = client.post(
             f"/api/platform/v1/projects/{project['id']}"
-            f"/execution-profiles/{profile['id']}/publish"
+            f"/execution-profiles/{profile['id']}/publish",
+            json={
+                "expected_draft_version": profile["draft_version"],
+                "expected_head_revision_id": first_revision["id"],
+            },
         )
-        reloaded = client.get(
+        changed_spec = _public_spec()
+        changed_spec["model"]["name"] = "next-model"
+        changed = client.patch(
             f"/api/platform/v1/projects/{project['id']}"
-            f"/execution-profile-revisions/{first_revision['id']}"
+            f"/execution-profiles/{profile['id']}/draft",
+            json={
+                "draft_spec": changed_spec,
+                "expected_draft_version": profile["draft_version"],
+            },
+        ).json()
+        second_revision = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/publish",
+            json={
+                "expected_draft_version": changed["draft_version"],
+                "expected_head_revision_id": first_revision["id"],
+            },
+        ).json()
+        revisions = client.get(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/revisions"
+        )
+        diff = client.get(
+            f"/api/platform/v1/projects/{project['id']}"
+            "/execution-profile-revision-diff",
+            params={
+                "from_revision_id": first_revision["id"],
+                "to_revision_id": second_revision["id"],
+            },
+        )
+        clone = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profile-revisions/{first_revision['id']}/clone",
+            json={"name": "Cloned revision one"},
+        )
+        archived = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/archive",
+            json={
+                "expected_draft_version": changed["draft_version"],
+                "expected_head_revision_id": second_revision["id"],
+            },
+        )
+        active = client.get(
+            f"/api/platform/v1/projects/{project['id']}/execution-profiles"
+        )
+        all_profiles = client.get(
+            f"/api/platform/v1/projects/{project['id']}/execution-profiles",
+            params={"include_archived": "true"},
         )
 
-    assert second_publish.status_code == 409
-    assert second_publish.json()["error"]["code"] == (
-        "EXECUTION_PROFILE_ALREADY_PUBLISHED"
+    assert unchanged.status_code == 200
+    assert unchanged.json() == first_revision
+    assert revisions.status_code == 200
+    assert [item["revision_no"] for item in revisions.json()["items"]] == [1, 2]
+    assert diff.status_code == 200
+    assert [change["path"] for change in diff.json()["changes"]] == ["model.name"]
+    assert clone.status_code == 201
+    assert clone.json()["head_revision"] is None
+    assert clone.json()["draft_spec"] == first_revision["public_spec"]
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+    assert [item["id"] for item in active.json()["items"]] == [clone.json()["id"]]
+    assert {item["id"] for item in all_profiles.json()["items"]} == {
+        profile["id"],
+        clone.json()["id"],
+    }
+
+
+def test_http_rejects_stale_execution_profile_draft_and_head_tokens(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/platform/v1/projects",
+            json={"name": "Profile concurrency"},
+        ).json()
+        profile = client.post(
+            f"/api/platform/v1/projects/{project['id']}/execution-profiles",
+            json={"name": "Concurrent subject", "draft_spec": _public_spec()},
+        ).json()
+        revision = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/publish",
+            json={
+                "expected_draft_version": profile["draft_version"],
+                "expected_head_revision_id": None,
+            },
+        ).json()
+        first_change = _public_spec()
+        first_change["model"]["name"] = "first-change"
+        saved = client.patch(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/draft",
+            json={
+                "draft_spec": first_change,
+                "expected_draft_version": profile["draft_version"],
+            },
+        )
+        stale_change = _public_spec()
+        stale_change["model"]["name"] = "stale-change"
+        stale_draft = client.patch(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/draft",
+            json={
+                "draft_spec": stale_change,
+                "expected_draft_version": profile["draft_version"],
+            },
+        )
+        stale_head = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/publish",
+            json={
+                "expected_draft_version": saved.json()["draft_version"],
+                "expected_head_revision_id": None,
+            },
+        )
+
+    assert saved.status_code == 200
+    assert stale_draft.status_code == 409
+    assert stale_draft.json()["error"]["code"] == "EXECUTION_PROFILE_DRAFT_STALE"
+    assert stale_head.status_code == 409
+    assert stale_head.json()["error"]["code"] == (
+        "EXECUTION_PROFILE_PUBLICATION_STALE"
     )
-    assert reloaded.json() == first_revision
+    assert stale_head.json()["error"]["details"][0][
+        "current_head_revision_id"
+    ] == revision["id"]
 
 
 def test_draft_rejects_raw_secret_like_fields_without_echoing_values(tmp_path):

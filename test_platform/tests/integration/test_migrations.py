@@ -85,6 +85,8 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (16, "0016_execution_profiles.sql"),
         (17, "0017_profile_aware_lanes.sql"),
         (18, "0018_execution_profile_credentials.sql"),
+        (19, "0019_execution_profile_draft_version.sql"),
+        (20, "0020_execution_profile_active_names.sql"),
     ]
 
 
@@ -226,6 +228,16 @@ def test_execution_profile_credentials_migration_keeps_bindings_private(tmp_path
         }
 
         assert profile_columns["draft_credential_bindings_json"][3] == 1
+        assert profile_columns["draft_version"][3] == 1
+        assert profile_columns["draft_version"][4] == "1"
+        indexes = {
+            row[1]: row
+            for row in database.connection.execute(
+                "PRAGMA index_list(execution_profiles)"
+            )
+        }
+        assert indexes["idx_execution_profiles_active_name_key"][2] == 1
+        assert indexes["idx_execution_profiles_active_name_key"][4] == 1
         assert {
             "execution_profile_revision_id",
             "slot",
@@ -236,6 +248,70 @@ def test_execution_profile_credentials_migration_keeps_bindings_private(tmp_path
         } <= binding_columns
     finally:
         database.close()
+
+
+def test_execution_profile_active_name_migration_disambiguates_legacy_duplicates(
+    tmp_path,
+):
+    legacy_migrations = tmp_path / "legacy_migrations"
+    legacy_migrations.mkdir()
+    for migration_path in MIGRATIONS_DIR.glob("*.sql"):
+        if int(migration_path.name.split("_", 1)[0]) <= 19:
+            shutil.copy2(migration_path, legacy_migrations / migration_path.name)
+
+    connection = sqlite3.connect(tmp_path / "platform.sqlite3")
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        apply_migrations(connection, legacy_migrations)
+        connection.execute(
+            "INSERT INTO projects "
+            "(id, name, slug, name_key, archived_at, created_at, updated_at) "
+            "VALUES ('p1','Project','project','project',NULL,"
+            "'2026-07-15T00:00:00.000Z','2026-07-15T00:00:00.000Z')"
+        )
+        for profile_id, created_at in (
+            ("ep-a", "2026-07-15T00:01:00.000Z"),
+            ("ep-b", "2026-07-15T00:02:00.000Z"),
+        ):
+            connection.execute(
+                "INSERT INTO execution_profiles "
+                "(id, project_id, name, name_key, draft_spec_json, "
+                "head_revision_id, archived_at, created_at, updated_at) "
+                "VALUES (?, 'p1', 'Candidate Subject', 'candidate subject', "
+                "'{}', NULL, NULL, ?, ?)",
+                (profile_id, created_at, created_at),
+            )
+        connection.commit()
+
+        apply_migrations(connection)
+
+        rows = connection.execute(
+            "SELECT id, name, name_key FROM execution_profiles ORDER BY created_at, id"
+        ).fetchall()
+        assert [dict(row) for row in rows] == [
+            {
+                "id": "ep-a",
+                "name": "Candidate Subject",
+                "name_key": "candidate subject",
+            },
+            {
+                "id": "ep-b",
+                "name": "Candidate Subject [migrated duplicate ep-b]",
+                "name_key": "candidate subject [migrated duplicate ep-b]",
+            },
+        ]
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO execution_profiles "
+                "(id, project_id, name, name_key, draft_spec_json, "
+                "head_revision_id, archived_at, created_at, updated_at) "
+                "VALUES ('ep-c', 'p1', 'Candidate Subject', 'candidate subject', "
+                "'{}', NULL, NULL, '2026-07-15T00:03:00.000Z', "
+                "'2026-07-15T00:03:00.000Z')"
+            )
+    finally:
+        connection.close()
 
 
 def test_manual_sequence_episode_metadata_columns_are_nullable(tmp_path):
@@ -373,6 +449,8 @@ def test_database_initialization_is_idempotent(tmp_path):
         (16, "0016_execution_profiles.sql"),
         (17, "0017_profile_aware_lanes.sql"),
         (18, "0018_execution_profile_credentials.sql"),
+        (19, "0019_execution_profile_draft_version.sql"),
+        (20, "0020_execution_profile_active_names.sql"),
     ]
 
 

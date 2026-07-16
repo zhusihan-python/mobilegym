@@ -152,6 +152,7 @@ class ExecutionProfile:
     name_key: str
     draft_spec: dict[str, Any]
     draft_credential_bindings: tuple[CredentialReferenceBindingInput, ...]
+    draft_version: int
     head_revision_id: str | None
     archived_at: str | None
     created_at: str
@@ -187,10 +188,23 @@ class ExecutionProfileView(BaseModel):
     name: str
     draft_spec: ExecutionProfileSpec
     credential_readiness: CredentialReadiness
+    draft_version: int
     head_revision: ExecutionProfileRevisionView | None
     archived_at: str | None
     created_at: str
     updated_at: str
+
+
+class ExecutionProfileRevisionFieldChange(BaseModel):
+    path: str
+    before: Any
+    after: Any
+
+
+class ExecutionProfileRevisionDiff(BaseModel):
+    from_revision_id: str
+    to_revision_id: str
+    changes: list[ExecutionProfileRevisionFieldChange]
 
 
 @dataclass(frozen=True)
@@ -205,6 +219,8 @@ class SaveProfileDraft:
 class PublishProfile:
     project_id: str
     execution_profile_id: str
+    expected_draft_version: int
+    expected_head_revision_id: str | None
 
 
 @dataclass(frozen=True)
@@ -212,8 +228,24 @@ class UpdateProfileDraft:
     project_id: str
     execution_profile_id: str
     draft_spec: dict[str, Any]
+    expected_draft_version: int
     name: str | None = None
     credential_bindings: tuple[CredentialReferenceBindingInput, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ArchiveProfile:
+    project_id: str
+    execution_profile_id: str
+    expected_draft_version: int
+    expected_head_revision_id: str | None
+
+
+@dataclass(frozen=True)
+class CloneProfileRevision:
+    project_id: str
+    revision_id: str
+    name: str
 
 
 def new_execution_profile_id() -> str:

@@ -339,6 +339,77 @@ def test_run_launch_http_previews_creates_and_reloads_exact_identity(tmp_path):
     assert supervisor.submitted == [body["id"]]
 
 
+def test_archived_profile_blocks_new_launch_without_changing_frozen_run(tmp_path):
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        compatibility_probe=FakeCompatibilityProbe(),
+    )
+
+    with TestClient(app) as client:
+        (
+            project,
+            workflow_version,
+            _target,
+            target_revision,
+            profile,
+            revision_one,
+        ) = _seed_launch(client)
+        command = _launch_command(workflow_version, target_revision, revision_one)
+        preview = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch/preview",
+            json=command,
+        ).json()
+        created = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch",
+            json={**command, "preview_token": preview["preview_token"]},
+            headers={"Idempotency-Key": "tp-ep04-frozen-before-archive"},
+        )
+        changed_spec = _profile_spec()
+        changed_spec["model"]["name"] = "newer-model"
+        changed = client.patch(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/draft",
+            json={
+                "draft_spec": changed_spec,
+                "expected_draft_version": profile["draft_version"],
+            },
+        ).json()
+        revision_two = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/publish",
+            json={
+                "expected_draft_version": changed["draft_version"],
+                "expected_head_revision_id": revision_one["id"],
+            },
+        ).json()
+        archived = client.post(
+            f"/api/platform/v1/projects/{project['id']}"
+            f"/execution-profiles/{profile['id']}/archive",
+            json={
+                "expected_draft_version": changed["draft_version"],
+                "expected_head_revision_id": revision_two["id"],
+            },
+        )
+        frozen = client.get(f"/api/platform/v1/runs/{created.json()['id']}")
+        blocked = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch/preview",
+            json=command,
+        )
+
+    assert created.status_code == 201
+    assert archived.status_code == 200
+    assert frozen.status_code == 200
+    assert frozen.json()["lanes"][0]["execution_profile_revision_id"] == (
+        revision_one["id"]
+    )
+    assert frozen.json()["run_plan"]["execution_snapshots"][
+        revision_one["id"]
+    ]["public_spec"]["model"]["name"] == "deterministic-model"
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "EXECUTION_PROFILE_ARCHIVED"
+
+
 @pytest.mark.parametrize(
     "case",
     ["missing_lane_slot", "latest_target", "latest_profile", "profile_draft"],
