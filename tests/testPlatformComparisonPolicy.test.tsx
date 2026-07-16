@@ -109,7 +109,7 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
     window.localStorage.clear();
   });
 
-  it('emits a paired definition with lanes + compare node carrying the three axes', async () => {
+  it('emits a target-free paired Workflow v2 with Lane Slots and comparison policy', async () => {
     const requests: Array<{ path: string; body: any }> = [];
     let workflow = {
       id: 'workflow-1',
@@ -177,14 +177,6 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
     // Enable the paired/comparison policy section.
     fireEvent.click(screen.getByLabelText('Paired comparison (baseline vs candidate)'));
 
-    // Select baseline + candidate targets.
-    fireEvent.change(screen.getByLabelText('Baseline target'), {
-      target: { value: baselineTarget.id },
-    });
-    fireEvent.change(screen.getByLabelText('Candidate target'), {
-      target: { value: candidateTarget.id },
-    });
-
     // Validate preview so the paired definition is sent.
     fireEvent.click(screen.getByRole('button', { name: 'Validate preview' }));
 
@@ -193,7 +185,7 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
     });
 
     // The draft definition persisted on the POST /workflows or PATCH /draft
-    // must carry the paired lanes + compare node with the three axes.
+    // must carry target-free Lane Slots + compare node with the three axes.
     const draftRequest = requests.find(
       (r) =>
         r.path.endsWith('/workflows') && r.body && r.body.definition,
@@ -201,10 +193,12 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
     expect(draftRequest).toBeTruthy();
     const definition = draftRequest!.body.definition;
     const matrix = definition.nodes.find((n: any) => n.type === 'matrix');
-    expect(matrix.config.lanes).toMatchObject({
-      baseline: { target_id: baselineTarget.id, role: 'baseline' },
-      candidate: { target_id: candidateTarget.id, role: 'candidate' },
+    expect(definition.schema_version).toBe(2);
+    expect(matrix.config.lane_slots).toEqual({
+      baseline: { role: 'baseline' },
+      candidate: { role: 'candidate' },
     });
+    expect(JSON.stringify(matrix.config)).not.toContain('target_id');
     const compare = definition.nodes.find((n: any) => n.type === 'compare');
     expect(compare).toBeTruthy();
     expect(compare.config.target_constraints).toEqual([
@@ -286,12 +280,6 @@ describe('Test Platform paired comparison policy (VS-10)', () => {
     expect(await screen.findByRole('heading', { name: 'Workflows' })).toBeTruthy();
     fireEvent.click(await screen.findByLabelText('Select wechat.OpenBlacklist'));
     fireEvent.click(screen.getByLabelText('Paired comparison (baseline vs candidate)'));
-    fireEvent.change(screen.getByLabelText('Baseline target'), {
-      target: { value: baselineTarget.id },
-    });
-    fireEvent.change(screen.getByLabelText('Candidate target'), {
-      target: { value: candidateTarget.id },
-    });
     fireEvent.click(screen.getByRole('button', { name: 'Validate preview' }));
 
     // The advisory violation surfaces in the preview panel (Contract 3).

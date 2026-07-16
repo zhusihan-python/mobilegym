@@ -25,7 +25,7 @@ class PreviewRunLaunch:
     workflow_version_id: str
     name: str | None
     seed: int
-    comparison_intent: Literal["single"]
+    comparison_intent: Literal["single", "target_comparison"]
     lane_bindings: tuple[LaneBindingInput, ...]
 
 
@@ -35,7 +35,7 @@ class CreateRunLaunch:
     workflow_version_id: str
     name: str | None
     seed: int
-    comparison_intent: Literal["single"]
+    comparison_intent: Literal["single", "target_comparison"]
     lane_bindings: tuple[LaneBindingInput, ...]
 
 
@@ -61,8 +61,9 @@ class RunLaunchPreview(BaseModel):
 
     workflow_version_id: str
     workflow_version_hash: str
-    comparison_intent: Literal["single"]
+    comparison_intent: Literal["single", "target_comparison"]
     lane_bindings: list[ResolvedLaneBinding]
+    constraint_violations: list[dict[str, Any]]
     episode_count: int
     fingerprint_inputs: dict[str, Any]
     run_plan_fingerprint: str

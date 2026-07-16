@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP04 complete on 2026-07-15; TP-EP05 not started |
+| Status | TP-EP05 complete on 2026-07-16; TP-EP06 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP04 authorized and complete; TP-EP05 and later slices require separate start requests |
+| Implementation authorization | TP-EP00 through TP-EP05 authorized and complete; TP-EP06 and later slices require separate start requests |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 through TP-EP04 are also complete; TP-EP05 has not started.
+are complete. TP-EP01 through TP-EP05 are also complete; TP-EP06 has not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 through TP-EP04 are also complete; TP-EP05 has not started.
+complete. TP-EP02 through TP-EP05 are also complete; TP-EP06 has not started.
 
 ### Acceptance criteria
 
@@ -266,8 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 and TP-EP04 are also
-complete; TP-EP05 has not started.
+console preview/create/reload flow are complete. TP-EP03 through TP-EP05 are
+also complete; TP-EP06 has not started.
 
 ### Acceptance criteria
 
@@ -328,8 +328,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
 Private Credential Reference publication, transient request-backed resolution,
 zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
-the credential-ready console flow are complete. TP-EP04 is also complete;
-TP-EP05 has not started.
+the credential-ready console flow are complete. TP-EP04 and TP-EP05 are also
+complete; TP-EP06 has not started.
 
 ### Acceptance criteria
 
@@ -392,7 +392,7 @@ Current evidence:
 Active-name uniqueness, optimistic draft/head concurrency, monotonic and
 idempotent publication, redacted revision diff, clone, archive, historical
 discovery, frozen-Run stability, and the complete console lifecycle are done.
-TP-EP05 has not started.
+TP-EP05 is also complete; TP-EP06 has not started.
 
 ### Acceptance criteria
 
@@ -448,22 +448,29 @@ Lane Bindings. Two Target Revisions use one identical Execution Profile Revision
 while preserving existing target constraints, shared Prepared Episodes, pair
 integrity, comparison results, gates, replay, and attempt-level preflight.
 
+Current evidence:
+[`evidence/2026-07-16-tp-ep05-profile-aware-target-comparison.md`](evidence/2026-07-16-tp-ep05-profile-aware-target-comparison.md).
+Target-free paired Lane Slots, exact same-profile Target Comparison bindings,
+advisory/authoritative constraints, shared Prepared Episodes, deduplicated
+preflight, deterministic paired execution, reload identity, and Console launch
+are complete. TP-EP06 has not started.
+
 ### Acceptance criteria
 
-- [ ] A paired Workflow v2 exposes baseline and candidate Lane Slots without
+- [x] A paired Workflow v2 exposes baseline and candidate Lane Slots without
       embedding mutable resource heads.
-- [ ] Target Comparison requires different Target Revision IDs and one identical
+- [x] Target Comparison requires different Target Revision IDs and one identical
       Execution Profile Revision ID.
-- [ ] Existing enumerated `same_app`, `same_device`, and `same_data` constraints
+- [x] Existing enumerated `same_app`, `same_device`, and `same_data` constraints
       are advisory in preview and authoritative in create against frozen target
       metadata.
-- [ ] Both Lanes share exact task source, seed, Prepared Episode identity,
+- [x] Both Lanes share exact task source, seed, Prepared Episode identity,
       parameters, instruction, time/location, and evaluation/Judge protocol.
-- [ ] Compatibility Preflight deduplicates the identical subject tuple and records
+- [x] Compatibility Preflight deduplicates the identical subject tuple and records
       both Lane keys on the initial Run Attempt.
-- [ ] Comparison, gate, replay, incident, and Run detail views retain exact
+- [x] Comparison, gate, replay, incident, and Run detail views retain exact
       Target/Profile identities after reload.
-- [ ] Existing target-comparison deterministic acceptance remains green through
+- [x] Existing target-comparison deterministic acceptance remains green through
       the profile-aware path.
 
 ### Test seam
@@ -786,6 +793,6 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP04 were implemented
-only after their separate explicit start requests. TP-EP05 has not started and
+No external issue has been published. TP-EP00 through TP-EP05 were implemented
+only after their separate explicit start requests. TP-EP06 has not started and
 still requires a separate explicit start request.

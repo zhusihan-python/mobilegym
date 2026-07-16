@@ -9,6 +9,7 @@ import zlib
 from pydantic import BaseModel, Field
 
 from test_platform.domain.canonical_json import canonical_sha256
+from test_platform.domain.comparison_constraints import DEFAULT_TARGET_CONSTRAINTS
 from test_platform.domain.execution_profiles import (
     ExecutionProfile,
     ExecutionProfileRevision,
@@ -250,7 +251,7 @@ class RunPlanV2Compiler:
         bindings: dict[str, ResolvedLanePlanBinding],
         seed: int,
         created_at: str,
-        comparison_intent: Literal["single"],
+        comparison_intent: Literal["single", "target_comparison"],
     ) -> RunPlanV2:
         task_node = _required_node(definition, "task_selection")
         matrix_node = _required_node(definition, "matrix")
@@ -353,7 +354,26 @@ class RunPlanV2Compiler:
             execute_node.config,
             ("judge_mode", "judge_model", "judge_base_url", "eval_mode"),
         )
-        comparison = {"intent": comparison_intent}
+        comparison: dict[str, Any] = {"intent": comparison_intent}
+        if comparison_intent == "target_comparison":
+            compare_node = _required_node(definition, "compare")
+            configured_constraints = compare_node.config.get("target_constraints")
+            comparison.update(
+                {
+                    "target_constraints": (
+                        list(configured_constraints)
+                        if isinstance(configured_constraints, list)
+                        else list(DEFAULT_TARGET_CONSTRAINTS)
+                    ),
+                    "initial_state_policy": str(
+                        compare_node.config.get("initial_state_policy")
+                        or "task_projection"
+                    ),
+                    "execution": str(
+                        compare_node.config.get("execution") or "serial"
+                    ),
+                }
+            )
         gates = _gate_thresholds(definition)
         artifacts = {
             "run_plan": "platform/run-plan.json",

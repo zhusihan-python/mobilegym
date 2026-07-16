@@ -81,7 +81,16 @@ class Database:
         ]
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, check_same_thread=False)
+        # FastAPI serves synchronous routes from multiple worker threads. The
+        # connection is intentionally shared (`check_same_thread=False`), so
+        # disable CPython's per-connection statement cache: concurrent cached
+        # statement reuse can otherwise surface as intermittent InterfaceError
+        # failures during parallel read-only requests.
+        connection = sqlite3.connect(
+            self.path,
+            check_same_thread=False,
+            cached_statements=0,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")

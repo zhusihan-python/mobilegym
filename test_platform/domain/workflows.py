@@ -222,6 +222,9 @@ class WorkflowValidator:
             if node.type == "gate":
                 issues.extend(_validate_gate_config(node, node_index))
 
+        if definition.schema_version == 2:
+            issues.extend(_validate_v2_comparison_shape(definition))
+
         issues.extend(_validate_manual_sequence(definition, node_indices))
 
         return WorkflowValidationResult(valid=not issues, issues=issues)
@@ -396,39 +399,47 @@ def _validate_lane_slots(
                 node_id=node.id,
             )
         ]
-    if set(lane_slots) != {"candidate"}:
+    supported_slots = ({"candidate"}, {"baseline", "candidate"})
+    if set(lane_slots) not in supported_slots:
         return [
             WorkflowIssue(
                 code="WORKFLOW_LANE_SLOTS_UNSUPPORTED",
-                message="TP-EP02 requires exactly one candidate Lane Slot.",
+                message=(
+                    "Workflow v2 requires either one candidate Lane Slot or "
+                    "baseline and candidate Lane Slots."
+                ),
                 pointer=pointer,
                 node_id=node.id,
             )
         ]
 
-    slot = lane_slots["candidate"]
-    if not isinstance(slot, dict) or slot.get("role") != "candidate":
-        return [
-            WorkflowIssue(
-                code="WORKFLOW_LANE_SLOT_INVALID",
-                message="The candidate Lane Slot must declare role candidate.",
-                pointer=f"{pointer}/candidate",
-                node_id=node.id,
-            )
-        ]
     forbidden = (
         "target_id",
         "target_revision_id",
         "execution_profile_id",
         "execution_profile_revision_id",
     )
-    for field in forbidden:
-        if field in slot:
+    for lane_slot, slot in lane_slots.items():
+        if not isinstance(slot, dict) or slot.get("role") != lane_slot:
+            issues.append(
+                WorkflowIssue(
+                    code="WORKFLOW_LANE_SLOT_INVALID",
+                    message=(
+                        f"The {lane_slot} Lane Slot must declare role {lane_slot}."
+                    ),
+                    pointer=f"{pointer}/{lane_slot}",
+                    node_id=node.id,
+                )
+            )
+            continue
+        for field in forbidden:
+            if field not in slot:
+                continue
             issues.append(
                 WorkflowIssue(
                     code="WORKFLOW_LANE_SLOT_MUTABLE_RESOURCE_FORBIDDEN",
                     message="Workflow v2 Lane Slots must not embed resource identities.",
-                    pointer=f"{pointer}/candidate/{field}",
+                    pointer=f"{pointer}/{lane_slot}/{field}",
                     node_id=node.id,
                 )
             )
@@ -442,6 +453,32 @@ def _validate_lane_slots(
             )
         )
     return issues
+
+
+def _validate_v2_comparison_shape(
+    definition: WorkflowDefinitionV2,
+) -> list[WorkflowIssue]:
+    matrix = next((node for node in definition.nodes if node.type == "matrix"), None)
+    if matrix is None:
+        return []
+    lane_slots = matrix.config.get("lane_slots")
+    if not isinstance(lane_slots, dict) or set(lane_slots) != {
+        "baseline",
+        "candidate",
+    }:
+        return []
+    compare_nodes = [node for node in definition.nodes if node.type == "compare"]
+    if len(compare_nodes) == 1:
+        return []
+    return [
+        WorkflowIssue(
+            code="WORKFLOW_COMPARE_REQUIRED",
+            message=(
+                "A paired Workflow v2 requires exactly one comparison policy node."
+            ),
+            pointer="/nodes",
+        )
+    ]
 
 
 _V2_INLINE_SUBJECT_FIELDS = frozenset(

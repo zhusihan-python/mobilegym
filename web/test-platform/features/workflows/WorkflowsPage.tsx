@@ -18,10 +18,19 @@ import type {
   Target,
   TaskCatalogItem,
   WorkflowCompilePreview,
-  WorkflowDefinition,
   WorkflowSummary,
   WorkflowVersion,
 } from '../../api/types';
+import { TargetComparisonPolicyFields } from './components/TargetComparisonPolicyFields';
+import {
+  buildWorkflowDefinition,
+  canSubmitWorkflow,
+  MANUAL_SEQUENCE_FAILURE_POLICY,
+  MANUAL_SEQUENCE_STATE_POLICY,
+  TARGET_COMPARISON_CONSTRAINTS,
+  workflowDefinitionsEqual,
+  type WorkflowMode,
+} from './model';
 
 const AGENT_OPTIONS = [
   'generic_v2',
@@ -37,8 +46,6 @@ const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
 const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
 const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
 const IMAGE_URL_FORMAT_STORAGE_KEY = 'test-platform.launch.image-url-format';
-const MANUAL_SEQUENCE_STATE_POLICY = 'isolated';
-const MANUAL_SEQUENCE_FAILURE_POLICY = 'continue';
 
 type LoadState =
   | { status: 'loading' }
@@ -50,8 +57,6 @@ type LoadState =
     }
   | { status: 'error'; message: string };
 
-type WorkflowMode = 'batch' | 'manual_sequence';
-
 export function WorkflowsPage() {
   const navigate = useNavigate();
   const { selectedProject } = useOutletContext<{ selectedProject: Project }>();
@@ -62,17 +67,12 @@ export function WorkflowsPage() {
   const [repeatCount, setRepeatCount] = useState(1);
   const [parallelCount, setParallelCount] = useState(1);
   const [processCount, setProcessCount] = useState(1);
-  // VS-10 Contract 2: paired comparison policy (baseline vs candidate). When
-  // enabled, the matrix node grows a second lane and the definition gains a
-  // compare node carrying the three policy axes.
+  // Paired authoring defines target-free Workflow v2 Lane Slots. Exact Target
+  // and Execution Profile revisions are selected later in Run Launch.
   const [pairedEnabled, setPairedEnabled] = useState(false);
-  const [baselineTargetId, setBaselineTargetId] = useState('');
-  const [candidateTargetId, setCandidateTargetId] = useState('');
-  const [targetConstraints, setTargetConstraints] = useState<string[]>([
-    'same_app',
-    'same_device',
-    'same_data',
-  ]);
+  const [targetConstraints, setTargetConstraints] = useState<string[]>(
+    TARGET_COMPARISON_CONSTRAINTS,
+  );
   const [initialStatePolicy, setInitialStatePolicy] = useState('task_projection');
   const [executionMode, setExecutionMode] = useState('serial');
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowSummary | null>(null);
@@ -109,7 +109,6 @@ export function WorkflowsPage() {
       .then(([tasksResponse, targetsResponse, workflowsResponse]) => {
         if (!active) return;
         const firstTargetId = targetsResponse.items[0]?.id ?? '';
-        const secondTargetId = targetsResponse.items[1]?.id ?? firstTargetId;
         setState({
           status: 'loaded',
           tasks: tasksResponse.items,
@@ -117,8 +116,6 @@ export function WorkflowsPage() {
           workflows: workflowsResponse.items,
         });
         setTargetId((current) => current || firstTargetId);
-        setBaselineTargetId((current) => current || firstTargetId);
-        setCandidateTargetId((current) => current || secondTargetId);
         const firstWorkflow = workflowsResponse.items[0] ?? null;
         setActiveWorkflow(firstWorkflow);
         setPublishedVersion(firstWorkflow?.latest_version ?? null);
@@ -146,7 +143,7 @@ export function WorkflowsPage() {
 
   const definition = useMemo(
     () =>
-      buildDefinition(
+      buildWorkflowDefinition(
         {
           workflowMode,
           selectedTaskIds,
@@ -156,8 +153,6 @@ export function WorkflowsPage() {
           processCount,
           paired: effectivePairedEnabled
             ? {
-                baselineTargetId,
-                candidateTargetId,
                 targetConstraints,
                 initialStatePolicy,
                 execution: executionMode,
@@ -173,8 +168,6 @@ export function WorkflowsPage() {
       parallelCount,
       processCount,
       effectivePairedEnabled,
-      baselineTargetId,
-      candidateTargetId,
       targetConstraints,
       initialStatePolicy,
       executionMode,
@@ -214,7 +207,7 @@ export function WorkflowsPage() {
 
   const saveDraft = async (): Promise<WorkflowSummary> => {
     if (activeWorkflow) {
-      if (definitionsEqual(activeWorkflow.draft_definition, definition)) {
+      if (workflowDefinitionsEqual(activeWorkflow.draft_definition, definition)) {
         return activeWorkflow;
       }
       const updated = await updateWorkflowDraft({
@@ -337,13 +330,7 @@ export function WorkflowsPage() {
             onClick={validatePreview}
             disabled={
               busy ||
-              !canSubmit(
-                selectedTaskIds,
-                targetId,
-                effectivePairedEnabled,
-                baselineTargetId,
-                candidateTargetId,
-              )
+              !canSubmitWorkflow(selectedTaskIds, targetId, effectivePairedEnabled)
             }
           >
             Validate preview
@@ -353,13 +340,7 @@ export function WorkflowsPage() {
             onClick={publish}
             disabled={
               busy ||
-              !canSubmit(
-                selectedTaskIds,
-                targetId,
-                effectivePairedEnabled,
-                baselineTargetId,
-                candidateTargetId,
-              )
+              !canSubmitWorkflow(selectedTaskIds, targetId, effectivePairedEnabled)
             }
           >
             Publish workflow
@@ -367,10 +348,22 @@ export function WorkflowsPage() {
           {publishedVersion ? (
             <button
               type="button"
-              onClick={launch}
-              disabled={busy || !runAgent.trim() || !runModelBaseUrl.trim() || !runModelName.trim()}
+              onClick={
+                publishedVersion.definition.schema_version === 2
+                  ? () => navigate('/run-launch')
+                  : launch
+              }
+              disabled={
+                busy
+                || (
+                  publishedVersion.definition.schema_version === 1
+                  && (!runAgent.trim() || !runModelBaseUrl.trim() || !runModelName.trim())
+                )
+              }
             >
-              Launch version {publishedVersion.version_no}
+              {publishedVersion.definition.schema_version === 2
+                ? 'Open Run Launch'
+                : `Launch version ${publishedVersion.version_no}`}
             </button>
           ) : null}
         </div>
@@ -589,116 +582,27 @@ export function WorkflowsPage() {
           </select>
         </div>
 
-        {/* VS-10 Contract 2: paired comparison policy (baseline vs candidate).
-            When enabled the matrix node grows a second lane and the definition
-            gains a compare node carrying the three policy axes. */}
-        <div className="tp-workflow-paired">
-          <label className="tp-checkbox-row">
-            <input
-              type="checkbox"
-              checked={effectivePairedEnabled}
-              disabled={isManualSequence}
-              onChange={(event) => {
-                setPairedEnabled(event.target.checked);
-                setPreview(null);
-                setPublishedVersion(null);
-              }}
-              aria-label="Paired comparison (baseline vs candidate)"
-            />
-            <span>Paired comparison (baseline vs candidate)</span>
-          </label>
-
-          {effectivePairedEnabled ? (
-            <div className="tp-workflow-paired-controls">
-              <label htmlFor="tp-workflow-baseline-target">Baseline target</label>
-              <select
-                id="tp-workflow-baseline-target"
-                value={baselineTargetId}
-                onChange={(event) => {
-                  setBaselineTargetId(event.target.value);
-                  setPreview(null);
-                  setPublishedVersion(null);
-                }}
-              >
-                <option value="">Select baseline target</option>
-                {state.targets.map((target) => (
-                  <option key={target.id} value={target.id}>
-                    {target.name}
-                  </option>
-                ))}
-              </select>
-
-              <label htmlFor="tp-workflow-candidate-target">Candidate target</label>
-              <select
-                id="tp-workflow-candidate-target"
-                value={candidateTargetId}
-                onChange={(event) => {
-                  setCandidateTargetId(event.target.value);
-                  setPreview(null);
-                  setPublishedVersion(null);
-                }}
-              >
-                <option value="">Select candidate target</option>
-                {state.targets.map((target) => (
-                  <option key={target.id} value={target.id}>
-                    {target.name}
-                  </option>
-                ))}
-              </select>
-
-              <fieldset className="tp-workflow-constraints">
-                <legend>Target constraints</legend>
-                {['same_app', 'same_device', 'same_data'].map((axis) => (
-                  <label key={axis} className="tp-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={targetConstraints.includes(axis)}
-                      onChange={(event) => {
-                        setTargetConstraints((current) =>
-                          event.target.checked
-                            ? [...current, axis]
-                            : current.filter((item) => item !== axis),
-                        );
-                        setPreview(null);
-                        setPublishedVersion(null);
-                      }}
-                      aria-label={`Constraint ${axis}`}
-                    />
-                    <span>{axis}</span>
-                  </label>
-                ))}
-              </fieldset>
-
-              <label htmlFor="tp-workflow-initial-state-policy">Initial state policy</label>
-              <select
-                id="tp-workflow-initial-state-policy"
-                value={initialStatePolicy}
-                onChange={(event) => {
-                  setInitialStatePolicy(event.target.value);
-                  setPreview(null);
-                  setPublishedVersion(null);
-                }}
-              >
-                <option value="task_projection">task_projection</option>
-                <option value="strict_snapshot">strict_snapshot</option>
-              </select>
-
-              <label htmlFor="tp-workflow-execution">Execution</label>
-              <select
-                id="tp-workflow-execution"
-                value={executionMode}
-                onChange={(event) => {
-                  setExecutionMode(event.target.value);
-                  setPreview(null);
-                  setPublishedVersion(null);
-                }}
-              >
-                <option value="serial">serial</option>
-                <option value="parallel">parallel</option>
-              </select>
-            </div>
-          ) : null}
-        </div>
+        <TargetComparisonPolicyFields
+          enabled={effectivePairedEnabled}
+          disabled={isManualSequence}
+          policy={{
+            targetConstraints,
+            initialStatePolicy,
+            execution: executionMode,
+          }}
+          onEnabledChange={(enabled) => {
+            setPairedEnabled(enabled);
+            setPreview(null);
+            setPublishedVersion(null);
+          }}
+          onPolicyChange={(patch) => {
+            if (patch.targetConstraints) setTargetConstraints(patch.targetConstraints);
+            if (patch.initialStatePolicy) setInitialStatePolicy(patch.initialStatePolicy);
+            if (patch.execution) setExecutionMode(patch.execution);
+            setPreview(null);
+            setPublishedVersion(null);
+          }}
+        />
       </section>
 
       {error ? (
@@ -767,126 +671,4 @@ export function WorkflowsPage() {
       ) : null}
     </>
   );
-}
-
-function canSubmit(
-  selectedTaskIds: string[],
-  targetId: string,
-  pairedEnabled: boolean = false,
-  baselineTargetId: string = '',
-  candidateTargetId: string = '',
-) {
-  const base = selectedTaskIds.length > 0 && Boolean(targetId);
-  if (!pairedEnabled) return base;
-  return base && Boolean(baselineTargetId) && Boolean(candidateTargetId);
-}
-
-function definitionsEqual(
-  left: WorkflowDefinition | null,
-  right: WorkflowDefinition,
-) {
-  return left ? JSON.stringify(left) === JSON.stringify(right) : false;
-}
-
-type PairedConfig = {
-  baselineTargetId: string;
-  candidateTargetId: string;
-  targetConstraints: string[];
-  initialStatePolicy: string;
-  execution: string;
-};
-
-type BuildDefinitionInput = {
-  workflowMode: WorkflowMode;
-  selectedTaskIds: string[];
-  targetId: string;
-  repeatCount: number;
-  parallelCount: number;
-  processCount: number;
-  paired: PairedConfig | null;
-};
-
-function buildDefinition(input: BuildDefinitionInput): WorkflowDefinition {
-  const {
-    workflowMode,
-    selectedTaskIds,
-    targetId,
-    repeatCount,
-    parallelCount,
-    processCount,
-    paired,
-  } = input;
-  const isManualSequence = workflowMode === 'manual_sequence';
-  const effectivePaired = isManualSequence ? null : paired;
-  const effectiveRepeatCount = isManualSequence ? 1 : repeatCount;
-  const effectiveParallelCount = isManualSequence ? 1 : parallelCount;
-  const effectiveProcessCount = isManualSequence ? 1 : processCount;
-  // VS-10 Contract 2: when paired comparison is enabled, the matrix node grows
-  // two lanes (baseline + candidate) with explicit roles, and a compare node
-  // carries the three policy axes. The single-lane path is unchanged.
-  const lanes = effectivePaired
-    ? {
-        baseline: { target_id: effectivePaired.baselineTargetId, role: 'baseline' },
-        candidate: { target_id: effectivePaired.candidateTargetId, role: 'candidate' },
-      }
-    : { candidate: { target_id: targetId } };
-  const taskSelectionConfig: Record<string, unknown> = {
-    task_ids: selectedTaskIds,
-    sample_n: 1,
-  };
-  if (isManualSequence) {
-    taskSelectionConfig.order_policy = 'manual';
-  }
-  const executeConfig: Record<string, unknown> = {
-    parallel: Math.max(1, effectiveParallelCount),
-    processes: Math.max(1, effectiveProcessCount),
-  };
-  if (isManualSequence) {
-    executeConfig.execution_strategy = 'linear_sequence';
-    executeConfig.state_policy = MANUAL_SEQUENCE_STATE_POLICY;
-    executeConfig.failure_policy = MANUAL_SEQUENCE_FAILURE_POLICY;
-  }
-
-  const nodes: WorkflowDefinition['nodes'] = [
-    {
-      id: 'tasks',
-      type: 'task_selection',
-      depends_on: [],
-      config: taskSelectionConfig,
-    },
-    {
-      id: 'matrix',
-      type: 'matrix',
-      depends_on: ['tasks'],
-      config: {
-        lanes,
-        repeat_n: effectiveRepeatCount,
-      },
-    },
-    {
-      id: 'execute',
-      type: 'execute',
-      depends_on: ['matrix'],
-      config: executeConfig,
-    },
-  ];
-
-  if (effectivePaired) {
-    nodes.push({
-      id: 'compare',
-      type: 'compare',
-      depends_on: ['execute'],
-      config: {
-        target_constraints: effectivePaired.targetConstraints,
-        initial_state_policy: effectivePaired.initialStatePolicy,
-        execution: effectivePaired.execution,
-      },
-    });
-  }
-
-  return {
-    schema_version: 1,
-    name: 'WeChat smoke',
-    nodes,
-  };
 }

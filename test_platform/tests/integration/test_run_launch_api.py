@@ -53,6 +53,28 @@ def _workflow_definition_v2():
     }
 
 
+def _target_comparison_definition_v2():
+    definition = _workflow_definition_v2()
+    definition["name"] = "Profile-aware Target Comparison"
+    definition["nodes"][1]["config"]["lane_slots"] = {
+        "baseline": {"role": "baseline"},
+        "candidate": {"role": "candidate"},
+    }
+    definition["nodes"].append(
+        {
+            "id": "compare",
+            "type": "compare",
+            "depends_on": ["execute"],
+            "config": {
+                "target_constraints": ["same_app", "same_device", "same_data"],
+                "initial_state_policy": "task_projection",
+                "execution": "serial",
+            },
+        }
+    )
+    return definition
+
+
 def _target_config():
     return {
         "kind": "simulator",
@@ -91,10 +113,12 @@ def _profile_spec():
 
 
 class FakeRegistry:
-    def __init__(self):
+    def __init__(self, *, candidate_version_code=1):
         self.build_id = "tp-ep02"
+        self.candidate_version_code = candidate_version_code
 
     def check_health(self, config):
+        is_candidate = str(config["connection"]["env_url"]).endswith(":5174")
         return {
             "healthy": True,
             "executable": True,
@@ -112,7 +136,9 @@ class FakeRegistry:
                         "displayName": "Fake",
                         "displayNameEn": "Fake",
                         "version": "1.0.0",
-                        "versionCode": 1,
+                        "versionCode": (
+                            self.candidate_version_code if is_candidate else 1
+                        ),
                         "type": "plugin",
                     }
                 ],
@@ -195,6 +221,73 @@ def _launch_command(workflow_version, target_revision, profile_revision):
     }
 
 
+def _seed_target_comparison(client):
+    project = client.post(
+        "/api/platform/v1/projects",
+        json={"name": "Profile-aware Target Comparison"},
+    ).json()
+    workflow = client.post(
+        f"/api/platform/v1/projects/{project['id']}/workflows",
+        json={
+            "name": "Profile-aware Target Comparison",
+            "definition": _target_comparison_definition_v2(),
+        },
+    ).json()
+    workflow_version = client.post(
+        f"/api/platform/v1/workflows/{workflow['id']}/publish"
+    ).json()["version"]
+    target_revisions = []
+    for name, port in (("Baseline simulator", 5173), ("Candidate simulator", 5174)):
+        config = _target_config()
+        config["connection"]["env_url"] = f"http://127.0.0.1:{port}"
+        target = client.post(
+            "/api/platform/v1/targets",
+            json={
+                "project_id": project["id"],
+                "name": name,
+                "config": config,
+            },
+        ).json()
+        target_revisions.append(
+            client.post(
+                f"/api/platform/v1/targets/{target['id']}/health"
+            ).json()["revision"]
+        )
+    profile = client.post(
+        f"/api/platform/v1/projects/{project['id']}/execution-profiles",
+        json={
+            "name": "Shared deterministic subject",
+            "draft_spec": _profile_spec(),
+        },
+    ).json()
+    profile_revision = client.post(
+        f"/api/platform/v1/projects/{project['id']}"
+        f"/execution-profiles/{profile['id']}/publish"
+    ).json()
+    return project, workflow_version, target_revisions, profile_revision
+
+
+def _target_comparison_command(workflow_version, target_revisions, profile_revision):
+    return {
+        "workflow_version_id": workflow_version["id"],
+        "name": "Deterministic Target Comparison",
+        "seed": 20260716,
+        "comparison_intent": "target_comparison",
+        "lane_bindings": [
+            {
+                "lane_slot": lane_slot,
+                "target_revision_id": target_revision["id"],
+                "execution_profile_revision_id": profile_revision["id"],
+            }
+            for lane_slot, target_revision in zip(
+                ("baseline", "candidate"),
+                target_revisions,
+                strict=True,
+            )
+        ],
+    }
+
+
 def test_workflow_v2_publishes_one_target_free_candidate_lane_slot(tmp_path):
     app = create_app(_settings(tmp_path))
 
@@ -237,6 +330,67 @@ def test_workflow_v2_publishes_one_target_free_candidate_lane_slot(tmp_path):
     }
     assert "target_id" not in published.text
     assert "execution_profile" not in published.text
+
+
+def test_workflow_v2_publishes_target_free_paired_lane_slots(tmp_path):
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/platform/v1/projects",
+            json={"name": "Profile-aware Target Comparison"},
+        ).json()
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={
+                "name": "Profile-aware Target Comparison",
+                "definition": _target_comparison_definition_v2(),
+            },
+        ).json()
+
+        validation = client.post(
+            f"/api/platform/v1/workflows/{workflow['id']}/validate"
+        )
+        published = client.post(
+            f"/api/platform/v1/workflows/{workflow['id']}/publish"
+        )
+
+    assert validation.json() == {"valid": True, "issues": []}
+    assert published.status_code == 200
+    definition = published.json()["version"]["definition"]
+    assert definition["nodes"][1]["config"]["lane_slots"] == {
+        "baseline": {"role": "baseline"},
+        "candidate": {"role": "candidate"},
+    }
+    assert "target_id" not in published.text
+    assert "execution_profile_revision_id" not in published.text
+
+
+def test_workflow_v2_paired_lane_slots_require_comparison_policy(tmp_path):
+    app = create_app(_settings(tmp_path))
+    definition = _target_comparison_definition_v2()
+    definition["nodes"] = [
+        node for node in definition["nodes"] if node["type"] != "compare"
+    ]
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/platform/v1/projects",
+            json={"name": "Incomplete Target Comparison"},
+        ).json()
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={"name": "Incomplete Target Comparison", "definition": definition},
+        ).json()
+        published = client.post(
+            f"/api/platform/v1/workflows/{workflow['id']}/publish"
+        )
+
+    assert published.status_code == 400
+    assert published.json()["error"]["code"] == "WORKFLOW_VALIDATION_FAILED"
+    assert {
+        issue["code"] for issue in published.json()["error"]["details"]
+    } == {"WORKFLOW_COMPARE_REQUIRED"}
 
 
 @pytest.mark.parametrize(
@@ -337,6 +491,169 @@ def test_run_launch_http_previews_creates_and_reloads_exact_identity(tmp_path):
     )
     assert identity["lane_fingerprint"].startswith("sha256:")
     assert supervisor.submitted == [body["id"]]
+
+
+def test_target_comparison_launch_freezes_two_targets_and_one_profile(tmp_path):
+    supervisor = RecordingSupervisor()
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(),
+        supervisor=supervisor,
+        compatibility_probe=FakeCompatibilityProbe(),
+    )
+
+    with TestClient(app) as client:
+        project, workflow_version, target_revisions, profile_revision = (
+            _seed_target_comparison(client)
+        )
+        command = _target_comparison_command(
+            workflow_version,
+            target_revisions,
+            profile_revision,
+        )
+        preview = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch/preview",
+            json=command,
+        )
+        assert preview.status_code == 200
+        preview_body = preview.json()
+
+        created = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch",
+            json={**command, "preview_token": preview_body["preview_token"]},
+            headers={"Idempotency-Key": "tp-ep05-target-comparison"},
+        )
+        assert created.status_code == 201
+        reloaded = client.get(
+            f"/api/platform/v1/runs/{created.json()['id']}"
+        ).json()
+
+    assert preview_body["comparison_intent"] == "target_comparison"
+    assert preview_body["constraint_violations"] == []
+    assert [binding["lane_slot"] for binding in preview_body["lane_bindings"]] == [
+        "baseline",
+        "candidate",
+    ]
+    assert len(reloaded["run_plan"]["episodes"]) == 1
+    assert reloaded["run_plan"]["comparison"] == {
+        "intent": "target_comparison",
+        "target_constraints": ["same_app", "same_device", "same_data"],
+        "initial_state_policy": "task_projection",
+        "execution": "serial",
+    }
+    assert {
+        lane["target_revision_id"] for lane in reloaded["run_plan"]["lanes"]
+    } == {revision["id"] for revision in target_revisions}
+    assert {
+        lane["execution_profile_revision_id"]
+        for lane in reloaded["run_plan"]["lanes"]
+    } == {profile_revision["id"]}
+    compatibility = reloaded["run_attempts"][0]["compatibility"]
+    assert len(compatibility) == 1
+    assert compatibility[0]["lane_keys"] == ["baseline", "candidate"]
+    assert supervisor.submitted == [reloaded["id"]]
+
+
+def test_target_comparison_constraints_are_advisory_in_preview_and_block_create(
+    tmp_path,
+):
+    supervisor = RecordingSupervisor()
+    app = create_app(
+        _settings(tmp_path),
+        adapter_registry=FakeRegistry(candidate_version_code=2),
+        supervisor=supervisor,
+        compatibility_probe=FakeCompatibilityProbe(),
+    )
+
+    with TestClient(app) as client:
+        project, workflow_version, target_revisions, profile_revision = (
+            _seed_target_comparison(client)
+        )
+        command = _target_comparison_command(
+            workflow_version,
+            target_revisions,
+            profile_revision,
+        )
+        preview = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch/preview",
+            json=command,
+        )
+        created = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch",
+            json={**command, "preview_token": preview.json()["preview_token"]},
+            headers={"Idempotency-Key": "tp-ep05-constraint-rejected"},
+        )
+        runs = client.get(
+            f"/api/platform/v1/runs?project_id={project['id']}"
+        ).json()["items"]
+
+    assert preview.status_code == 200
+    assert [
+        violation["code"] for violation in preview.json()["constraint_violations"]
+    ] == ["APP_VERSION_CODE_MISMATCH"]
+    assert created.status_code == 409
+    assert created.json()["error"]["code"] == "RUN_COMPARISON_CONSTRAINT_VIOLATED"
+    assert created.json()["error"]["details"] == preview.json()[
+        "constraint_violations"
+    ]
+    assert runs == []
+    assert supervisor.submitted == []
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("same_target", "RUN_COMPARISON_NO_VARIATION"),
+        ("different_profiles", "RUN_COMPARISON_CONFOUNDED"),
+    ],
+)
+def test_target_comparison_rejects_invalid_revision_axes_without_writes(
+    tmp_path,
+    case,
+    expected_code,
+):
+    app = create_app(_settings(tmp_path), adapter_registry=FakeRegistry())
+
+    with TestClient(app) as client:
+        project, workflow_version, target_revisions, profile_revision = (
+            _seed_target_comparison(client)
+        )
+        command = _target_comparison_command(
+            workflow_version,
+            target_revisions,
+            profile_revision,
+        )
+        if case == "same_target":
+            command["lane_bindings"][1]["target_revision_id"] = (
+                command["lane_bindings"][0]["target_revision_id"]
+            )
+        else:
+            second_profile = client.post(
+                f"/api/platform/v1/projects/{project['id']}/execution-profiles",
+                json={
+                    "name": "Different deterministic subject",
+                    "draft_spec": _profile_spec(),
+                },
+            ).json()
+            second_revision = client.post(
+                f"/api/platform/v1/projects/{project['id']}"
+                f"/execution-profiles/{second_profile['id']}/publish"
+            ).json()
+            command["lane_bindings"][1]["execution_profile_revision_id"] = (
+                second_revision["id"]
+            )
+
+        response = client.post(
+            f"/api/platform/v1/projects/{project['id']}/run-launch/preview",
+            json=command,
+        )
+        runs = client.get(
+            f"/api/platform/v1/runs?project_id={project['id']}"
+        ).json()["items"]
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == expected_code
+    assert runs == []
 
 
 def test_archived_profile_blocks_new_launch_without_changing_frozen_run(tmp_path):

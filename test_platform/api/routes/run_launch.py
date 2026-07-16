@@ -32,7 +32,7 @@ class PreviewRunLaunchRequest(BaseModel):
     workflow_version_id: str = Field(min_length=1)
     name: str | None = Field(default=None, max_length=100)
     seed: int
-    comparison_intent: Literal["single"]
+    comparison_intent: Literal["single", "target_comparison"]
     lane_bindings: list[LaneBindingRequest]
 
 

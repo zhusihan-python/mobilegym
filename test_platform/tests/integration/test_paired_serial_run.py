@@ -21,21 +21,37 @@ import json
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from bench_env.env.base import Action, ActionType, Observation, StepResult
 from bench_env.task.judge import JudgeResult
+from test_platform.api.app import create_app
+from test_platform.domain.execution_profiles import PublishProfile, SaveProfileDraft
+from test_platform.domain.run_launch import (
+    CreateRunLaunch,
+    LaneBindingInput,
+    PreviewRunLaunch,
+)
 from test_platform.persistence.database import Database
+from test_platform.persistence.repositories import (
+    ProjectRepository,
+    TargetRepository,
+    WorkflowRepository,
+)
+from test_platform.services.compatibility_preflight import CompatibilityPreflight
 from test_platform.services.execution import PairedSerialRunExecutor
+from test_platform.services.execution_profiles import ExecutionProfiles
+from test_platform.services.run_launch import RunLaunch
+from test_platform.services.runs import FakeRunSupervisor
+from test_platform.testing.fake_compat import FakeCompatibilityProbe
 
 # Reuse the 2-lane run builder + fakes from the materializer test.
 from test_platform.tests.integration.test_materializer import (
+    _catalog,
     _create_paired_run,
     _make_target,
     _settings,
 )
-from test_platform.persistence.repositories import ProjectRepository
-
-
 class _Phase:
     def __enter__(self):
         return self
@@ -219,6 +235,212 @@ def _build_paired_run(database: Database, settings):
         candidate_target_id=candidate_target,
         repeat_n=1,
     )
+
+
+def _build_profile_aware_target_comparison(database: Database, settings):
+    project = ProjectRepository(database).create("Profile-aware paired")
+    baseline_target_id = _make_target(
+        database,
+        name="baseline",
+        revision="seed-v1",
+    )
+    candidate_target_id = _make_target(
+        database,
+        name="candidate",
+        revision="seed-v1",
+    )
+    target_repository = TargetRepository(database)
+    baseline_revision = target_repository.latest_revision(baseline_target_id)
+    candidate_revision = target_repository.latest_revision(candidate_target_id)
+    assert baseline_revision is not None
+    assert candidate_revision is not None
+
+    workflow_repository = WorkflowRepository(database)
+    workflow = workflow_repository.create(
+        project_id=project.id,
+        name="Profile-aware Target Comparison",
+        definition={
+            "schema_version": 2,
+            "name": "Profile-aware Target Comparison",
+            "nodes": [
+                {
+                    "id": "tasks",
+                    "type": "task_selection",
+                    "depends_on": [],
+                    "config": {"task_ids": ["fake.SampleTask"], "sample_n": 1},
+                },
+                {
+                    "id": "matrix",
+                    "type": "matrix",
+                    "depends_on": ["tasks"],
+                    "config": {
+                        "lane_slots": {
+                            "baseline": {"role": "baseline"},
+                            "candidate": {"role": "candidate"},
+                        },
+                        "repeat_n": 1,
+                    },
+                },
+                {
+                    "id": "execute",
+                    "type": "execute",
+                    "depends_on": ["matrix"],
+                    "config": {
+                        "parallel": 1,
+                        "processes": 1,
+                        "eval_mode": "grounded",
+                        "judge_mode": "rule",
+                    },
+                },
+                {
+                    "id": "compare",
+                    "type": "compare",
+                    "depends_on": ["execute"],
+                    "config": {
+                        "target_constraints": [
+                            "same_app",
+                            "same_device",
+                            "same_data",
+                        ],
+                        "initial_state_policy": "task_projection",
+                        "execution": "serial",
+                    },
+                },
+            ],
+        },
+    )
+    workflow_version = workflow_repository.publish(workflow.id)
+    profiles = ExecutionProfiles(database)
+    profile = profiles.save_draft(
+        SaveProfileDraft(
+            project_id=project.id,
+            name="Shared deterministic subject",
+            draft_spec={
+                "schema_version": 1,
+                "agent": {"id": "generic_v2"},
+                "model": {
+                    "protocol": "openai_chat_completions",
+                    "base_url": "http://127.0.0.1:1234/v1",
+                    "name": "deterministic-model",
+                },
+                "image_input": {"format": "data_url"},
+                "generation": {
+                    "temperature": 0,
+                    "top_p": 1,
+                    "max_tokens": 4096,
+                    "stream": True,
+                },
+                "inference": {"timeout_seconds": 300},
+                "credentials": {"required_slots": []},
+            },
+        )
+    )
+    profile_revision = profiles.publish(
+        PublishProfile(
+            project_id=project.id,
+            execution_profile_id=profile.id,
+            expected_draft_version=profile.draft_version,
+            expected_head_revision_id=None,
+        )
+    )
+    command = PreviewRunLaunch(
+        project_id=project.id,
+        workflow_version_id=workflow_version.id,
+        name="Profile-aware Target Comparison",
+        seed=4242,
+        comparison_intent="target_comparison",
+        lane_bindings=(
+            LaneBindingInput(
+                lane_slot="baseline",
+                target_revision_id=baseline_revision.id,
+                execution_profile_revision_id=profile_revision.id,
+            ),
+            LaneBindingInput(
+                lane_slot="candidate",
+                target_revision_id=candidate_revision.id,
+                execution_profile_revision_id=profile_revision.id,
+            ),
+        ),
+    )
+    launch = RunLaunch(
+        database,
+        settings=settings,
+        supervisor=FakeRunSupervisor(),
+        catalog_builder=_catalog,
+        compatibility_preflight=CompatibilityPreflight(FakeCompatibilityProbe()),
+    )
+    preview = launch.preview(command)
+    run = launch.create(
+        CreateRunLaunch(**command.__dict__),
+        expected_preview_token=preview.preview_token,
+        secret_bindings={},
+        idempotency_key="tp-ep05-profile-aware-paired",
+    )
+    return run, profile_revision.id, {baseline_revision.id, candidate_revision.id}
+
+
+@pytest.mark.asyncio
+async def test_profile_aware_target_comparison_preserves_shared_preparation_and_result(
+    tmp_path,
+):
+    settings = _settings(tmp_path)
+    database = Database(settings)
+    database.initialize()
+    factory = _PairedTaskFactory()
+    env_iter = iter(
+        [
+            _PairedEnv(label="materialize"),
+            _PairedEnv(label="baseline"),
+            _PairedEnv(label="candidate"),
+        ]
+    )
+    agents = {
+        "baseline": _ScriptedAgent(succeed=True),
+        "candidate": _ScriptedAgent(succeed=False),
+    }
+    try:
+        run, profile_revision_id, target_revision_ids = (
+            _build_profile_aware_target_comparison(database, settings)
+        )
+
+        executed = await PairedSerialRunExecutor(
+            database,
+            settings,
+            task_factory=factory,
+            env_factory=lambda lane: next(env_iter),
+            agent_factory=lambda lane: agents[lane.lane_key],
+        ).execute_run(run.id)
+
+        assert executed.execution_identity.kind == "profile_aware"
+        with TestClient(
+            create_app(settings, supervisor=FakeRunSupervisor())
+        ) as client:
+            reloaded_response = client.get(f"/api/platform/v1/runs/{run.id}")
+            comparison_response = client.get(
+                f"/api/platform/v1/runs/{run.id}/comparison"
+            )
+
+        assert reloaded_response.status_code == 200
+        assert comparison_response.status_code == 200
+        reloaded = reloaded_response.json()
+        assert reloaded["execution_identity"]["kind"] == "profile_aware"
+        assert {
+            binding["execution_profile_revision_id"]
+            for binding in reloaded["execution_identity"]["lane_bindings"]
+        } == {profile_revision_id}
+        assert {
+            binding["target_revision_id"]
+            for binding in reloaded["execution_identity"]["lane_bindings"]
+        } == target_revision_ids
+        assert len(reloaded["run_plan"]["episodes"]) == 1
+        assert len(reloaded["episode_identities"]) == 1
+        comparison = comparison_response.json()
+        assert comparison["pairs"][0]["classification"] == "regression"
+        assert comparison["pairs"][0]["prepared"]["instruction"] == (
+            "Choose materialize-sampled-1"
+        )
+    finally:
+        database.close()
 
 
 @pytest.mark.asyncio

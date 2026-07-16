@@ -10,6 +10,7 @@ from typing import Any
 
 from test_platform.config import PlatformSettings
 from test_platform.domain.canonical_json import canonical_json, canonical_sha256
+from test_platform.domain.comparison_constraints import evaluate_target_constraints
 from test_platform.domain.execution_profiles import ExecutionProfileDomainError
 from test_platform.domain.execution_secrets import (
     SecretRequirement,
@@ -70,12 +71,17 @@ class RunLaunch:
         self._compatibility_preflight = compatibility_preflight
 
     def preview(self, command: PreviewRunLaunch) -> RunLaunchPreview:
-        plan, workflow_version_hash = self._compile_plan(
+        plan, workflow_version_hash, constraint_violations = self._compile_plan(
             command,
             run_id="preview",
             created_at="1970-01-01T00:00:00.000Z",
         )
-        return self._preview_from_plan(command, plan, workflow_version_hash)
+        return self._preview_from_plan(
+            command,
+            plan,
+            workflow_version_hash,
+            constraint_violations,
+        )
 
     def create(
         self,
@@ -120,10 +126,17 @@ class RunLaunch:
                     }
                 ],
             )
+        if preview.constraint_violations:
+            raise RunLaunchError(
+                "RUN_COMPARISON_CONSTRAINT_VIOLATED",
+                "The Target Comparison constraints are not satisfied.",
+                status_code=409,
+                details=preview.constraint_violations,
+            )
 
         run_id = new_id()
         created_at = _utc_timestamp()
-        plan, _workflow_version_hash = self._compile_plan(
+        plan, _workflow_version_hash, _constraint_violations = self._compile_plan(
             preview_command,
             run_id=run_id,
             created_at=created_at,
@@ -145,7 +158,11 @@ class RunLaunch:
         connection = self._database.connection
         try:
             connection.execute("BEGIN IMMEDIATE")
-            transaction_plan, transaction_workflow_hash = self._compile_plan(
+            (
+                transaction_plan,
+                transaction_workflow_hash,
+                transaction_constraint_violations,
+            ) = self._compile_plan(
                 preview_command,
                 run_id=run_id,
                 created_at=created_at,
@@ -154,6 +171,7 @@ class RunLaunch:
                 preview_command,
                 transaction_plan,
                 transaction_workflow_hash,
+                transaction_constraint_violations,
             )
             if transaction_preview.preview_token != expected_preview_token:
                 raise RunLaunchError(
@@ -213,6 +231,7 @@ class RunLaunch:
         command: PreviewRunLaunch,
         plan: RunPlanV2,
         workflow_version_hash: str,
+        constraint_violations: list[dict[str, Any]],
     ) -> RunLaunchPreview:
         fingerprint_inputs = {
             "workflow_version_id": plan.workflow_version_id,
@@ -239,6 +258,7 @@ class RunLaunch:
             lane_bindings=[
                 self._resolved_lane_view(plan, lane.lane_key) for lane in plan.lanes
             ],
+            constraint_violations=constraint_violations,
             episode_count=len(plan.episodes),
             fingerprint_inputs=fingerprint_inputs,
             run_plan_fingerprint=plan.fingerprint,
@@ -260,7 +280,7 @@ class RunLaunch:
         *,
         run_id: str,
         created_at: str,
-    ) -> tuple[RunPlanV2, str]:
+    ) -> tuple[RunPlanV2, str, list[dict[str, Any]]]:
         workflow_repository = WorkflowRepository(self._database)
         try:
             version = workflow_repository.get_version(command.workflow_version_id)
@@ -290,10 +310,10 @@ class RunLaunch:
                     }
                 ],
             )
-        if command.comparison_intent != "single":
+        if command.comparison_intent not in {"single", "target_comparison"}:
             raise RunLaunchError(
                 "RUN_COMPARISON_UNSUPPORTED",
-                "TP-EP02 supports only Single Run launch.",
+                "The requested comparison intent is not supported.",
                 status_code=409,
             )
 
@@ -310,12 +330,11 @@ class RunLaunch:
                     }
                 ],
             )
-        if len(lane_slots) != 1 or "candidate" not in lane_slots:
-            raise RunLaunchError(
-                "RUN_LANE_BINDING_INCOMPLETE",
-                "TP-EP02 requires exactly one candidate Lane Slot.",
-                details=[{"lane_slots": sorted(lane_slots)}],
-            )
+        _validate_comparison_shape(
+            command.comparison_intent,
+            lane_slots=lane_slots,
+            binding_by_slot=binding_by_slot,
+        )
 
         target_repository = TargetRepository(self._database)
         profile_repository = ExecutionProfileRepository(self._database)
@@ -417,7 +436,11 @@ class RunLaunch:
                 str(exc),
                 status_code=409,
             ) from exc
-        return plan, version.definition_hash
+        constraint_violations = _target_comparison_constraint_violations(
+            definition,
+            resolved_bindings,
+        ) if command.comparison_intent == "target_comparison" else []
+        return plan, version.definition_hash, constraint_violations
 
     @staticmethod
     def _resolved_lane_view(
@@ -849,6 +872,77 @@ def _binding_map(bindings) -> dict[str, Any]:
             )
         by_slot[lane_slot] = binding
     return by_slot
+
+
+def _validate_comparison_shape(
+    comparison_intent: str,
+    *,
+    lane_slots: dict[str, dict[str, Any]],
+    binding_by_slot: dict[str, Any],
+) -> None:
+    if comparison_intent == "single":
+        if set(lane_slots) != {"candidate"}:
+            raise RunLaunchError(
+                "RUN_LANE_BINDING_INCOMPLETE",
+                "Single launch requires exactly one candidate Lane Slot.",
+                details=[{"lane_slots": sorted(lane_slots)}],
+            )
+        return
+
+    if set(lane_slots) != {"baseline", "candidate"}:
+        raise RunLaunchError(
+            "RUN_LANE_BINDING_INCOMPLETE",
+            "Target Comparison requires baseline and candidate Lane Slots.",
+            details=[{"lane_slots": sorted(lane_slots)}],
+        )
+
+    target_revision_ids = {
+        binding.target_revision_id for binding in binding_by_slot.values()
+    }
+    profile_revision_ids = {
+        binding.execution_profile_revision_id for binding in binding_by_slot.values()
+    }
+    if len(target_revision_ids) == 2 and len(profile_revision_ids) == 1:
+        return
+    if len(target_revision_ids) == 2 and len(profile_revision_ids) == 2:
+        raise RunLaunchError(
+            "RUN_COMPARISON_CONFOUNDED",
+            "Target and Execution Profile Revisions cannot both vary.",
+            status_code=409,
+        )
+    if len(target_revision_ids) == 1 and len(profile_revision_ids) == 1:
+        raise RunLaunchError(
+            "RUN_COMPARISON_NO_VARIATION",
+            "A comparison requires one varying revision axis.",
+            status_code=409,
+        )
+    raise RunLaunchError(
+        "RUN_COMPARISON_INTENT_MISMATCH",
+        "Target Comparison requires different Target Revisions and one shared "
+        "Execution Profile Revision.",
+        status_code=409,
+    )
+
+
+def _target_comparison_constraint_violations(
+    definition: WorkflowDefinitionV2,
+    resolved_bindings: dict[str, ResolvedLanePlanBinding],
+) -> list[dict[str, Any]]:
+    compare = next((node for node in definition.nodes if node.type == "compare"), None)
+    configured_constraints = (
+        compare.config.get("target_constraints") if compare is not None else None
+    )
+    constraints = configured_constraints if isinstance(configured_constraints, list) else None
+    baseline = resolved_bindings["baseline"].target_revision
+    candidate = resolved_bindings["candidate"].target_revision
+    return [
+        violation.to_dict()
+        for violation in evaluate_target_constraints(
+            baseline_metadata=baseline.metadata,
+            candidate_metadata=candidate.metadata,
+            constraints=constraints,
+        )
+    ]
 
 
 def _require_exact_revision_id(value: str, *, field: str, lane_slot: str) -> None:

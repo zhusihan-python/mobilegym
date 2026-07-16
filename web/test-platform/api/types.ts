@@ -533,14 +533,14 @@ export type RunLaunchCommand = {
   workflow_version_id: string;
   name?: string;
   seed: number;
-  comparison_intent: 'single';
+  comparison_intent: 'single' | 'target_comparison';
   lane_bindings: RunLaunchLaneBindingInput[];
 };
 
 export type RunLaunchPreview = {
   workflow_version_id: string;
   workflow_version_hash: string;
-  comparison_intent: 'single';
+  comparison_intent: 'single' | 'target_comparison';
   lane_bindings: Array<{
     lane_slot: string;
     role: string;
@@ -555,6 +555,7 @@ export type RunLaunchPreview = {
     execution_profile_revision_hash: string;
     lane_fingerprint: string;
   }>;
+  constraint_violations: ConstraintViolation[];
   episode_count: number;
   fingerprint_inputs: Record<string, unknown>;
   run_plan_fingerprint: string;

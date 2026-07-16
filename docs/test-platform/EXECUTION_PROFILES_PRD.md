@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP04 on 2026-07-15 |
+| Status | Accepted; delivery complete through TP-EP05 on 2026-07-16 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 through TP-EP04 complete; TP-EP05 and later slices require separate authorization |
-| Current evidence | [`evidence/2026-07-15-tp-ep04-profile-lifecycle-revision-discovery.md`](evidence/2026-07-15-tp-ep04-profile-lifecycle-revision-discovery.md) |
+| Implementation authorization | TP-EP00 through TP-EP05 complete; TP-EP06 and later slices require separate authorization |
+| Current evidence | [`evidence/2026-07-16-tp-ep05-profile-aware-target-comparison.md`](evidence/2026-07-16-tp-ep05-profile-aware-target-comparison.md) |
 
 ## 1. Summary
 
@@ -292,7 +292,7 @@ identity from loose Agent/model fields.
       Profile Revision in its Run Plan and public provenance.
 - [ ] An Execution Comparison runs two profiles against one exact Target
       Revision and one shared set of Prepared Episodes.
-- [ ] A Target Comparison runs one exact profile revision against two permitted
+- [x] A Target Comparison runs one exact profile revision against two permitted
       Target Revisions.
 - [ ] A comparison that varies both axes is rejected before Run creation with
       structured violations.
