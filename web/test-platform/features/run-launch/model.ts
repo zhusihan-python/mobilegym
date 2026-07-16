@@ -6,13 +6,14 @@ import type {
   WorkflowSummary,
 } from '../../api/types';
 
-export type ComparisonIntent = 'single' | 'target_comparison';
+export type ComparisonIntent = 'single' | 'target_comparison' | 'execution_comparison';
 
 export type RunLaunchSelection = {
   workflowVersionId: string;
   comparisonIntent: ComparisonIntent;
   baselineTargetRevisionId: string;
   candidateTargetRevisionId: string;
+  baselineProfileRevisionId: string;
   profileRevisionId: string;
   name: string;
   seed: string;
@@ -43,6 +44,7 @@ export function initialRunLaunchSelection(input: {
   const workflowVersionId = input.workflows[0]?.latest_version?.id ?? '';
   return {
     ...selectionForWorkflow(workflowVersionId, input.workflows, input.targets),
+    baselineProfileRevisionId: input.profiles[0]?.head_revision?.id ?? '',
     profileRevisionId: input.profiles[0]?.head_revision?.id ?? '',
     seed: '20260715',
   };
@@ -94,12 +96,16 @@ export function buildRunLaunchCommand(
     name: selection.name.trim() || undefined,
     seed: Number(selection.seed),
     comparison_intent: selection.comparisonIntent,
-    lane_bindings: selection.comparisonIntent === 'target_comparison'
+    lane_bindings: selection.comparisonIntent !== 'single'
       ? [
         {
           lane_slot: 'baseline',
-          target_revision_id: selection.baselineTargetRevisionId,
-          execution_profile_revision_id: selection.profileRevisionId,
+          target_revision_id: selection.comparisonIntent === 'execution_comparison'
+            ? selection.candidateTargetRevisionId
+            : selection.baselineTargetRevisionId,
+          execution_profile_revision_id: selection.comparisonIntent === 'execution_comparison'
+            ? selection.baselineProfileRevisionId
+            : selection.profileRevisionId,
         },
         candidate,
       ]
@@ -113,7 +119,11 @@ export function isRunLaunchReady(selection: RunLaunchSelection): boolean {
     && selection.candidateTargetRevisionId
     && (
       selection.comparisonIntent === 'single'
-      || selection.baselineTargetRevisionId
+      || (
+        selection.comparisonIntent === 'target_comparison'
+          ? selection.baselineTargetRevisionId
+          : selection.baselineProfileRevisionId
+      )
     )
     && selection.profileRevisionId
     && Number.isInteger(Number(selection.seed)),

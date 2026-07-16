@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP05 complete on 2026-07-16; TP-EP06 not started |
+| Status | TP-EP06 complete; TP-EP07 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP05 authorized and complete; TP-EP06 and later slices require separate start requests |
+| Implementation authorization | TP-EP00 through TP-EP06 complete; TP-EP07 and later slices require separate start requests |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 through TP-EP05 are also complete; TP-EP06 has not started.
+are complete. TP-EP01 through TP-EP06 are also complete; TP-EP07 is not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 through TP-EP05 are also complete; TP-EP06 has not started.
+complete. TP-EP02 through TP-EP06 are also complete; TP-EP07 is not started.
 
 ### Acceptance criteria
 
@@ -266,8 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 through TP-EP05 are
-also complete; TP-EP06 has not started.
+console preview/create/reload flow are complete. TP-EP03 through TP-EP06 are
+also complete; TP-EP07 is not started.
 
 ### Acceptance criteria
 
@@ -328,8 +328,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
 Private Credential Reference publication, transient request-backed resolution,
 zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
-the credential-ready console flow are complete. TP-EP04 and TP-EP05 are also
-complete; TP-EP06 has not started.
+the credential-ready console flow are complete. TP-EP04 through TP-EP06 are
+also complete; TP-EP07 is not started.
 
 ### Acceptance criteria
 
@@ -392,7 +392,7 @@ Current evidence:
 Active-name uniqueness, optimistic draft/head concurrency, monotonic and
 idempotent publication, redacted revision diff, clone, archive, historical
 discovery, frozen-Run stability, and the complete console lifecycle are done.
-TP-EP05 is also complete; TP-EP06 has not started.
+TP-EP05 and TP-EP06 are also complete; TP-EP07 is not started.
 
 ### Acceptance criteria
 
@@ -453,7 +453,7 @@ Current evidence:
 Target-free paired Lane Slots, exact same-profile Target Comparison bindings,
 advisory/authoritative constraints, shared Prepared Episodes, deduplicated
 preflight, deterministic paired execution, reload identity, and Console launch
-are complete. TP-EP06 has not started.
+are complete. TP-EP06 is also complete; TP-EP07 is not started.
 
 ### Acceptance criteria
 
@@ -513,19 +513,19 @@ bindings.
 
 ### Acceptance criteria
 
-- [ ] Execution Comparison requires one identical Target Revision and two
+- [x] Execution Comparison requires one identical Target Revision and two
       different Execution Profile Revisions.
-- [ ] Workflow Version, evaluation/Judge protocol, orchestration policy, task
+- [x] Workflow Version, evaluation/Judge protocol, orchestration policy, task
       source, seed, episode identities, and Prepared Episodes are identical.
-- [ ] The deterministic test adapter varies subject behavior only from the frozen
+- [x] The deterministic test adapter varies subject behavior only from the frozen
       profile snapshot and is unavailable in normal production startup.
-- [ ] Preview shows the public profile revision diff and locks the Target
+- [x] Preview shows the public profile revision diff and locks the Target
       Revision equality axis.
-- [ ] Create rejects identical Lane Bindings as no variation and rejects both
+- [x] Create rejects identical Lane Bindings as no variation and rejects both
       axes changing as confounded, with zero durable side effects.
-- [ ] Comparison classification, gates, diagnostics, replay, incident links, and
+- [x] Comparison classification, gates, diagnostics, replay, incident links, and
       reload preserve both exact profile identities.
-- [ ] Changing Agent/model settings never re-samples parameters, changes
+- [x] Changing Agent/model settings never re-samples parameters, changes
       instruction, or re-prepares initial state.
 
 ### Test seam
@@ -556,6 +556,12 @@ npx vitest run --config vitest.platform.config.ts \
   tests/testPlatformPairedResult.test.tsx \
   tests/testPlatformRunObservatory.test.tsx
 ```
+
+Current evidence:
+[`evidence/2026-07-17-tp-ep06-execution-comparison.md`](evidence/2026-07-17-tp-ep06-execution-comparison.md).
+Exact same-target/two-profile launch, public profile diff, shared preparation,
+deterministic subject-specific results, causal rejection, and Console identity
+preservation are complete. TP-EP07 is not started.
 
 ## TP-EP07: Preserve Lane Bindings across Retry and Resume
 
@@ -793,6 +799,7 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP05 were implemented
-only after their separate explicit start requests. TP-EP06 has not started and
-still requires a separate explicit start request.
+No external issue has been published. TP-EP00 through TP-EP06 were implemented
+only after their separate explicit start requests. TP-EP06 was separately
+authorized and completed on 2026-07-17; TP-EP07 and later slices still require
+their own explicit start requests.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Callable
 
@@ -29,28 +30,57 @@ def build_deterministic_executor_resolver(
         )
 
     def resolve(lane: Any) -> Any:
-        runner_config = getattr(lane, "runner_config", {}) or {}
-        agent_name = str(runner_config.get("agent") or "")
-        if agent_name not in {"deterministic", "deterministic-slow"}:
-            raise RuntimeError(
-                "Explicit deterministic composition only accepts deterministic agents."
-            )
-        slow = agent_name == "deterministic-slow"
+        _deterministic_subject(lane)
         return SerialRunExecutor(
             database,
             settings,
             task_factory=DeterministicTaskFactory(),
-            env_factory=lambda _lane: DeterministicEnvironment(slow=slow),
-            agent_factory=lambda resolved_lane: DeterministicAgent(
-                slow=slow,
-                failing_task_id=str(
-                    getattr(resolved_lane, "runner_config", {}).get("failing_task_id")
-                    or ""
-                ) or None,
+            env_factory=lambda resolved_lane: DeterministicEnvironment(
+                slow=_deterministic_subject(resolved_lane).slow,
             ),
+            agent_factory=_deterministic_agent,
         )
 
     return resolve
+
+
+@dataclass(frozen=True)
+class _DeterministicSubject:
+    slow: bool
+    fail_all: bool
+
+
+def _deterministic_subject(lane: Any) -> _DeterministicSubject:
+    runner_config = getattr(lane, "runner_config", {}) or {}
+    agent_name = str(runner_config.get("agent") or "")
+    model_name = str(runner_config.get("model_name") or "")
+    if agent_name in {"deterministic", "deterministic-slow"}:
+        return _DeterministicSubject(
+            slow=agent_name == "deterministic-slow",
+            fail_all=False,
+        )
+    if agent_name == "generic_v2" and model_name in {
+        "deterministic-profile-pass",
+        "deterministic-profile-fail",
+    }:
+        return _DeterministicSubject(
+            slow=False,
+            fail_all=model_name == "deterministic-profile-fail",
+        )
+    raise RuntimeError(
+        "Explicit deterministic composition only accepts deterministic subjects."
+    )
+
+
+def _deterministic_agent(lane: Any) -> "DeterministicAgent":
+    subject = _deterministic_subject(lane)
+    return DeterministicAgent(
+        slow=subject.slow,
+        failing_task_id=str(
+            getattr(lane, "runner_config", {}).get("failing_task_id") or ""
+        ) or None,
+        fail_all=subject.fail_all,
+    )
 
 
 def build_deterministic_target_registry() -> TargetAdapterRegistry:
@@ -185,9 +215,11 @@ class DeterministicAgent:
         *,
         slow: bool = False,
         failing_task_id: str | None = None,
+        fail_all: bool = False,
     ) -> None:
         self.slow = slow
         self.failing_task_id = failing_task_id
+        self.fail_all = fail_all
         self.history: list[Any] = []
         self._instruction: str = ""
         self._current_task_id: str = ""
@@ -206,6 +238,8 @@ class DeterministicAgent:
         return Action.complete("deterministic completion")
 
     def _should_fail(self) -> bool:
+        if self.fail_all:
+            return True
         if self.failing_task_id is None:
             # TP-H06 single-lane Manual Sequence: fail the second step.
             return "sequence step 2" in self._instruction

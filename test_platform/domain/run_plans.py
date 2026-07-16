@@ -251,7 +251,11 @@ class RunPlanV2Compiler:
         bindings: dict[str, ResolvedLanePlanBinding],
         seed: int,
         created_at: str,
-        comparison_intent: Literal["single", "target_comparison"],
+        comparison_intent: Literal[
+            "single",
+            "target_comparison",
+            "execution_comparison",
+        ],
     ) -> RunPlanV2:
         task_node = _required_node(definition, "task_selection")
         matrix_node = _required_node(definition, "matrix")
@@ -355,16 +359,11 @@ class RunPlanV2Compiler:
             ("judge_mode", "judge_model", "judge_base_url", "eval_mode"),
         )
         comparison: dict[str, Any] = {"intent": comparison_intent}
-        if comparison_intent == "target_comparison":
+        if comparison_intent in {"target_comparison", "execution_comparison"}:
             compare_node = _required_node(definition, "compare")
             configured_constraints = compare_node.config.get("target_constraints")
             comparison.update(
                 {
-                    "target_constraints": (
-                        list(configured_constraints)
-                        if isinstance(configured_constraints, list)
-                        else list(DEFAULT_TARGET_CONSTRAINTS)
-                    ),
                     "initial_state_policy": str(
                         compare_node.config.get("initial_state_policy")
                         or "task_projection"
@@ -374,6 +373,12 @@ class RunPlanV2Compiler:
                     ),
                 }
             )
+            if comparison_intent == "target_comparison":
+                comparison["target_constraints"] = (
+                    list(configured_constraints)
+                    if isinstance(configured_constraints, list)
+                    else list(DEFAULT_TARGET_CONSTRAINTS)
+                )
         gates = _gate_thresholds(definition)
         artifacts = {
             "run_plan": "platform/run-plan.json",

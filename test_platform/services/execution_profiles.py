@@ -186,17 +186,6 @@ class ExecutionProfiles:
         to_revision, to_profile = self._repository.get_revision(to_revision_id)
         self._assert_project(from_profile.project_id, project_id)
         self._assert_project(to_profile.project_id, project_id)
-        if from_profile.id != to_profile.id:
-            raise ExecutionProfileDomainError(
-                "EXECUTION_PROFILE_REVISION_DIFF_INVALID",
-                "Execution Profile Revision diff requires one Execution Profile.",
-                details=[
-                    {
-                        "from_revision_id": from_revision_id,
-                        "to_revision_id": to_revision_id,
-                    }
-                ],
-            )
         before = self._flatten_public_spec(from_revision.public_spec)
         after = self._flatten_public_spec(to_revision.public_spec)
         if (

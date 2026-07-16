@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP05 on 2026-07-16 |
+| Status | Accepted; delivery complete through TP-EP06 on 2026-07-17 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 through TP-EP05 complete; TP-EP06 and later slices require separate authorization |
-| Current evidence | [`evidence/2026-07-16-tp-ep05-profile-aware-target-comparison.md`](evidence/2026-07-16-tp-ep05-profile-aware-target-comparison.md) |
+| Implementation authorization | TP-EP00 through TP-EP06 complete; later slices require separate authorization |
+| Current evidence | [`evidence/2026-07-17-tp-ep06-execution-comparison.md`](evidence/2026-07-17-tp-ep06-execution-comparison.md) |
 
 ## 1. Summary
 
@@ -286,15 +286,15 @@ identity from loose Agent/model fields.
 
 ## 8. Acceptance criteria
 
-- [ ] A user can publish two immutable Execution Profile Revisions and inspect a
+- [x] A user can publish two immutable Execution Profile Revisions and inspect a
       redacted field diff.
 - [x] A Single Run freezes one exact Target Revision and one exact Execution
       Profile Revision in its Run Plan and public provenance.
-- [ ] An Execution Comparison runs two profiles against one exact Target
+- [x] An Execution Comparison runs two profiles against one exact Target
       Revision and one shared set of Prepared Episodes.
 - [x] A Target Comparison runs one exact profile revision against two permitted
       Target Revisions.
-- [ ] A comparison that varies both axes is rejected before Run creation with
+- [x] A comparison that varies both axes is rejected before Run creation with
       structured violations.
 - [ ] Publishing, reading, launching, reporting, copying incident links, and
       exporting never expose raw secret values or sensitive secret paths.

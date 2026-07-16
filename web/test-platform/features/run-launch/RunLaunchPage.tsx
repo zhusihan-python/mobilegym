@@ -40,6 +40,7 @@ const EMPTY_SELECTION: RunLaunchSelection = {
   comparisonIntent: 'single',
   baselineTargetRevisionId: '',
   candidateTargetRevisionId: '',
+  baselineProfileRevisionId: '',
   profileRevisionId: '',
   name: '',
   seed: '20260715',

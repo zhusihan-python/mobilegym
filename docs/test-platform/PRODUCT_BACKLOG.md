@@ -6,7 +6,7 @@
 |---|---|
 | Status | Active planning register |
 | Scope | Product directions from backlog discovery through delivery authorization |
-| Current delivery focus | TP-EP05 complete; TP-EP06 not started |
+| Current delivery focus | TP-EP06 complete; TP-EP07 awaits a separate start request |
 
 Backlog entries begin as opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
@@ -16,15 +16,15 @@ delivery plan, and a reviewed delivery plan before implementation.
 
 | Field | Value |
 |---|---|
-| Status | Delivery active; complete through TP-EP05 |
-| Priority | TP-EP06 awaits separate explicit authorization |
+| Status | Delivery active; TP-EP06 complete |
+| Priority | TP-EP07 requires separate authorization before implementation |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Not authorized yet | TP-EP06 and later implementation without their required explicit start requests |
+| Not authorized yet | TP-EP07 and later implementation without their required explicit start requests |
 
 ### Opportunity
 
@@ -84,9 +84,14 @@ discovery, and the complete Execution Profiles console lifecycle.
 TP-EP05 moved paired Target Comparison onto Workflow v2 Lane Slots and exact
 same-profile Lane Bindings while preserving constraints, shared preparation,
 preflight evidence, deterministic paired results, and reload identity.
+TP-EP06 added same-target Execution Comparison across two immutable Execution
+Profile Revisions, a public revision diff, deterministic subject-specific
+outcomes, causal rejection, and exact profile identity across Console reload,
+comparison, gates, diagnostics, replay, and incident selection.
 
 The approved slices and dependencies are recorded in
 [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
 The user accepted their granularity and dependency relationships on 2026-07-13.
-No issue has been published. TP-EP05 is complete. TP-EP06 has not started and
-requires a separate explicit start request.
+No issue has been published. TP-EP06 was separately authorized and completed on
+2026-07-17. TP-EP07 and later slices still require their own explicit start
+requests.

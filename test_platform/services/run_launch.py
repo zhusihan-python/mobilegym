@@ -11,7 +11,10 @@ from typing import Any
 from test_platform.config import PlatformSettings
 from test_platform.domain.canonical_json import canonical_json, canonical_sha256
 from test_platform.domain.comparison_constraints import evaluate_target_constraints
-from test_platform.domain.execution_profiles import ExecutionProfileDomainError
+from test_platform.domain.execution_profiles import (
+    ExecutionProfileDomainError,
+    ExecutionProfileRevisionDiff,
+)
 from test_platform.domain.execution_secrets import (
     SecretRequirement,
     SecretResolutionError,
@@ -46,6 +49,7 @@ from test_platform.persistence.repositories import (
     WorkflowRepository,
 )
 from test_platform.services.compatibility_preflight import CompatibilityPreflight
+from test_platform.services.execution_profiles import ExecutionProfiles
 from test_platform.services.runs import register_run_execution_secrets
 
 
@@ -258,6 +262,10 @@ class RunLaunch:
             lane_bindings=[
                 self._resolved_lane_view(plan, lane.lane_key) for lane in plan.lanes
             ],
+            execution_profile_diff=self._execution_profile_diff(
+                command,
+                plan,
+            ),
             constraint_violations=constraint_violations,
             episode_count=len(plan.episodes),
             fingerprint_inputs=fingerprint_inputs,
@@ -271,6 +279,24 @@ class RunLaunch:
                         project_id=command.project_id,
                     )
                 }
+            ),
+        )
+
+    def _execution_profile_diff(
+        self,
+        command: PreviewRunLaunch,
+        plan: RunPlanV2,
+    ) -> ExecutionProfileRevisionDiff | None:
+        if command.comparison_intent != "execution_comparison":
+            return None
+        lane_by_key = {lane.lane_key: lane for lane in plan.lanes}
+        return ExecutionProfiles(self._database).diff_revisions(
+            project_id=command.project_id,
+            from_revision_id=(
+                lane_by_key["baseline"].execution_profile_revision_id
+            ),
+            to_revision_id=(
+                lane_by_key["candidate"].execution_profile_revision_id
             ),
         )
 
@@ -310,7 +336,11 @@ class RunLaunch:
                     }
                 ],
             )
-        if command.comparison_intent not in {"single", "target_comparison"}:
+        if command.comparison_intent not in {
+            "single",
+            "target_comparison",
+            "execution_comparison",
+        }:
             raise RunLaunchError(
                 "RUN_COMPARISON_UNSUPPORTED",
                 "The requested comparison intent is not supported.",
@@ -892,7 +922,7 @@ def _validate_comparison_shape(
     if set(lane_slots) != {"baseline", "candidate"}:
         raise RunLaunchError(
             "RUN_LANE_BINDING_INCOMPLETE",
-            "Target Comparison requires baseline and candidate Lane Slots.",
+            "A paired comparison requires baseline and candidate Lane Slots.",
             details=[{"lane_slots": sorted(lane_slots)}],
         )
 
@@ -902,8 +932,6 @@ def _validate_comparison_shape(
     profile_revision_ids = {
         binding.execution_profile_revision_id for binding in binding_by_slot.values()
     }
-    if len(target_revision_ids) == 2 and len(profile_revision_ids) == 1:
-        return
     if len(target_revision_ids) == 2 and len(profile_revision_ids) == 2:
         raise RunLaunchError(
             "RUN_COMPARISON_CONFOUNDED",
@@ -916,10 +944,23 @@ def _validate_comparison_shape(
             "A comparison requires one varying revision axis.",
             status_code=409,
         )
+    if comparison_intent == "target_comparison":
+        if len(target_revision_ids) == 2 and len(profile_revision_ids) == 1:
+            return
+        message = (
+            "Target Comparison requires different Target Revisions and one shared "
+            "Execution Profile Revision."
+        )
+    else:
+        if len(target_revision_ids) == 1 and len(profile_revision_ids) == 2:
+            return
+        message = (
+            "Execution Comparison requires one shared Target Revision and different "
+            "Execution Profile Revisions."
+        )
     raise RunLaunchError(
         "RUN_COMPARISON_INTENT_MISMATCH",
-        "Target Comparison requires different Target Revisions and one shared "
-        "Execution Profile Revision.",
+        message,
         status_code=409,
     )
 

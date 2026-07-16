@@ -44,6 +44,23 @@ export function RunLaunchPreview({
           </ul>
         </div>
       ) : null}
+      {preview.execution_profile_diff ? (
+        <div>
+          <h3>Execution Profile Revision diff</h3>
+          <dl className="tp-run-facts">
+            {preview.execution_profile_diff.changes.map((change) => (
+              <div key={change.path}>
+                <dt>{change.path}</dt>
+                <dd>
+                  <span>{formatDiffValue(change.before)}</span>
+                  {' → '}
+                  <span>{formatDiffValue(change.after)}</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
       {preview.credential_requirements.length > 0 ? (
         <div className="tp-form-grid">
           <h3>Transient credentials</h3>
@@ -75,6 +92,11 @@ export function RunLaunchPreview({
       ))}
     </section>
   );
+}
+
+function formatDiffValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
 }
 
 function credentialSlotLabel(slot: string): string {
