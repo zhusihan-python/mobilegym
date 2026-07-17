@@ -1618,10 +1618,31 @@ function FollowupPreviewPanel({ state }: { state: FollowupPreviewsState }) {
     return <p className="tp-alert">Follow-up previews unavailable: {state.message}</p>;
   }
   return (
-    <div className="tp-form-grid">
-      <FollowupPreviewCard kind="retry" preview={state.retry} />
-      <FollowupPreviewCard kind="resume" preview={state.resume} />
-    </div>
+    <>
+      {state.retry.execution_identity?.kind === 'profile_aware' ? (
+        <section className="tp-panel" data-testid="tp-followup-frozen-identity">
+          <h3>Frozen follow-up Lane Bindings</h3>
+          <p>Retry and Resume reuse these exact revisions without selectors.</p>
+          <ul>
+            {state.retry.execution_identity.lane_bindings.map((binding) => (
+              <li key={binding.lane_slot}>
+                <strong>{binding.lane_slot}</strong>
+                {' · Target Revision '}
+                <span className="tp-mono">{binding.target_revision_id}</span>
+                {' · Execution Profile Revision '}
+                <span className="tp-mono">{binding.execution_profile_revision_id}</span>
+                {' · Lane fingerprint '}
+                <span className="tp-mono">{binding.lane_fingerprint}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      <div className="tp-form-grid">
+        <FollowupPreviewCard kind="retry" preview={state.retry} />
+        <FollowupPreviewCard kind="resume" preview={state.resume} />
+      </div>
+    </>
   );
 }
 

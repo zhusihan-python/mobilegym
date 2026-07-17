@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP06 on 2026-07-17 |
+| Status | Accepted; delivery complete through TP-EP07 on 2026-07-17 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 through TP-EP06 complete; later slices require separate authorization |
-| Current evidence | [`evidence/2026-07-17-tp-ep06-execution-comparison.md`](evidence/2026-07-17-tp-ep06-execution-comparison.md) |
+| Implementation authorization | TP-EP00 through TP-EP07 complete; later slices require separate authorization |
+| Current evidence | [`evidence/2026-07-17-tp-ep07-profile-aware-followups.md`](evidence/2026-07-17-tp-ep07-profile-aware-followups.md) |
 
 ## 1. Summary
 
@@ -298,9 +298,9 @@ identity from loose Agent/model fields.
       structured violations.
 - [ ] Publishing, reading, launching, reporting, copying incident links, and
       exporting never expose raw secret values or sensitive secret paths.
-- [ ] Compatible, incompatible, missing-secret, stale-preview, archived-profile,
+- [x] Compatible, incompatible, missing-secret, stale-preview, archived-profile,
       and cross-project cases have deterministic state and error outcomes.
-- [ ] Retry and Resume reuse exact original Lane Bindings after a newer profile
+- [x] Retry and Resume reuse exact original Lane Bindings after a newer profile
       revision is published.
 - [ ] Profile-aware reports and Strict Baselines show complete selected-Lane
       profile provenance.

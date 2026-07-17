@@ -78,10 +78,8 @@ export type RunSummary = {
   } | null;
 };
 
-export type RunDetail = RunSummary & {
-  run_plan: Record<string, unknown>;
-  execution_identity:
-    | {
+export type ExecutionIdentity =
+  | {
       kind: 'legacy';
       label: string;
       schema_version: 1;
@@ -103,6 +101,10 @@ export type RunDetail = RunSummary & {
         lane_fingerprint: string;
       }>;
     };
+
+export type RunDetail = RunSummary & {
+  run_plan: Record<string, unknown>;
+  execution_identity: ExecutionIdentity;
   run_attempts?: Array<{
     id: string;
     attempt_no: number;
@@ -631,6 +633,7 @@ export type FollowupRunPreview = {
   kind: 'retry' | 'resume';
   source_run_attempt_id: string;
   source_attempt_no: number;
+  execution_identity: ExecutionIdentity;
   preview_token: string;
   can_execute: boolean;
   empty_reason: string | null;

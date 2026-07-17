@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 import inspect
 import json
@@ -17,7 +18,7 @@ from test_platform.domain.canonical_json import canonical_json, canonical_sha256
 from test_platform.domain.ids import new_id
 from test_platform.domain.legacy_import import LegacyImportError, load_legacy_run
 from test_platform.domain.projects import ProjectNotFound
-from test_platform.domain.run_plans import RunPlan, RunPlanCompiler
+from test_platform.domain.run_plans import RunPlan, RunPlanCompiler, RunPlanV2
 from test_platform.domain.runs import RunDomainError, RunIdempotencyConflict, RunDetail
 from test_platform.domain.retry_resume import (
     select_resume_lane_episodes,
@@ -1252,6 +1253,7 @@ class RunService:
             candidate_api_key = str(existing.get("model_api_key") or "")
         # Validate key requirement without registering.
         self._validate_followup_key(run_id, candidate_api_key)
+        self._assert_followup_compatible(run_id, kind="retry")
         # Preflight with candidate key — zero side effects on failure.
         compat_provenance = self._preflight_followup(
             run_id, skip_compatibility_check, candidate_api_key
@@ -1293,7 +1295,7 @@ class RunService:
             existing = _RUN_SECRET_STORE.get(run_id) or {}
             candidate_api_key = str(existing.get("model_api_key") or "")
         self._validate_followup_key(run_id, candidate_api_key)
-        self._assert_resume_compatible(run_id)
+        self._assert_followup_compatible(run_id, kind="resume")
         compat_provenance = self._preflight_followup(
             run_id, skip_compatibility_check, candidate_api_key
         )
@@ -1344,6 +1346,7 @@ class RunService:
         }
         return {
             **token_payload,
+            "execution_identity": asdict(run.execution_identity),
             "preview_token": canonical_sha256(token_payload),
             "can_execute": bool(selected),
             "empty_reason": None if selected else empty_reason,
@@ -1495,7 +1498,18 @@ class RunService:
             "service_restarted_episodes": restarted_episodes,
         }
 
-    def _assert_resume_compatible(self, run_id: str) -> None:
+    def _assert_followup_compatible(
+        self,
+        run_id: str,
+        *,
+        kind: FollowupKind,
+    ) -> None:
+        past_tense = "retried" if kind == "retry" else "resumed"
+        error_code = f"RUN_{kind.upper()}_INCOMPATIBLE_REVISION"
+        run_plan = self._frozen_run_plan(run_id)
+        if kind == "retry" and not isinstance(run_plan, RunPlanV2):
+            return
+
         target_violations = []
         target_repository = TargetRepository(self.database)
         rows = self.database.connection.execute(
@@ -1522,24 +1536,12 @@ class RunService:
                 )
         if target_violations:
             raise RunDomainError(
-                "RUN_RESUME_INCOMPATIBLE_REVISION",
-                "The run cannot be resumed because its frozen target revisions are no longer current.",
+                error_code,
+                f"The run cannot be {past_tense} because its frozen target revisions are no longer current.",
                 status_code=409,
                 details=target_violations,
             )
 
-        row = self.database.connection.execute(
-            "SELECT run_plan_json FROM runs WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            raise RunDomainError(
-                "RUN_NOT_FOUND",
-                "Run was not found.",
-                status_code=404,
-                details=[{"run_id": run_id}],
-            )
-        run_plan = read_run_plan(json.loads(row["run_plan_json"]))
         task_source = run_plan.task_source
         current_catalog = self.catalog_builder()
         expected_repository_revision = task_source.repository_revision
@@ -1549,8 +1551,8 @@ class RunService:
             or current_catalog.digest != expected_registry_digest
         ):
             raise RunDomainError(
-                "RUN_RESUME_INCOMPATIBLE_REVISION",
-                "The run cannot be resumed because its frozen task source is no longer current.",
+                error_code,
+                f"The run cannot be {past_tense} because its frozen task source is no longer current.",
                 status_code=409,
                 details=[
                     {
@@ -1566,10 +1568,20 @@ class RunService:
     def _validate_followup_key(self, run_id: str, candidate_api_key: str) -> None:
         """Validate that the candidate API key satisfies the run's requirement,
         WITHOUT registering it in the secret store. Called before preflight."""
+        run_plan = self._frozen_run_plan(run_id)
+        requires_model_api_key = _run_plan_requires_model_api_key(run_plan)
         if (
-            self._run_requires_model_api_key(run_id)
-            and not candidate_api_key
+            candidate_api_key
+            and isinstance(run_plan, RunPlanV2)
+            and not requires_model_api_key
         ):
+            raise RunDomainError(
+                "RUN_FOLLOWUP_CONFIG_INVALID",
+                "Retry and resume can only re-inject credential slots declared by the frozen Run Plan.",
+                status_code=400,
+                details=[{"field": "execution.model_api_key"}],
+            )
+        if requires_model_api_key and not candidate_api_key:
             raise RunDomainError(
                 "RUN_EXECUTION_SECRET_MISSING",
                 "Retry or resume requires the model API key again because secrets are not persisted.",
@@ -1651,22 +1663,19 @@ class RunService:
                 )
         return summaries
 
-    def _run_requires_model_api_key(self, run_id: str) -> bool:
-        rows = self.database.connection.execute(
-            "SELECT runner_config_json FROM lanes WHERE run_id = ?",
+    def _frozen_run_plan(self, run_id: str) -> RunPlan | RunPlanV2:
+        row = self.database.connection.execute(
+            "SELECT run_plan_json FROM runs WHERE id = ?",
             (run_id,),
-        ).fetchall()
-        for row in rows:
-            try:
-                runner_config = json.loads(row["runner_config_json"])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if (
-                isinstance(runner_config, dict)
-                and runner_config.get("model_api_key_configured") is True
-            ):
-                return True
-        return False
+        ).fetchone()
+        if row is None:
+            raise RunDomainError(
+                "RUN_NOT_FOUND",
+                "Run was not found.",
+                status_code=404,
+                details=[{"run_id": run_id}],
+            )
+        return read_run_plan(json.loads(row["run_plan_json"]))
 
     def _find_idempotent_run(
         self,
@@ -2204,6 +2213,18 @@ def _execution_secrets_from_overrides(overrides: dict[str, Any]) -> dict[str, st
     if isinstance(model_api_key, str) and model_api_key.strip():
         secrets["model_api_key"] = model_api_key.strip()
     return secrets
+
+
+def _run_plan_requires_model_api_key(run_plan: RunPlan | RunPlanV2) -> bool:
+    if isinstance(run_plan, RunPlanV2):
+        return any(
+            "model_api_key" in snapshot.public_spec.credentials.required_slots
+            for snapshot in run_plan.execution_snapshots.values()
+        )
+    return any(
+        lane.runner_config.get("model_api_key_configured") is True
+        for lane in run_plan.lanes
+    )
 
 
 def _followup_execution_secrets_from_overrides(

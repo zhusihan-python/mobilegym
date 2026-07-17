@@ -3,7 +3,7 @@ import json
 from typing import Literal
 
 from fastapi import APIRouter, Header, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from test_platform.api.dependencies import get_database
 from test_platform.api.errors import ApiError
@@ -36,6 +36,8 @@ class ImportRunRequest(BaseModel):
 
 
 class FollowupRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     execution: dict[str, object] | None = None
     skip_compatibility_check: bool = False
     preview_token: str | None = Field(default=None, min_length=1, max_length=100)
@@ -55,6 +57,7 @@ class FollowupRunPreviewResponse(BaseModel):
     kind: Literal["retry", "resume"]
     source_run_attempt_id: str
     source_attempt_no: int
+    execution_identity: dict[str, object]
     preview_token: str
     can_execute: bool
     empty_reason: str | None

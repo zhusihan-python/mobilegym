@@ -225,6 +225,11 @@ def test_retry_preview_detects_stale_selection_and_confirms_exact_selection(tmp_
             "kind": "retry",
             "source_run_attempt_id": "attempt1",
             "source_attempt_no": 1,
+            "execution_identity": {
+                "kind": "legacy",
+                "label": "Legacy Execution Identity",
+                "schema_version": 1,
+            },
             "preview_token": preview["preview_token"],
             "can_execute": True,
             "empty_reason": None,
@@ -346,6 +351,11 @@ def test_followup_previews_use_existing_selectors_and_explain_empty_state(tmp_pa
             "kind": "retry",
             "source_run_attempt_id": "attempt1",
             "source_attempt_no": 1,
+            "execution_identity": {
+                "kind": "legacy",
+                "label": "Legacy Execution Identity",
+                "schema_version": 1,
+            },
             "preview_token": retry.json()["preview_token"],
             "can_execute": True,
             "empty_reason": None,

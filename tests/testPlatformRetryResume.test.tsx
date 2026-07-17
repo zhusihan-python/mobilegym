@@ -156,6 +156,54 @@ const runWithOnlineModelKey: RunDetail = {
   },
 };
 
+const profileAwareExecutionIdentity: RunDetail['execution_identity'] = {
+  kind: 'profile_aware',
+  label: 'Execution Profile Revision',
+  schema_version: 2,
+  lane_bindings: [
+    {
+      lane_slot: 'baseline',
+      target_revision_id: 'target-revision-frozen-ep07',
+      target_revision_hash: 'sha256:target-frozen-ep07',
+      execution_profile_id: 'profile-baseline-ep07',
+      execution_profile_name: 'Baseline frozen subject',
+      execution_profile_revision_id: 'profile-revision-baseline-ep07',
+      execution_profile_revision_no: 1,
+      execution_profile_public_hash: 'sha256:profile-public-baseline-ep07',
+      execution_profile_revision_hash: 'sha256:profile-revision-baseline-ep07',
+      lane_fingerprint: 'sha256:lane-baseline-ep07',
+    },
+    {
+      lane_slot: 'candidate',
+      target_revision_id: 'target-revision-frozen-ep07',
+      target_revision_hash: 'sha256:target-frozen-ep07',
+      execution_profile_id: 'profile-candidate-ep07',
+      execution_profile_name: 'Candidate frozen subject',
+      execution_profile_revision_id: 'profile-revision-candidate-ep07',
+      execution_profile_revision_no: 1,
+      execution_profile_public_hash: 'sha256:profile-public-candidate-ep07',
+      execution_profile_revision_hash: 'sha256:profile-revision-candidate-ep07',
+      lane_fingerprint: 'sha256:lane-candidate-ep07',
+    },
+  ],
+};
+
+const profileAwareRun: RunDetail = {
+  ...run,
+  run_plan: { schema_version: 2 },
+  execution_identity: profileAwareExecutionIdentity,
+  lanes: profileAwareExecutionIdentity.lane_bindings.map((binding, index) => ({
+    id: `lane-profile-aware-${index}`,
+    lane_key: binding.lane_slot,
+    role: binding.lane_slot,
+    target_id: 'target-frozen-ep07',
+    target_revision_id: binding.target_revision_id,
+    execution_profile_revision_id: binding.execution_profile_revision_id,
+    execution_profile_revision_hash: binding.execution_profile_revision_hash,
+    lane_fingerprint: binding.lane_fingerprint,
+  })),
+};
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -439,5 +487,74 @@ describe('Test Platform retry/resume controls', () => {
     expect(screen.getByTestId('tp-resume-preview').textContent).toContain(
       'No missing or service-restarted lane episodes are available to resume.',
     );
+  });
+
+  it('shows immutable profile-aware Lane Bindings without revision selectors after reload', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === '/health/ready') {
+        return jsonResponse({ ready: true, checks: {} });
+      }
+      if (path === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}`) {
+        return jsonResponse(profileAwareRun);
+      }
+      if (path.endsWith('/retry/preview') || path.endsWith('/resume/preview')) {
+        const kind = path.endsWith('/retry/preview') ? 'retry' : 'resume';
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind,
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          execution_identity: profileAwareExecutionIdentity,
+          preview_token: `sha256:${kind}-profile-aware-ep07`,
+          can_execute: kind === 'retry',
+          empty_reason: kind === 'retry'
+            ? null
+            : 'No missing or service-restarted lane episodes are available to resume.',
+          selected_lane_episodes: kind === 'retry'
+            ? [{ episode_key: 'fake.Task::1', lane_key: 'candidate', reason: 'retry_error' }]
+            : [],
+        });
+      }
+      return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found', details: [] } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    const identity = await screen.findByTestId('tp-followup-frozen-identity');
+    expect(identity.textContent).toContain('Frozen follow-up Lane Bindings');
+    expect(identity.textContent).toContain('target-revision-frozen-ep07');
+    expect(identity.textContent).toContain('profile-revision-baseline-ep07');
+    expect(identity.textContent).toContain('profile-revision-candidate-ep07');
+    expect(identity.textContent).toContain('sha256:lane-candidate-ep07');
+    expect(screen.queryByLabelText('Target Revision')).toBeNull();
+    expect(screen.queryByLabelText('Execution Profile Revision')).toBeNull();
+    const historicalHref = screen.getByRole('link', {
+      name: 'Open attempt 1 evidence',
+    }).getAttribute('href');
+    expect(Object.fromEntries(new URL(
+      historicalHref ?? '',
+      window.location.origin,
+    ).searchParams)).toEqual({
+      lane: 'candidate',
+      episode: 'fake.Task::1',
+      attempt: '1',
+      screenshot: 'annotated',
+      evidence: 'judge',
+    });
+
+    cleanup();
+    render(<App />);
+    const reloadedIdentity = await screen.findByTestId('tp-followup-frozen-identity');
+    expect(reloadedIdentity.textContent).toContain('profile-revision-baseline-ep07');
+    expect(reloadedIdentity.textContent).toContain('profile-revision-candidate-ep07');
+    expect(screen.getByRole('link', {
+      name: 'Open attempt 1 evidence',
+    }).getAttribute('href')).toBe(historicalHref);
   });
 });
