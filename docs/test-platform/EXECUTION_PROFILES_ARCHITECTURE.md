@@ -4,13 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted architecture for delivery planning on 2026-07-13 |
+| Status | Accepted and implemented for the Execution Profiles release on 2026-07-17 |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Parent architecture | [`TECHNICAL_ARCHITECTURE.md`](TECHNICAL_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Deployment model | Existing single-host modular monolith |
-| Implementation status | TP-EP00 through TP-EP09 implemented; TP-EP10 not started |
+| Implementation status | TP-EP00 through TP-EP10 implemented and release-accepted |
+| Release evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
 
 ## 1. Purpose
 
@@ -21,11 +22,11 @@ fingerprints, follow-up attempts, and legacy compatibility.
 
 It is intentionally narrower than an implementation design. Exact SQL, HTTP
 payloads, file placement, migration numbers, and vertical task decomposition
-belong to the future delivery plan and implementation design.
+belong to the accepted delivery plan, source code, and release evidence.
 
-## 2. Current implementation pressure
+## 2. Pre-release implementation pressure
 
-The current platform has several correct foundations:
+At review time, the platform had several correct foundations:
 
 - [`RunPlanCompiler`](../../test_platform/domain/run_plans.py) freezes Workflow
   Version, Target Revision, task source, episodes, comparison policy, and a flat
@@ -38,7 +39,7 @@ The current platform has several correct foundations:
 - Report and Strict Baseline provenance already records Workflow Version, Run
   Plan hash, task-source digest, selected Lane, and Target Revision.
 
-The pressure comes from configuration ownership:
+The pressure came from configuration ownership:
 
 - Agent and model values are launch overrides merged into a Workflow Version's
   execute-node config.
@@ -697,7 +698,7 @@ Identity.
 
 ## 16. Delivery-planning gate
 
-Implementation may begin only after a reviewed delivery plan defines:
+The delivery-planning gate required a reviewed delivery plan to define:
 
 - migration and schema ordering;
 - exact versioned HTTP and TypeScript contracts;
@@ -708,3 +709,8 @@ Implementation may begin only after a reviewed delivery plan defines:
 - deterministic backend, frontend, and browser acceptance commands;
 - rollback and partial-migration behavior;
 - final product and architecture acceptance evidence.
+
+The accepted delivery plan satisfied this gate before implementation began.
+TP-EP00 through TP-EP10 are now complete; the final reconciliation and
+mechanical evidence are recorded in
+[`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md).

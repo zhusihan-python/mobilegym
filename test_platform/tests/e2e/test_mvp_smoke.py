@@ -270,6 +270,216 @@ def test_deterministic_paired_comparison_classifies_regression_and_stable(tmp_pa
         assert classification_counts.get("stable_pass", 0) == 1
 
 
+def test_browser_closes_profile_aware_release_contract(tmp_path):
+    secret_sentinel = "sk-tp-ep10-browser-secret-sentinel"
+    with _running_browser_stack(tmp_path) as stack:
+        with httpx.Client(base_url=stack["api_url"], timeout=10.0) as client:
+            catalog = _seed_profile_aware_browser_catalog(client)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1440, "height": 1000},
+                permissions=["clipboard-read", "clipboard-write"],
+            )
+            page = context.new_page()
+            try:
+                page.goto(f"{stack['web_url']}/test-platform/execution-profiles")
+                pass_revision_id = _create_profile_in_browser(
+                    page,
+                    name="Browser passing subject",
+                    model_name="deterministic-profile-pass",
+                )
+                fail_revision_id = _create_profile_in_browser(
+                    page,
+                    name="Browser failing subject",
+                    model_name="deterministic-profile-fail",
+                )
+                auth_revision_id = _create_profile_in_browser(
+                    page,
+                    name="Browser auth failure subject",
+                    model_name="deterministic-profile-pass#auth",
+                    require_credential=True,
+                )
+
+                page.get_by_role("link", name="Run Launch").click()
+                _select_profile_launch(
+                    page,
+                    workflow_version_id=catalog["single_workflow_version_id"],
+                    intent="single",
+                    candidate_target_revision_id=catalog["target_revision_ids"][0],
+                    candidate_profile_revision_id=pass_revision_id,
+                )
+                page.get_by_role("button", name="Preview launch").click()
+                preview = page.get_by_test_id("tp-run-launch-preview")
+                expect(preview).to_be_visible(timeout=10_000)
+                expect(preview).to_contain_text(pass_revision_id)
+                page.get_by_role("button", name="Create run").click()
+                expect(page.get_by_test_id("tp-run-state")).to_have_text(
+                    "completed", timeout=30_000
+                )
+                single_run_id = page.url.rstrip("/").rsplit("/", 1)[-1]
+                identity = page.get_by_test_id("tp-profile-aware-identity")
+                expect(identity).to_contain_text("Browser passing subject")
+                expect(identity).to_contain_text(pass_revision_id)
+                expect(page.get_by_text("Compatibility Preflight")).to_be_visible()
+                report_provenance = page.get_by_test_id("tp-report-provenance")
+                expect(report_provenance).to_be_visible(timeout=15_000)
+                expect(report_provenance).to_contain_text(pass_revision_id)
+                expect(page.get_by_test_id("tp-baseline-eligibility")).to_contain_text(
+                    "Eligible for strict baseline promotion.", timeout=15_000
+                )
+                page.get_by_label("Baseline name").fill("TP-EP10 browser baseline")
+                page.get_by_role("button", name="Promote baseline").click()
+                expect(page.get_by_text("Promoted TP-EP10 browser baseline.")).to_be_visible()
+
+                page.reload()
+                expect(page.get_by_test_id("tp-profile-aware-identity")).to_contain_text(
+                    pass_revision_id, timeout=15_000
+                )
+                page.get_by_role("link", name="Baselines").click()
+                page.get_by_role("link", name="TP-EP10 browser baseline").click()
+                expect(page.get_by_text("Profile-aware strictness v1")).to_be_visible()
+                expect(page.get_by_text(pass_revision_id)).to_be_visible()
+                page.get_by_role("link", name="Open source run").click()
+                assert page.url.rstrip("/").endswith(f"/runs/{single_run_id}")
+                expect(page.get_by_test_id("tp-profile-aware-identity")).to_contain_text(
+                    pass_revision_id, timeout=15_000
+                )
+
+                page.get_by_role("link", name="Run Launch").click()
+                _select_profile_launch(
+                    page,
+                    workflow_version_id=catalog["paired_workflow_version_id"],
+                    intent="target_comparison",
+                    baseline_target_revision_id=catalog["target_revision_ids"][0],
+                    candidate_target_revision_id=catalog["target_revision_ids"][1],
+                    candidate_profile_revision_id=pass_revision_id,
+                )
+                page.get_by_role("button", name="Preview launch").click()
+                expect(page.get_by_test_id("tp-run-launch-preview")).to_contain_text(
+                    "target_comparison", timeout=10_000
+                )
+                page.get_by_role("button", name="Create run").click()
+                expect(page.get_by_test_id("tp-run-state")).to_have_text(
+                    "completed", timeout=30_000
+                )
+                target_identity_rows = page.get_by_test_id(
+                    "tp-profile-aware-identity"
+                ).locator("tbody tr")
+                expect(target_identity_rows).to_have_count(2)
+                for index in range(2):
+                    expect(target_identity_rows.nth(index)).to_contain_text(pass_revision_id)
+
+                page.get_by_role("link", name="Run Launch").click()
+                _select_profile_launch(
+                    page,
+                    workflow_version_id=catalog["paired_workflow_version_id"],
+                    intent="execution_comparison",
+                    candidate_target_revision_id=catalog["target_revision_ids"][0],
+                    baseline_profile_revision_id=pass_revision_id,
+                    candidate_profile_revision_id=fail_revision_id,
+                )
+                page.get_by_role("button", name="Preview launch").click()
+                execution_preview = page.get_by_test_id("tp-run-launch-preview")
+                expect(execution_preview).to_contain_text(
+                    "execution_comparison", timeout=10_000
+                )
+                expect(execution_preview.get_by_text("Execution Profile Revision diff")).to_be_visible()
+                page.get_by_role("button", name="Create run").click()
+                expect(page.get_by_test_id("tp-run-state")).to_have_text(
+                    "completed", timeout=30_000
+                )
+                execution_run_id = page.url.rstrip("/").rsplit("/", 1)[-1]
+                execution_identity = page.get_by_test_id("tp-profile-aware-identity")
+                expect(execution_identity).to_contain_text(pass_revision_id)
+                expect(execution_identity).to_contain_text(fail_revision_id)
+                retry_preview = page.get_by_test_id("tp-retry-preview")
+                expect(retry_preview).to_contain_text("candidate", timeout=15_000)
+                expect(retry_preview).to_contain_text("retry_failed")
+                page.get_by_role("button", name="Retry run").click()
+                expect(page.get_by_test_id("tp-followup-message")).to_contain_text(
+                    "Retry queued attempt 2", timeout=10_000
+                )
+                with httpx.Client(
+                    base_url=stack["api_url"], timeout=10.0
+                ) as client:
+                    _wait_for_state(client, execution_run_id, "completed", timeout=30.0)
+                page.reload()
+                expect(page.get_by_test_id("tp-profile-aware-identity")).to_contain_text(
+                    fail_revision_id, timeout=15_000
+                )
+
+                picker = page.get_by_label("Replay episode")
+                fail_option = picker.locator("option").filter(has_text="candidate").filter(
+                    has_text="FAIL"
+                ).first
+                expect(fail_option).to_be_attached(timeout=15_000)
+                picker.select_option(fail_option.get_attribute("value"))
+                page.get_by_label("Step timeline").locator("button").first.click()
+                page.get_by_label("Replay screenshot mode").select_option("raw")
+                page.get_by_role("tab", name="Response").click()
+                page.get_by_role("button", name="Copy incident link").click()
+                incident_url = page.evaluate("navigator.clipboard.readText()")
+                assert f"/test-platform/runs/{execution_run_id}" in incident_url
+                assert "secret" not in incident_url
+                incident_page = context.new_page()
+                incident_page.goto(incident_url)
+                expect(incident_page.get_by_test_id("tp-profile-aware-identity")).to_contain_text(
+                    fail_revision_id, timeout=15_000
+                )
+                incident_page.reload()
+                expect(incident_page.get_by_test_id("tp-profile-aware-identity")).to_contain_text(
+                    pass_revision_id, timeout=15_000
+                )
+                incident_page.close()
+
+                with httpx.Client(
+                    base_url=stack["api_url"], timeout=10.0
+                ) as client:
+                    run_count_before_failure = len(
+                        client.get(
+                            "/api/platform/v1/runs",
+                            params={"project_id": catalog["project_id"]},
+                        ).json()["items"]
+                    )
+                page.get_by_role("link", name="Run Launch").click()
+                _select_profile_launch(
+                    page,
+                    workflow_version_id=catalog["single_workflow_version_id"],
+                    intent="single",
+                    candidate_target_revision_id=catalog["target_revision_ids"][0],
+                    candidate_profile_revision_id=auth_revision_id,
+                )
+                page.get_by_role("button", name="Preview launch").click()
+                expect(page.get_by_label("Model API key")).to_be_visible(timeout=10_000)
+                assert page.get_by_role("button", name="Create run").is_disabled()
+                page.get_by_label("Model API key").fill(secret_sentinel)
+                page.get_by_role("button", name="Create run").click()
+                expect(page.get_by_role("alert")).to_contain_text(
+                    "authentication", timeout=10_000, ignore_case=True
+                )
+                with httpx.Client(
+                    base_url=stack["api_url"], timeout=10.0
+                ) as client:
+                    runs_after_failure = client.get(
+                        "/api/platform/v1/runs",
+                        params={"project_id": catalog["project_id"]},
+                    ).json()["items"]
+                assert len(runs_after_failure) == run_count_before_failure
+                persisted = page.evaluate(
+                    "Object.values(localStorage).join('\\n')"
+                )
+                assert secret_sentinel not in persisted
+                assert "request://transient/model-api-key" not in persisted
+            finally:
+                browser.close()
+
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert secret_sentinel.encode() not in path.read_bytes(), path
+
+
 def test_browser_observes_paired_baseline_candidate_comparison_and_replay(tmp_path):
     with _running_browser_stack(tmp_path) as stack:
         with httpx.Client(base_url=stack["api_url"], timeout=10.0) as client:
@@ -700,6 +910,184 @@ def test_browser_observes_ordered_manual_sequence_replay_and_sse_reconnect(tmp_p
                 )
             finally:
                 browser.close()
+
+
+def _profile_aware_workflow_definition(task_id: str, *, paired: bool):
+    nodes = [
+        {
+            "id": "tasks",
+            "type": "task_selection",
+            "depends_on": [],
+            "config": {"task_ids": [task_id], "sample_n": 1},
+        },
+        {
+            "id": "slots",
+            "type": "matrix",
+            "depends_on": ["tasks"],
+            "config": {
+                "lane_slots": (
+                    {
+                        "baseline": {"role": "baseline"},
+                        "candidate": {"role": "candidate"},
+                    }
+                    if paired
+                    else {"candidate": {"role": "candidate"}}
+                ),
+                "repeat_n": 1,
+            },
+        },
+        {
+            "id": "execute",
+            "type": "execute",
+            "depends_on": ["slots"],
+            "config": {
+                "parallel": 1,
+                "processes": 1,
+                "eval_mode": "grounded",
+                "judge_mode": "rule",
+            },
+        },
+    ]
+    if paired:
+        nodes.append(
+            {
+                "id": "compare",
+                "type": "compare",
+                "depends_on": ["execute"],
+                "config": {
+                    "target_constraints": ["same_app", "same_device", "same_data"],
+                    "initial_state_policy": "task_projection",
+                    "execution": "serial",
+                },
+            }
+        )
+    return {
+        "schema_version": 2,
+        "name": "Browser Paired" if paired else "Browser Single",
+        "nodes": nodes,
+    }
+
+
+def _seed_profile_aware_browser_catalog(client: httpx.Client):
+    project = client.post(
+        "/api/platform/v1/projects",
+        json={"name": "TP-EP10 profile-aware browser release"},
+    ).json()
+    target_revision_ids = []
+    for index, name in enumerate(("Browser baseline target", "Browser candidate target")):
+        config = _target_config()
+        config["connection"]["env_url"] = f"http://deterministic.invalid/{index}"
+        target = client.post(
+            "/api/platform/v1/targets",
+            json={
+                "project_id": project["id"],
+                "name": name,
+                "config": config,
+            },
+        ).json()
+        health = client.post(f"/api/platform/v1/targets/{target['id']}/health")
+        assert health.status_code == 200, health.text
+        target_revision_ids.append(health.json()["revision"]["id"])
+
+    task_id = client.get("/api/platform/v1/tasks").json()["items"][0][
+        "task_base_id"
+    ]
+    workflow_version_ids = []
+    for paired in (False, True):
+        name = "Browser Paired" if paired else "Browser Single"
+        workflow = client.post(
+            f"/api/platform/v1/projects/{project['id']}/workflows",
+            json={
+                "name": name,
+                "definition": _profile_aware_workflow_definition(
+                    task_id,
+                    paired=paired,
+                ),
+            },
+        )
+        assert workflow.status_code == 201, workflow.text
+        published = client.post(
+            f"/api/platform/v1/workflows/{workflow.json()['id']}/publish"
+        )
+        assert published.status_code == 200, published.text
+        workflow_version_ids.append(published.json()["workflow_version_id"])
+    return {
+        "project_id": project["id"],
+        "target_revision_ids": target_revision_ids,
+        "single_workflow_version_id": workflow_version_ids[0],
+        "paired_workflow_version_id": workflow_version_ids[1],
+    }
+
+
+def _create_profile_in_browser(
+    page,
+    *,
+    name: str,
+    model_name: str,
+    require_credential: bool = False,
+) -> str:
+    page.get_by_role("button", name="New execution profile").click()
+    dialog = page.get_by_role("dialog", name="Create Execution Profile")
+    expect(dialog).to_be_visible()
+    dialog.get_by_label("Profile name").fill(name)
+    dialog.get_by_label("Model endpoint").fill("http://deterministic.invalid/v1")
+    dialog.get_by_label("Model name").fill(model_name)
+    if require_credential:
+        dialog.get_by_label("Require model credential").check()
+        dialog.get_by_label("Credential reference ID").fill("browser-model-key")
+    dialog.get_by_role("button", name="Create profile").click()
+    card = page.locator("article").filter(
+        has=page.get_by_role("heading", name=name, exact=True)
+    )
+    expect(card).to_be_visible(timeout=10_000)
+    card.get_by_role("button", name="Publish revision").click()
+    expect(card.get_by_text("Revision 1", exact=True)).to_be_visible(timeout=10_000)
+    revision_id = card.locator("strong.tp-mono").first.inner_text()
+    assert revision_id
+    return revision_id
+
+
+def _select_profile_launch(
+    page,
+    *,
+    workflow_version_id: str,
+    intent: str,
+    candidate_target_revision_id: str,
+    candidate_profile_revision_id: str,
+    baseline_target_revision_id: str | None = None,
+    baseline_profile_revision_id: str | None = None,
+) -> None:
+    expect(page.get_by_role("heading", name="Run Launch", level=2)).to_be_visible(
+        timeout=10_000
+    )
+    page.get_by_label("Workflow Version").select_option(workflow_version_id)
+    intent_select = page.get_by_label("Comparison intent")
+    if intent != intent_select.input_value():
+        intent_select.select_option(intent)
+    if baseline_target_revision_id is not None:
+        page.get_by_label("Baseline Target Revision").select_option(
+            baseline_target_revision_id
+        )
+    target_label = (
+        "Shared Target Revision"
+        if intent == "execution_comparison"
+        else "Candidate Target Revision"
+        if intent == "target_comparison"
+        else "Target Revision"
+    )
+    page.get_by_label(target_label).select_option(candidate_target_revision_id)
+    if baseline_profile_revision_id is not None:
+        page.get_by_label("Baseline Execution Profile Revision").select_option(
+            baseline_profile_revision_id
+        )
+    profile_label = (
+        "Candidate Execution Profile Revision"
+        if intent == "execution_comparison"
+        else "Shared Execution Profile Revision"
+        if intent == "target_comparison"
+        else "Execution Profile Revision"
+    )
+    page.get_by_label(profile_label).select_option(candidate_profile_revision_id)
 
 
 def _target_config():

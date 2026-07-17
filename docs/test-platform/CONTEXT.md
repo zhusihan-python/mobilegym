@@ -1,5 +1,12 @@
 # MobileGym Test Platform
 
+## Document status
+
+| Field | Value |
+|---|---|
+| Status | Current through the TP-EP10 Execution Profiles release on 2026-07-17 |
+| Release evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
+
 The MobileGym Test Platform context defines reusable benchmark intent, exact
 execution identity, run history, evidence, reports, and strict comparison
 provenance over the existing Benchmark Engine and Simulator.

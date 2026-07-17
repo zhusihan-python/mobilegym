@@ -9,6 +9,7 @@ from test_platform.testing.deterministic import (
     build_deterministic_executor_resolver,
     build_deterministic_target_registry,
 )
+from test_platform.testing.fake_compat import FakeCompatibilityProbe
 
 
 def main() -> None:
@@ -23,6 +24,7 @@ def main() -> None:
             settings,
             enabled=True,
         ),
+        compatibility_probe=FakeCompatibilityProbe(),
     )
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="warning")
 

@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP09 complete; TP-EP10 not started |
+| Status | TP-EP00 through TP-EP10 complete; release accepted on 2026-07-17 |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP09 complete; TP-EP10 requires a separate start request |
+| Implementation authorization | TP-EP00 through TP-EP10 authorized and complete |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 through TP-EP09 are also complete; TP-EP10 is not started.
+are complete. TP-EP01 through TP-EP10 are also complete.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 through TP-EP09 are also complete; TP-EP10 is not started.
+complete. TP-EP02 through TP-EP10 are also complete.
 
 ### Acceptance criteria
 
@@ -266,8 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 through TP-EP09 are
-also complete; TP-EP10 is not started.
+console preview/create/reload flow are complete. TP-EP03 through TP-EP10 are
+also complete.
 
 ### Acceptance criteria
 
@@ -328,8 +328,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
 Private Credential Reference publication, transient request-backed resolution,
 zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
-the credential-ready console flow are complete. TP-EP04 through TP-EP09 are
-also complete; TP-EP10 is not started.
+the credential-ready console flow are complete. TP-EP04 through TP-EP10 are
+also complete.
 
 ### Acceptance criteria
 
@@ -392,7 +392,7 @@ Current evidence:
 Active-name uniqueness, optimistic draft/head concurrency, monotonic and
 idempotent publication, redacted revision diff, clone, archive, historical
 discovery, frozen-Run stability, and the complete console lifecycle are done.
-TP-EP05 through TP-EP09 are also complete; TP-EP10 is not started.
+TP-EP05 through TP-EP10 are also complete.
 
 ### Acceptance criteria
 
@@ -453,7 +453,7 @@ Current evidence:
 Target-free paired Lane Slots, exact same-profile Target Comparison bindings,
 advisory/authoritative constraints, shared Prepared Episodes, deduplicated
 preflight, deterministic paired execution, reload identity, and Console launch
-are complete. TP-EP06 through TP-EP09 are also complete; TP-EP10 is not started.
+are complete. TP-EP06 through TP-EP10 are also complete.
 
 ### Acceptance criteria
 
@@ -561,8 +561,7 @@ Current evidence:
 [`evidence/2026-07-17-tp-ep06-execution-comparison.md`](evidence/2026-07-17-tp-ep06-execution-comparison.md).
 Exact same-target/two-profile launch, public profile diff, shared preparation,
 deterministic subject-specific results, causal rejection, and Console identity
-preservation are complete. TP-EP07 and TP-EP08 are also complete; TP-EP09 is
-not started.
+preservation are complete. TP-EP07 through TP-EP10 are also complete.
 
 ## TP-EP07: Preserve Lane Bindings across Retry and Resume
 
@@ -623,7 +622,7 @@ Current evidence:
 Frozen profile-aware Retry/Resume identity, original credential-slot rules,
 write-free executability failures, per-Attempt preflight, new-head/archive
 stability, and immutable Console follow-up/replay identity are complete.
-TP-EP08 is now also complete; TP-EP09 is not started.
+TP-EP08 through TP-EP10 are now also complete.
 
 ## TP-EP08: Add profile-aware report and baseline provenance
 
@@ -686,7 +685,7 @@ Current evidence:
 [`evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md`](evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md).
 Report schema v3, selected-Attempt profile-aware provenance, strict promotion,
 historical Legacy strictness, immutable list/detail identity, and canonical test
-inventory evidence are complete. TP-EP09 is complete.
+inventory evidence are complete. TP-EP09 and TP-EP10 are complete.
 
 ## TP-EP09: Complete console migration and legacy compatibility
 
@@ -749,7 +748,7 @@ Current evidence:
 Workflow v2-only authoring, dedicated exact-revision Run Launch, identity-only
 browser persistence, explicit reviewed preference conversion, Legacy HTTP
 create/read/follow-up characterization, and compatibility-window documentation
-are complete. TP-EP10 is not started.
+are complete. TP-EP10 is complete.
 
 ## TP-EP10: Close the Execution Profiles release
 
@@ -762,24 +761,24 @@ release complete only when all TP-EP00 through TP-EP09 outcomes are reproducible
 
 ### Acceptance criteria
 
-- [ ] TP-EP00 through TP-EP09 are complete or explicitly removed by an accepted
+- [x] TP-EP00 through TP-EP09 are complete or explicitly removed by an accepted
       product/architecture change.
-- [ ] Every EP-FR-001 through EP-FR-015 requirement and PRD acceptance scenario
+- [x] Every EP-FR-001 through EP-FR-015 requirement and PRD acceptance scenario
       has mechanical evidence.
-- [ ] Full Test Platform backend, relevant `bench_env`, platform frontend,
+- [x] Full Test Platform backend, relevant `bench_env`, platform frontend,
       simulator, type-check, and lint suites pass.
-- [ ] Deterministic browser smoke covers profile publication, Single launch,
+- [x] Deterministic browser smoke covers profile publication, Single launch,
       Target Comparison, Execution Comparison, secret/preflight failures,
       follow-up, report/baseline provenance, reload, and historical links.
-- [ ] The deterministic acceptance path requires no live commercial or local
+- [x] The deterministic acceptance path requires no live commercial or local
       model and test-only adapters are disabled in normal startup.
-- [ ] Run Plan v1/v2, report v1/v2/next, legacy create-run, existing Baselines,
+- [x] Run Plan v1/v2, report v1/v2/next, legacy create-run, existing Baselines,
       Retry/Resume, and imported-run compatibility gates pass.
-- [ ] Secret scans and response/artifact snapshots contain no secret values or
+- [x] Secret scans and response/artifact snapshots contain no secret values or
       sensitive Credential Reference paths.
-- [ ] Product, architecture, context, implementation, operator, compatibility,
+- [x] Product, architecture, context, implementation, operator, compatibility,
       and docs-index status reflects the released behavior.
-- [ ] Remaining warnings, compatibility-window debt, and deferred provider/
+- [x] Remaining warnings, compatibility-window debt, and deferred provider/
       multi-axis directions are recorded with owners or backlog entries.
 
 ### Test seam
@@ -807,6 +806,14 @@ npx tsc --noEmit
 npm run lint
 ```
 
+Current evidence:
+[`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md).
+All TP-EP00 through TP-EP10 outcomes are reproducible. The full release matrix,
+canonical inventories, requirement/scenario mapping, secret audit, independent
+browser dogfood, accepted warnings, and deferred-work owners are recorded in
+that acceptance record. The Legacy create-run compatibility window remains
+active and requires a separately authorized removal change.
+
 ## 5. Approval record
 
 On 2026-07-13, the user approved the slice granularity and dependency
@@ -820,7 +827,6 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP09 were implemented
-only after their separate explicit start requests. TP-EP06 through TP-EP09 were
-separately authorized and completed on 2026-07-17; TP-EP10 still requires its
-own explicit start request.
+No external issue has been published. TP-EP00 through TP-EP10 were implemented
+only after their separate explicit start requests. TP-EP06 through TP-EP10 were
+separately authorized and completed on 2026-07-17.

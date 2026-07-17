@@ -4,11 +4,11 @@
 
 | Field | Value |
 |---|---|
-| Status | Active compatibility contract from TP-EP09 on 2026-07-17 |
+| Status | Active compatibility contract after the TP-EP10 release on 2026-07-17 |
 | Normal launch path | Console Run Launch; profile-aware Run Plan v2 |
 | Legacy creation path | `POST /api/platform/v1/runs`; Legacy Execution Identity |
 | Exit model | Criteria-based; no automatic sunset date |
-| Current evidence | [`evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md`](evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md) |
+| Current evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
 
 ## Purpose
 

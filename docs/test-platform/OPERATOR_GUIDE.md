@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Current through TP-EP09 on 2026-07-17 |
-| Current evidence | [`evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md`](evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md) |
+| Status | Current through the TP-EP10 Execution Profiles release on 2026-07-17 |
+| Current evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
 | Live model required for acceptance | No |
 
 ## Local startup

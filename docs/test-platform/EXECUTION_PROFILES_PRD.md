@@ -4,19 +4,19 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP09 on 2026-07-17 |
+| Status | Accepted; Execution Profiles release complete on 2026-07-17 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 through TP-EP09 complete; TP-EP10 requires separate authorization |
-| Current evidence | [`evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md`](evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md) |
+| Implementation authorization | TP-EP00 through TP-EP10 authorized and complete |
+| Current evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
 
 ## 1. Summary
 
-The Test Platform will make Agent and model execution configuration a reusable,
+The Test Platform makes Agent and model execution configuration a reusable,
 versioned product object. An **Execution Profile** is a named project identity;
 an **Execution Profile Revision** is an immutable published snapshot of the
 subject configuration used by a run.
@@ -32,20 +32,20 @@ target, evaluation, or scheduling changes.
 
 ## 2. Decision context
 
-The hardened platform already freezes a Workflow Version, Target Revisions,
+Before this release, the hardened platform already froze a Workflow Version, Target Revisions,
 task-source identity, episode identities, and effective runner configuration in
-an immutable Run Plan. However, Agent and model settings are currently entered
+an immutable Run Plan. However, Agent and model settings were entered
 as launch-time execution overrides, merged into workflow execution settings,
-and exposed as a flat runner configuration. They are not reusable named
-identities and cannot be selected independently per Lane through the product.
+and exposed as a flat runner configuration. They were not reusable named
+identities and could not be selected independently per Lane through the product.
 
-The accepted direction is to preserve the Run Plan as the authoritative frozen
+The delivered direction preserves the Run Plan as the authoritative frozen
 contract while giving the subject-under-test configuration its own immutable
 revision identity.
 
-## 3. Problem statement
+## 3. Pre-release problem statement
 
-The current launch model has five product limitations:
+The pre-release launch model had five product limitations:
 
 1. Agent and model settings must be re-entered or recovered from browser-local
    preferences rather than selected as a reviewed project object.
@@ -306,7 +306,7 @@ identity from loose Agent/model fields.
       profile provenance.
 - [x] Existing Workflow v1, Run Plan v1, report, baseline, and Retry/Resume
       behavior remains readable and mechanically verified.
-- [ ] Deterministic browser smoke covers profile creation/publication, Single
+- [x] Deterministic browser smoke covers profile creation/publication, Single
       launch, Execution Comparison, revision display, reload, and immutable
       historical links without a live commercial or local model.
 
@@ -325,6 +325,7 @@ identity from loose Agent/model fields.
 
 The delivery-planning gate was satisfied by the approved slices in
 [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
-Implementation continues only through separately authorized slices with
-independently verifiable seams, migration ordering, compatibility gates,
-deterministic adapters, rollback expectations, and acceptance evidence.
+TP-EP00 through TP-EP10 were separately authorized and are complete. Future
+changes, including Legacy creation removal, broader provider variants, or a
+different comparison model, require their own accepted requirements and
+delivery authorization.

@@ -4,12 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Status | Implemented reference design; hardening accepted 2026-07-13 |
+| Status | Implemented reference design; hardening and Execution Profiles releases accepted through 2026-07-17 |
 | Product requirements | [`PRD.md`](PRD.md) |
 | Technical architecture | [`TECHNICAL_ARCHITECTURE.md`](TECHNICAL_ARCHITECTURE.md) |
 | Delivery method | Test-driven development |
 | Task decomposition | Independently verifiable vertical slices |
-| Scope | Simulator-first MVP through hardening release |
+| Scope | Simulator-first MVP through hardening and Versioned Execution Profiles releases |
+| Current extension | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md), [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
+| Current evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
 
 ## 1. Purpose
 

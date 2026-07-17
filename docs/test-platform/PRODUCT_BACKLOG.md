@@ -6,7 +6,7 @@
 |---|---|
 | Status | Active planning register |
 | Scope | Product directions from backlog discovery through delivery authorization |
-| Current delivery focus | TP-EP09 complete; TP-EP10 awaits a separate start request |
+| Current delivery focus | Versioned Execution Profiles release complete; future directions require separate review |
 
 Backlog entries begin as opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
@@ -16,15 +16,15 @@ delivery plan, and a reviewed delivery plan before implementation.
 
 | Field | Value |
 |---|---|
-| Status | Delivery active; TP-EP09 complete |
-| Priority | TP-EP10 requires separate authorization before implementation |
+| Status | Released; TP-EP00 through TP-EP10 complete |
+| Priority | Maintain compatibility window; separately review deferred provider and comparison directions |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Not authorized yet | TP-EP10 implementation without its required explicit start request |
+| Release evidence | [`evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md`](evidence/2026-07-17-tp-ep10-execution-profiles-release-acceptance.md) |
 
 ### Opportunity
 
@@ -102,10 +102,16 @@ persistence to a recent profile revision identity, added explicit reviewed
 one-time conversion of deprecated non-secret preferences into an unpublished
 profile draft, and documented the Legacy HTTP compatibility window and exit
 criteria.
+TP-EP10 closed the release with a fresh deterministic Chromium acceptance
+scenario, complete requirement/scenario-to-evidence mapping, full backend,
+benchmark, Console, simulator, type-check, and lint gates, an independent real-
+browser dogfood pass, secret/runtime scans, and explicit warning/debt owners.
 
 The approved slices and dependencies are recorded in
 [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
 The user accepted their granularity and dependency relationships on 2026-07-13.
-No issue has been published. TP-EP06 through TP-EP09 were separately authorized
-and completed on 2026-07-17. TP-EP10 still requires its own explicit start
-request.
+No issue has been published. TP-EP06 through TP-EP10 were separately authorized
+and completed on 2026-07-17. The Legacy create-run compatibility window remains
+active under its criteria-based exit contract; provider-registry expansion and
+mixed multi-axis comparison remain deferred directions rather than authorized
+implementation work.
