@@ -35,6 +35,9 @@ type CatalogState =
   }
   | { status: 'error'; message: string };
 
+const RECENT_PROFILE_REVISION_STORAGE_KEY =
+  'test-platform.run-launch.recent-profile-revision-id';
+
 const EMPTY_SELECTION: RunLaunchSelection = {
   workflowVersionId: '',
   comparisonIntent: 'single',
@@ -78,7 +81,14 @@ export function RunLaunchPage() {
           (profile) => profile.head_revision !== null,
         );
         setCatalog({ status: 'loaded', workflows, targets, profiles });
-        setSelection(initialRunLaunchSelection({ workflows, targets, profiles }));
+        setSelection(initialRunLaunchSelection({
+          workflows,
+          targets,
+          profiles,
+          preferredProfileRevisionId: window.localStorage.getItem(
+            RECENT_PROFILE_REVISION_STORAGE_KEY,
+          ),
+        }));
       })
       .catch((loadError) => {
         if (!active) return;
@@ -99,6 +109,12 @@ export function RunLaunchPage() {
   };
 
   const changeSelection = (patch: Partial<RunLaunchSelection>) => {
+    if (typeof patch.profileRevisionId === 'string' && patch.profileRevisionId) {
+      window.localStorage.setItem(
+        RECENT_PROFILE_REVISION_STORAGE_KEY,
+        patch.profileRevisionId,
+      );
+    }
     setSelection((current) => ({ ...current, ...patch }));
     clearPreview();
   };

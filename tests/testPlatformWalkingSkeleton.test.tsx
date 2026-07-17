@@ -83,7 +83,7 @@ describe('Test Platform walking skeleton', () => {
     expect(await screen.findByText('No runs yet')).toBeTruthy();
     expect(screen.getByText('The API returned zero runs for Mobile App Regression.')).toBeTruthy();
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
   });
 

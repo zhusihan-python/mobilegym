@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP08 on 2026-07-17 |
+| Status | Accepted; delivery complete through TP-EP09 on 2026-07-17 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 through TP-EP08 complete; later slices require separate authorization |
-| Current evidence | [`evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md`](evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md) |
+| Implementation authorization | TP-EP00 through TP-EP09 complete; TP-EP10 requires separate authorization |
+| Current evidence | [`evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md`](evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md) |
 
 ## 1. Summary
 

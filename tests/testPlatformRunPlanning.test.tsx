@@ -47,7 +47,7 @@ const target = {
 };
 
 const definition = {
-  schema_version: 1 as const,
+  schema_version: 2 as const,
   name: 'WeChat smoke',
   nodes: [
     {
@@ -60,7 +60,7 @@ const definition = {
       id: 'matrix',
       type: 'matrix' as const,
       depends_on: ['tasks'],
-      config: { lanes: { candidate: { target_id: target.id } }, repeat_n: 2 },
+      config: { lane_slots: { candidate: { role: 'candidate' } }, repeat_n: 2 },
     },
     {
       id: 'execute',
@@ -88,6 +88,50 @@ const workflow = {
   name: 'WeChat smoke',
   draft_definition: definition,
   latest_version: version,
+  created_at: '2026-07-03T00:00:02.000Z',
+  updated_at: '2026-07-03T00:00:02.000Z',
+};
+
+const profileSpec = {
+  schema_version: 1 as const,
+  agent: { id: 'generic_v2' as const },
+  model: {
+    protocol: 'openai_chat_completions' as const,
+    base_url: 'http://127.0.0.1:1234/v1',
+    name: 'reviewed-model',
+  },
+  image_input: { format: 'data_url' as const },
+  generation: { temperature: 0, top_p: 1, max_tokens: 4096, stream: true },
+  inference: { timeout_seconds: 300 },
+  credentials: { required_slots: [] },
+};
+
+const profileRevision = {
+  id: 'profile-revision-1',
+  execution_profile_id: 'profile-1',
+  revision_no: 1,
+  public_spec: profileSpec,
+  public_spec_hash: 'sha256:profile-public-1',
+  credential_binding_digest: 'sha256:empty',
+  credential_readiness: {
+    required_slots: [],
+    bound_slots: [],
+    missing_slots: [],
+    ready: true,
+    binding_digest: 'sha256:empty',
+  },
+  published_at: '2026-07-03T00:00:02.000Z',
+};
+
+const profile = {
+  id: profileRevision.execution_profile_id,
+  project_id: project.id,
+  name: 'Reviewed generic v2',
+  draft_spec: profileSpec,
+  credential_readiness: profileRevision.credential_readiness,
+  draft_version: 1,
+  head_revision: profileRevision,
+  archived_at: null,
   created_at: '2026-07-03T00:00:02.000Z',
   updated_at: '2026-07-03T00:00:02.000Z',
 };
@@ -222,14 +266,73 @@ describe('Test Platform immutable run planning', () => {
     window.localStorage.clear();
   });
 
-  it('launches a published workflow and shows the queued frozen run overview', async () => {
-    const requests: Array<{ path: string; method: string; headers: Headers }> = [];
+  it('launches exact published revisions and shows the queued frozen run overview', async () => {
+    window.history.pushState({}, '', '/test-platform/run-launch');
+    const requests: Array<{
+      path: string;
+      method: string;
+      headers: Headers;
+      body?: any;
+    }> = [];
+    const profileAwareRun = {
+      ...run,
+      run_plan: { schema_version: 2 },
+      lanes: [{
+        ...run.lanes[0],
+        execution_profile_revision_id: profileRevision.id,
+        execution_profile_revision_hash: 'sha256:profile-revision-1',
+        lane_fingerprint: 'sha256:lane-1',
+      }],
+      execution_identity: {
+        kind: 'profile_aware',
+        label: 'Execution Profile Revision',
+        schema_version: 2,
+        lane_bindings: [{
+          lane_slot: 'candidate',
+          target_revision_id: target.latest_revision.id,
+          target_revision_hash: target.latest_revision.metadata_hash,
+          execution_profile_id: profile.id,
+          execution_profile_name: profile.name,
+          execution_profile_revision_id: profileRevision.id,
+          execution_profile_revision_no: 1,
+          execution_profile_public_hash: profileRevision.public_spec_hash,
+          execution_profile_revision_hash: 'sha256:profile-revision-1',
+          lane_fingerprint: 'sha256:lane-1',
+        }],
+      },
+    };
+    const preview = {
+      workflow_version_id: version.id,
+      workflow_version_hash: version.definition_hash,
+      comparison_intent: 'single',
+      lane_bindings: [{
+        lane_slot: 'candidate',
+        role: 'candidate',
+        target_id: target.id,
+        target_revision_id: target.latest_revision.id,
+        target_revision_hash: target.latest_revision.metadata_hash,
+        execution_profile_id: profile.id,
+        execution_profile_name: profile.name,
+        execution_profile_revision_id: profileRevision.id,
+        execution_profile_revision_no: 1,
+        execution_profile_public_hash: profileRevision.public_spec_hash,
+        execution_profile_revision_hash: 'sha256:profile-revision-1',
+        lane_fingerprint: 'sha256:lane-1',
+      }],
+      constraint_violations: [],
+      episode_count: 2,
+      fingerprint_inputs: {},
+      run_plan_fingerprint: run.fingerprint,
+      preview_token: 'sha256:preview-1',
+      credential_requirements: [],
+    };
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
       requests.push({
         path: url.pathname,
         method: init?.method ?? 'GET',
         headers: new Headers(init?.headers),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
       });
 
       if (url.pathname === '/health/ready') {
@@ -254,11 +357,17 @@ describe('Test Platform immutable run planning', () => {
       if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
         return jsonResponse({ items: [workflow], next_cursor: null });
       }
-      if (url.pathname === '/api/platform/v1/runs' && init?.method === 'POST') {
-        return jsonResponse(run, 201);
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [profile], next_cursor: null });
+      }
+      if (url.pathname.endsWith('/run-launch/preview')) {
+        return jsonResponse(preview);
+      }
+      if (url.pathname.endsWith('/run-launch') && init?.method === 'POST') {
+        return jsonResponse(profileAwareRun, 201);
       }
       if (url.pathname === `/api/platform/v1/runs/${run.id}`) {
-        return jsonResponse(run);
+        return jsonResponse(profileAwareRun);
       }
 
       throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
@@ -266,14 +375,12 @@ describe('Test Platform immutable run planning', () => {
 
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Workflows' })).toBeTruthy();
-    fireEvent.change(await screen.findByLabelText('Model base URL'), {
-      target: { value: 'http://127.0.0.1:1234/v1' },
-    });
-    fireEvent.change(await screen.findByLabelText('Model name'), {
-      target: { value: 'dogfood-model' },
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Launch version 1' }));
+    expect((await screen.findByLabelText('Target Revision') as HTMLSelectElement).value)
+      .toBe(target.latest_revision.id);
+    expect((screen.getByLabelText('Execution Profile Revision') as HTMLSelectElement).value)
+      .toBe(profileRevision.id);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview launch' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Create run' }));
 
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
     expect(screen.getByTestId('tp-run-state').textContent).toBe('queued');
@@ -282,13 +389,21 @@ describe('Test Platform immutable run planning', () => {
     expect(screen.getByText('sha256:run-plan-vs04')).toBeTruthy();
 
     const launch = requests.find(
-      (request) => request.path === '/api/platform/v1/runs' && request.method === 'POST',
+      (request) => request.path.endsWith('/run-launch') && request.method === 'POST',
     );
     expect(launch?.headers.get('Idempotency-Key')).toBeTruthy();
+    expect(launch?.body).toMatchObject({
+      workflow_version_id: version.id,
+      lane_bindings: [{
+        lane_slot: 'candidate',
+        target_revision_id: target.latest_revision.id,
+        execution_profile_revision_id: profileRevision.id,
+      }],
+    });
   });
 
   it('resets the launch workflow version when switching projects with same-named workflows', async () => {
-    window.history.pushState({}, '', '/test-platform/runs');
+    window.history.pushState({}, '', '/test-platform/run-launch');
     const otherProject = {
       ...project,
       id: 'project-2',
@@ -315,7 +430,27 @@ describe('Test Platform immutable run planning', () => {
       project_id: otherProject.id,
       latest_version: newVersion,
     };
-    let launchedBody: unknown = null;
+    const otherTarget = {
+      ...target,
+      id: 'target-2',
+      project_id: otherProject.id,
+      latest_revision: {
+        ...target.latest_revision,
+        id: 'revision-2',
+        metadata_hash: 'metadata-project-2',
+      },
+    };
+    const otherProfileRevision = {
+      ...profileRevision,
+      id: 'profile-revision-2',
+      execution_profile_id: 'profile-2',
+    };
+    const otherProfile = {
+      ...profile,
+      id: otherProfileRevision.execution_profile_id,
+      project_id: otherProject.id,
+      head_revision: otherProfileRevision,
+    };
 
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
@@ -339,15 +474,19 @@ describe('Test Platform immutable run planning', () => {
       if (url.pathname === `/api/platform/v1/projects/${otherProject.id}/workflows`) {
         return jsonResponse({ items: [newWorkflow], next_cursor: null });
       }
-      if (url.pathname === '/api/platform/v1/runs' && (init?.method ?? 'GET') === 'GET') {
-        return jsonResponse({ items: [], next_cursor: null });
+      if (url.pathname === '/api/platform/v1/targets') {
+        return jsonResponse({
+          items: url.searchParams.get('project_id') === otherProject.id
+            ? [otherTarget]
+            : [target],
+          next_cursor: null,
+        });
       }
-      if (url.pathname === '/api/platform/v1/runs' && init?.method === 'POST') {
-        launchedBody = JSON.parse(String(init.body));
-        return jsonResponse({ ...run, id: 'run-new', workflow_version_id: newVersion.id }, 201);
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [profile], next_cursor: null });
       }
-      if (url.pathname === '/api/platform/v1/runs/run-new') {
-        return jsonResponse({ ...run, id: 'run-new', workflow_version_id: newVersion.id });
+      if (url.pathname === `/api/platform/v1/projects/${otherProject.id}/execution-profiles`) {
+        return jsonResponse({ items: [otherProfile], next_cursor: null });
       }
 
       throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
@@ -355,8 +494,8 @@ describe('Test Platform immutable run planning', () => {
 
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Runs' })).toBeTruthy();
-    const workflowSelect = await screen.findByLabelText('Workflow version') as HTMLSelectElement;
+    expect(await screen.findByRole('heading', { name: 'Run Launch' })).toBeTruthy();
+    const workflowSelect = await screen.findByLabelText('Workflow Version') as HTMLSelectElement;
     await waitFor(() => {
       expect(workflowSelect.value).toBe(oldVersion.id);
     });
@@ -366,38 +505,14 @@ describe('Test Platform immutable run planning', () => {
     });
 
     await waitFor(() => {
-      expect(workflowSelect.value).toBe(newVersion.id);
+      expect((screen.getByLabelText('Workflow Version') as HTMLSelectElement).value)
+        .toBe(newVersion.id);
     });
-    expect(screen.getByText('WeChat smoke (v1, sha256:f3dcc1a8...8efe75)')).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText('Model base URL'), {
-      target: { value: 'http://127.0.0.1:1234/v1' },
-    });
-    fireEvent.change(screen.getByLabelText('Model name'), {
-      target: { value: 'dogfood-model' },
-    });
-    fireEvent.change(screen.getByLabelText('Model API key'), {
-      target: { value: 'sk-online-vision-secret' },
-    });
-    fireEvent.change(screen.getByLabelText('Image URL format'), {
-      target: { value: 'bare_base64' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Launch run' }));
-
-    await waitFor(() => {
-      expect(launchedBody).toMatchObject({
-        workflow_version_id: newVersion.id,
-        overrides: {
-          execution: {
-            agent: 'generic_v2',
-            model_base_url: 'http://127.0.0.1:1234/v1',
-            model_name: 'dogfood-model',
-            model_api_key: 'sk-online-vision-secret',
-            image_url_format: 'bare_base64',
-          },
-        },
-      });
-    });
+    expect(screen.getByText(`WeChat smoke / v1 / ${newVersion.id}`)).toBeTruthy();
+    expect((screen.getByLabelText('Target Revision') as HTMLSelectElement).value)
+      .toBe(otherTarget.latest_revision.id);
+    expect((screen.getByLabelText('Execution Profile Revision') as HTMLSelectElement).value)
+      .toBe(otherProfileRevision.id);
   });
 
   it('shows manual sequence ordering metadata on run detail', async () => {

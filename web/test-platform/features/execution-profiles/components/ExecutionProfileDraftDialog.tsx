@@ -1,10 +1,12 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 
 import {
+  checkModelCompatibility,
   createExecutionProfile,
   updateExecutionProfileDraft,
 } from '../../../api/client';
 import type {
+  CompatibilityResult,
   ExecutionProfile,
   ExecutionProfileSpec,
 } from '../../../api/types';
@@ -12,16 +14,22 @@ import type {
 export function ExecutionProfileDraftDialog({
   projectId,
   profile,
+  initialName,
+  initialSpec: suppliedInitialSpec,
   onSaved,
   onCancel,
 }: {
   projectId: string;
   profile?: ExecutionProfile;
+  initialName?: string;
+  initialSpec?: ExecutionProfileSpec;
   onSaved: (profile: ExecutionProfile) => void;
   onCancel: () => void;
 }) {
-  const initialSpec = profile?.draft_spec;
-  const [name, setName] = useState(profile?.name ?? 'Generic v2 / local model');
+  const initialSpec = profile?.draft_spec ?? suppliedInitialSpec;
+  const [name, setName] = useState(
+    profile?.name ?? initialName ?? 'Generic v2 / local model',
+  );
   const [modelBaseUrl, setModelBaseUrl] = useState(initialSpec?.model.base_url ?? 'http://127.0.0.1:1234/v1');
   const [modelName, setModelName] = useState(initialSpec?.model.name ?? 'local-model');
   const [imageFormat, setImageFormat] = useState<'data_url' | 'bare_base64'>(initialSpec?.image_input.format ?? 'data_url');
@@ -36,8 +44,49 @@ export function ExecutionProfileDraftDialog({
   const [credentialReferenceId, setCredentialReferenceId] = useState(
     profile ? '' : 'primary-model-key',
   );
+  const [compatibilityApiKey, setCompatibilityApiKey] = useState('');
+  const [compatibility, setCompatibility] = useState<
+    | { status: 'idle' }
+    | { status: 'checking' }
+    | { status: 'loaded'; result: CompatibilityResult }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' });
+  const compatibilityToken = useRef(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const clearCompatibility = () => {
+    compatibilityToken.current += 1;
+    setCompatibility({ status: 'idle' });
+  };
+
+  const testConnection = () => {
+    if (!modelBaseUrl.trim() || !modelName.trim()) return;
+    compatibilityToken.current += 1;
+    const token = compatibilityToken.current;
+    setCompatibility({ status: 'checking' });
+    checkModelCompatibility({
+      modelBaseUrl: modelBaseUrl.trim(),
+      modelName: modelName.trim(),
+      modelApiKey: compatibilityApiKey.trim() || undefined,
+      imageUrlFormat: imageFormat,
+    })
+      .then((result) => {
+        if (token === compatibilityToken.current) {
+          setCompatibility({ status: 'loaded', result });
+        }
+      })
+      .catch((compatibilityError) => {
+        if (token === compatibilityToken.current) {
+          setCompatibility({
+            status: 'error',
+            message: compatibilityError instanceof Error
+              ? compatibilityError.message
+              : 'Compatibility check failed.',
+          });
+        }
+      });
+  };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -103,9 +152,48 @@ export function ExecutionProfileDraftDialog({
         <h2>{profile ? 'Edit Execution Profile draft' : 'New Execution Profile'}</h2>
         <label>Profile name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label>Agent<select value="generic_v2" disabled><option value="generic_v2">generic_v2</option></select></label>
-        <label>Model endpoint<input value={modelBaseUrl} onChange={(event) => setModelBaseUrl(event.target.value)} /></label>
-        <label>Model name<input value={modelName} onChange={(event) => setModelName(event.target.value)} /></label>
-        <label>Image Input Format<select value={imageFormat} onChange={(event) => setImageFormat(event.target.value as 'data_url' | 'bare_base64')}><option value="data_url">data_url</option><option value="bare_base64">bare_base64</option></select></label>
+        <label>Model endpoint<input value={modelBaseUrl} onChange={(event) => { setModelBaseUrl(event.target.value); clearCompatibility(); }} /></label>
+        <label>Model name<input value={modelName} onChange={(event) => { setModelName(event.target.value); clearCompatibility(); }} /></label>
+        <label>Image Input Format<select value={imageFormat} onChange={(event) => { setImageFormat(event.target.value as 'data_url' | 'bare_base64'); clearCompatibility(); }}><option value="data_url">data_url</option><option value="bare_base64">bare_base64</option></select></label>
+        <label>
+          Model API key
+          <input
+            type="password"
+            value={compatibilityApiKey}
+            onChange={(event) => {
+              setCompatibilityApiKey(event.target.value);
+              clearCompatibility();
+            }}
+            autoComplete="off"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={testConnection}
+          disabled={
+            compatibility.status === 'checking'
+            || !modelBaseUrl.trim()
+            || !modelName.trim()
+          }
+          data-testid="tp-test-connection"
+        >
+          {compatibility.status === 'checking' ? 'Checking...' : 'Test connection'}
+        </button>
+        <p className="tp-hint">The compatibility API key is transient and is never saved in the draft.</p>
+        {compatibility.status === 'loaded' ? (
+          <div className="tp-compat-result" data-testid="tp-compat-result">
+            <strong className={`tp-compat-code tp-compat-code-${compatibility.result.code}`}>
+              {compatibility.result.code}
+            </strong>
+            <span>{compatibility.result.explanation}</span>
+            <span className="tp-mono">
+              {compatibility.result.checked_model} · {compatibility.result.checked_image_format} · {compatibility.result.latency_ms}ms
+            </span>
+          </div>
+        ) : null}
+        {compatibility.status === 'error' ? (
+          <p className="tp-error-text" role="alert">{compatibility.message}</p>
+        ) : null}
         <label>Temperature<input type="number" step="0.1" value={temperature} onChange={(event) => setTemperature(event.target.value)} /></label>
         <label>Top p<input type="number" step="0.1" value={topP} onChange={(event) => setTopP(event.target.value)} /></label>
         <label>Max tokens<input type="number" value={maxTokens} onChange={(event) => setMaxTokens(event.target.value)} /></label>

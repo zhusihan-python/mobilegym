@@ -3,6 +3,10 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { archiveProject, createProject, fetchReadiness, listProjects } from '../api/client';
 import type { Project, ReadinessResponse } from '../api/types';
+import {
+  takeLegacyLaunchPreferences,
+  type LegacyLaunchPreferences,
+} from '../features/execution-profiles/legacyLaunchPreferences';
 
 const SELECTED_PROJECT_STORAGE_KEY = 'test-platform.selected-project-id';
 
@@ -23,6 +27,9 @@ export function PlatformShell() {
   const [readiness, setReadiness] = useState<ReadinessState>({ status: 'loading' });
   const [projectsState, setProjectsState] = useState<ProjectsState>({ status: 'idle' });
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [legacyLaunchPreferences, setLegacyLaunchPreferences] = useState<
+    LegacyLaunchPreferences | null
+  >(() => takeLegacyLaunchPreferences(window.localStorage));
 
   const loadReadiness = useCallback(() => {
     setReadiness({ status: 'loading' });
@@ -168,6 +175,8 @@ export function PlatformShell() {
             projectsState={projectsState}
             selectedProject={selectedProject}
             onNewProject={() => setCreateDialogOpen(true)}
+            legacyLaunchPreferences={legacyLaunchPreferences}
+            onLegacyLaunchPreferencesConsumed={() => setLegacyLaunchPreferences(null)}
           />
         ) : (
           <ReadinessPanel readiness={readiness} onRetry={loadReadiness} />
@@ -189,10 +198,14 @@ function WorkspaceBody({
   projectsState,
   selectedProject,
   onNewProject,
+  legacyLaunchPreferences,
+  onLegacyLaunchPreferencesConsumed,
 }: {
   projectsState: ProjectsState;
   selectedProject: Project | null;
   onNewProject: () => void;
+  legacyLaunchPreferences: LegacyLaunchPreferences | null;
+  onLegacyLaunchPreferencesConsumed: () => void;
 }) {
   if (projectsState.status === 'idle' || projectsState.status === 'loading') {
     return <section className="tp-panel">Loading projects...</section>;
@@ -219,7 +232,15 @@ function WorkspaceBody({
     );
   }
 
-  return <Outlet context={{ selectedProject }} />;
+  return (
+    <Outlet
+      context={{
+        selectedProject,
+        legacyLaunchPreferences,
+        onLegacyLaunchPreferencesConsumed,
+      }}
+    />
+  );
 }
 
 function ProjectSwitcher({

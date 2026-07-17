@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '../web/test-platform/App';
@@ -146,9 +146,15 @@ describe('Test Platform workflow editor', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Workflows' })).toBeTruthy();
+    await screen.findByLabelText('Select wechat.BlacklistContact');
+    expect(screen.queryByLabelText('Target')).toBeNull();
+    expect(screen.queryByLabelText('Agent')).toBeNull();
+    expect(screen.queryByLabelText('Model base URL')).toBeNull();
+    expect(screen.queryByLabelText('Model name')).toBeNull();
+    expect(screen.queryByLabelText('Model API key')).toBeNull();
+    expect(screen.queryByLabelText('Image URL format')).toBeNull();
     fireEvent.click(await screen.findByLabelText('Select wechat.BlacklistContact'));
     fireEvent.click(screen.getByLabelText('Select wechat.OpenBlacklist'));
-    fireEvent.change(screen.getByLabelText('Target'), { target: { value: target.id } });
     fireEvent.change(screen.getByLabelText('Repeat count'), { target: { value: '2' } });
     fireEvent.click(screen.getByRole('button', { name: 'Validate preview' }));
 
@@ -157,6 +163,25 @@ describe('Test Platform workflow editor', () => {
 
     expect(await screen.findByText('Published version 1')).toBeTruthy();
     expect(requests.some((request) => request.path.endsWith('/publish'))).toBe(true);
+    expect(screen.getByRole('button', { name: 'Open Run Launch' })).toBeTruthy();
+
+    const draftRequest = requests.find(
+      (request) => request.path.endsWith('/workflows') && request.body?.definition,
+    );
+    expect(draftRequest?.body.definition).toMatchObject({
+      schema_version: 2,
+      nodes: [
+        { id: 'tasks' },
+        {
+          id: 'matrix',
+          config: {
+            lane_slots: { candidate: { role: 'candidate' } },
+            repeat_n: 2,
+          },
+        },
+        { id: 'execute' },
+      ],
+    });
   });
 
   it('builds a manual sequence definition from reordered selected tasks', async () => {
@@ -270,7 +295,8 @@ describe('Test Platform workflow editor', () => {
 
     const matrix = definition.nodes.find((node: any) => node.type === 'matrix');
     expect(matrix.config.repeat_n).toBe(1);
-    expect(matrix.config.lanes).toEqual({ candidate: { target_id: target.id } });
+    expect(definition.schema_version).toBe(2);
+    expect(matrix.config.lane_slots).toEqual({ candidate: { role: 'candidate' } });
 
     const execute = definition.nodes.find((node: any) => node.type === 'execute');
     expect(execute.config).toMatchObject({
@@ -281,5 +307,102 @@ describe('Test Platform workflow editor', () => {
       processes: 1,
     });
     expect(definition.nodes.some((node: any) => node.type === 'compare')).toBe(false);
+  });
+
+  it('copies deprecated non-secret launch preferences only into a reviewed draft', async () => {
+    const savedEndpoint = 'http://127.0.0.1:9000/v1';
+    const savedModel = 'saved-vision-model';
+    const deprecatedSecret = 'sk-deprecated-must-be-scrubbed';
+    window.localStorage.setItem('test-platform.launch.agent', 'generic_v2');
+    window.localStorage.setItem('test-platform.launch.model-base-url', savedEndpoint);
+    window.localStorage.setItem('test-platform.launch.model-name', savedModel);
+    window.localStorage.setItem('test-platform.launch.image-url-format', 'bare_base64');
+    window.localStorage.setItem('test-platform.launch.model-api-key', deprecatedSecret);
+    const requests: Array<{ path: string; method: string; body?: any }> = [];
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ path: url.pathname, method, body });
+
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'ready' },
+            migrations: { ready: true, message: 'ready' },
+            runs_dir: { ready: true, message: 'ready' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/tasks') {
+        return jsonResponse({ items: tasks, next_cursor: null, digest: 'sha256:test' });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        if (method === 'POST') {
+          return jsonResponse({
+            id: 'profile-draft-ep09',
+            project_id: project.id,
+            name: body.name,
+            draft_spec: body.draft_spec,
+            credential_readiness: {
+              required_slots: [],
+              bound_slots: [],
+              missing_slots: [],
+              ready: true,
+              binding_digest: 'sha256:empty',
+            },
+            draft_version: 1,
+            head_revision: null,
+            archived_at: null,
+            created_at: '2026-07-17T00:00:00.000Z',
+            updated_at: '2026-07-17T00:00:00.000Z',
+          }, 201);
+        }
+        return jsonResponse({ items: [], next_cursor: null });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    await screen.findByLabelText('Select wechat.BlacklistContact');
+    fireEvent.click(screen.getByRole('link', { name: 'Execution Profiles' }));
+    expect(await screen.findByRole('heading', { name: 'Execution Profiles' })).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: 'Create Execution Profile' })).toBeNull();
+    expect(window.localStorage.getItem('test-platform.launch.model-base-url')).toBeNull();
+    expect(window.localStorage.getItem('test-platform.launch.model-name')).toBeNull();
+    expect(window.localStorage.getItem('test-platform.launch.model-api-key')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review saved launch preferences' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Create Execution Profile' });
+    expect((within(dialog).getByLabelText('Model endpoint') as HTMLInputElement).value)
+      .toBe(savedEndpoint);
+    expect((within(dialog).getByLabelText('Model name') as HTMLInputElement).value)
+      .toBe(savedModel);
+    expect((within(dialog).getByLabelText('Image Input Format') as HTMLSelectElement).value)
+      .toBe('bare_base64');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create profile' }));
+    await waitFor(() => {
+      const createRequest = requests.find(
+        (request) => request.path.endsWith('/execution-profiles') && request.method === 'POST',
+      );
+      expect(createRequest?.body.draft_spec).toMatchObject({
+        agent: { id: 'generic_v2' },
+        model: { base_url: savedEndpoint, name: savedModel },
+        image_input: { format: 'bare_base64' },
+        credentials: { required_slots: [] },
+      });
+    });
+    expect(requests.some((request) => request.path.endsWith('/publish'))).toBe(false);
+    expect(JSON.stringify(requests)).not.toContain(deprecatedSecret);
   });
 });

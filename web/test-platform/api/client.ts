@@ -105,41 +105,6 @@ export function listRuns(projectId?: string): Promise<CollectionResponse<RunSumm
   return apiFetch<CollectionResponse<RunSummary>>(`/runs${query}`);
 }
 
-export function createRun(input: {
-  workflowVersionId: string;
-  name?: string;
-  seed: number;
-  idempotencyKey: string;
-  execution?: {
-    agent: string;
-    modelName: string;
-    modelBaseUrl: string;
-    modelApiKey?: string;
-    imageUrlFormat?: string;
-  };
-}): Promise<RunDetail> {
-  return apiFetch<RunDetail>('/runs', {
-    method: 'POST',
-    headers: { 'Idempotency-Key': input.idempotencyKey },
-    body: JSON.stringify({
-      workflow_version_id: input.workflowVersionId,
-      name: input.name,
-      overrides: {
-        seed: input.seed,
-        execution: input.execution
-          ? {
-              agent: input.execution.agent,
-              model_name: input.execution.modelName,
-              model_base_url: input.execution.modelBaseUrl,
-              model_api_key: input.execution.modelApiKey || undefined,
-              image_url_format: input.execution.imageUrlFormat || undefined,
-            }
-          : undefined,
-      },
-    }),
-  });
-}
-
 export function importLegacyRun(input: {
   projectId: string;
   sourcePath: string;

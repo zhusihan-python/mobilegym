@@ -2,20 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 
 import {
-  ApiError,
   compileWorkflowPreview,
-  createRun,
   createWorkflow,
-  listTargets,
   listTasks,
   listWorkflows,
   publishWorkflow,
   updateWorkflowDraft,
 } from '../../api/client';
 import type {
-  ConstraintViolation,
   Project,
-  Target,
   TaskCatalogItem,
   WorkflowCompilePreview,
   WorkflowSummary,
@@ -32,27 +27,11 @@ import {
   type WorkflowMode,
 } from './model';
 
-const AGENT_OPTIONS = [
-  'generic_v2',
-  'generic',
-  'gui_owl',
-  'uitars',
-  'mai_ui',
-  'autoglm',
-  'gelab',
-  'venus',
-];
-const AGENT_STORAGE_KEY = 'test-platform.launch.agent';
-const MODEL_BASE_URL_STORAGE_KEY = 'test-platform.launch.model-base-url';
-const MODEL_NAME_STORAGE_KEY = 'test-platform.launch.model-name';
-const IMAGE_URL_FORMAT_STORAGE_KEY = 'test-platform.launch.image-url-format';
-
 type LoadState =
   | { status: 'loading' }
   | {
       status: 'loaded';
       tasks: TaskCatalogItem[];
-      targets: Target[];
       workflows: WorkflowSummary[];
     }
   | { status: 'error'; message: string };
@@ -63,7 +42,6 @@ export function WorkflowsPage() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>('batch');
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
-  const [targetId, setTargetId] = useState('');
   const [repeatCount, setRepeatCount] = useState(1);
   const [parallelCount, setParallelCount] = useState(1);
   const [processCount, setProcessCount] = useState(1);
@@ -78,24 +56,7 @@ export function WorkflowsPage() {
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowSummary | null>(null);
   const [preview, setPreview] = useState<WorkflowCompilePreview | null>(null);
   const [publishedVersion, setPublishedVersion] = useState<WorkflowVersion | null>(null);
-  const [runSeed, setRunSeed] = useState(0);
-  const [runAgent, setRunAgent] = useState(
-    () => window.localStorage.getItem(AGENT_STORAGE_KEY) ?? 'generic_v2',
-  );
-  const [runModelBaseUrl, setRunModelBaseUrl] = useState(
-    () => window.localStorage.getItem(MODEL_BASE_URL_STORAGE_KEY) ?? '',
-  );
-  const [runModelName, setRunModelName] = useState(
-    () => window.localStorage.getItem(MODEL_NAME_STORAGE_KEY) ?? '',
-  );
-  const [runModelApiKey, setRunModelApiKey] = useState('');
-  const [runImageUrlFormat, setRunImageUrlFormat] = useState(
-    () => window.localStorage.getItem(IMAGE_URL_FORMAT_STORAGE_KEY) ?? 'data_url',
-  );
   const [error, setError] = useState<string | null>(null);
-  // VS-10 Contract 3: create-run is the authoritative gate (409). When a paired
-  // run is rejected for constraint violations, surface the structured list.
-  const [runViolations, setRunViolations] = useState<ConstraintViolation[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -103,19 +64,15 @@ export function WorkflowsPage() {
     setState({ status: 'loading' });
     Promise.all([
       listTasks(),
-      listTargets(selectedProject.id),
       listWorkflows(selectedProject.id),
     ])
-      .then(([tasksResponse, targetsResponse, workflowsResponse]) => {
+      .then(([tasksResponse, workflowsResponse]) => {
         if (!active) return;
-        const firstTargetId = targetsResponse.items[0]?.id ?? '';
         setState({
           status: 'loaded',
           tasks: tasksResponse.items,
-          targets: targetsResponse.items,
           workflows: workflowsResponse.items,
         });
-        setTargetId((current) => current || firstTargetId);
         const firstWorkflow = workflowsResponse.items[0] ?? null;
         setActiveWorkflow(firstWorkflow);
         setPublishedVersion(firstWorkflow?.latest_version ?? null);
@@ -147,7 +104,6 @@ export function WorkflowsPage() {
         {
           workflowMode,
           selectedTaskIds,
-          targetId,
           repeatCount,
           parallelCount,
           processCount,
@@ -164,7 +120,6 @@ export function WorkflowsPage() {
       workflowMode,
       repeatCount,
       selectedTaskIds,
-      targetId,
       parallelCount,
       processCount,
       effectivePairedEnabled,
@@ -257,53 +212,6 @@ export function WorkflowsPage() {
       .finally(() => setBusy(false));
   };
 
-  const launch = () => {
-    if (!publishedVersion) return;
-    const trimmedAgent = runAgent.trim();
-    const trimmedModelBaseUrl = runModelBaseUrl.trim();
-    const trimmedModelName = runModelName.trim();
-    const trimmedModelApiKey = runModelApiKey.trim();
-    const trimmedImageUrlFormat = runImageUrlFormat.trim() || 'data_url';
-    if (!trimmedAgent || !trimmedModelBaseUrl || !trimmedModelName) return;
-    window.localStorage.setItem(AGENT_STORAGE_KEY, trimmedAgent);
-    window.localStorage.setItem(MODEL_BASE_URL_STORAGE_KEY, trimmedModelBaseUrl);
-    window.localStorage.setItem(MODEL_NAME_STORAGE_KEY, trimmedModelName);
-    window.localStorage.setItem(IMAGE_URL_FORMAT_STORAGE_KEY, trimmedImageUrlFormat);
-    setBusy(true);
-    setError(null);
-    setRunViolations([]);
-    createRun({
-      workflowVersionId: publishedVersion.id,
-      name: activeWorkflow?.name ?? publishedVersion.definition.name,
-      seed: runSeed,
-      idempotencyKey: crypto.randomUUID(),
-      execution: {
-        agent: trimmedAgent,
-        modelBaseUrl: trimmedModelBaseUrl,
-        modelName: trimmedModelName,
-        modelApiKey: trimmedModelApiKey || undefined,
-        imageUrlFormat: trimmedImageUrlFormat,
-      },
-    })
-      .then((run) => navigate(`/runs/${run.id}`))
-      .catch((runError) => {
-        // VS-10 Contract 3: a 409 COMPARISON_CONSTRAINT_VIOLATED carries the
-        // structured violation list on error.details. Surface those in the UI;
-        // any other error degrades to the generic message path.
-        if (runError instanceof ApiError && runError.code === 'COMPARISON_CONSTRAINT_VIOLATED') {
-          const violations = (runError.details as unknown[]).filter(
-            (item): item is ConstraintViolation =>
-              Boolean(item) && typeof item === 'object' && 'code' in (item as Record<string, unknown>),
-          );
-          setRunViolations(violations);
-          setError(runError.message || 'Comparison constraints are not satisfied.');
-        } else {
-          setError(runError instanceof Error ? runError.message : 'Run creation failed.');
-        }
-      })
-      .finally(() => setBusy(false));
-  };
-
   if (state.status === 'loading') {
     return <section className="tp-panel">Loading workflows...</section>;
   }
@@ -322,7 +230,7 @@ export function WorkflowsPage() {
       <section className="tp-panel tp-page-actions">
         <div>
           <h2>Workflow draft</h2>
-          <p>Select tasks and a simulator target before publishing an immutable version.</p>
+          <p>Define tasks and Lane Slots before publishing an immutable version.</p>
         </div>
         <div className="tp-workflow-actions">
           <button
@@ -330,7 +238,7 @@ export function WorkflowsPage() {
             onClick={validatePreview}
             disabled={
               busy ||
-              !canSubmitWorkflow(selectedTaskIds, targetId, effectivePairedEnabled)
+              !canSubmitWorkflow(selectedTaskIds)
             }
           >
             Validate preview
@@ -340,7 +248,7 @@ export function WorkflowsPage() {
             onClick={publish}
             disabled={
               busy ||
-              !canSubmitWorkflow(selectedTaskIds, targetId, effectivePairedEnabled)
+              !canSubmitWorkflow(selectedTaskIds)
             }
           >
             Publish workflow
@@ -348,22 +256,10 @@ export function WorkflowsPage() {
           {publishedVersion ? (
             <button
               type="button"
-              onClick={
-                publishedVersion.definition.schema_version === 2
-                  ? () => navigate('/run-launch')
-                  : launch
-              }
-              disabled={
-                busy
-                || (
-                  publishedVersion.definition.schema_version === 1
-                  && (!runAgent.trim() || !runModelBaseUrl.trim() || !runModelName.trim())
-                )
-              }
+              onClick={() => navigate('/run-launch')}
+              disabled={busy}
             >
-              {publishedVersion.definition.schema_version === 2
-                ? 'Open Run Launch'
-                : `Launch version ${publishedVersion.version_no}`}
+              Open Run Launch
             </button>
           ) : null}
         </div>
@@ -464,24 +360,6 @@ export function WorkflowsPage() {
         </div>
 
         <div className="tp-workflow-controls">
-          <label htmlFor="tp-workflow-target">Target</label>
-          <select
-            id="tp-workflow-target"
-            value={targetId}
-            onChange={(event) => {
-              setTargetId(event.target.value);
-              setPreview(null);
-              setPublishedVersion(null);
-            }}
-          >
-            <option value="">Select target</option>
-            {state.targets.map((target) => (
-              <option key={target.id} value={target.id}>
-                {target.name}
-              </option>
-            ))}
-          </select>
-
           <label htmlFor="tp-workflow-repeat">Repeat count</label>
           <input
             id="tp-workflow-repeat"
@@ -524,62 +402,6 @@ export function WorkflowsPage() {
             }}
           />
 
-          <label htmlFor="tp-workflow-seed">Run seed</label>
-          <input
-            id="tp-workflow-seed"
-            type="number"
-            value={runSeed}
-            onChange={(event) => setRunSeed(Number(event.target.value) || 0)}
-          />
-
-          <label htmlFor="tp-workflow-agent">Agent</label>
-          <select
-            id="tp-workflow-agent"
-            value={runAgent}
-            onChange={(event) => setRunAgent(event.target.value)}
-          >
-            {AGENT_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-
-          <label htmlFor="tp-workflow-model-base-url">Model base URL</label>
-          <input
-            id="tp-workflow-model-base-url"
-            value={runModelBaseUrl}
-            onChange={(event) => setRunModelBaseUrl(event.target.value)}
-            placeholder="http://127.0.0.1:1234/v1"
-          />
-
-          <label htmlFor="tp-workflow-model-name">Model name</label>
-          <input
-            id="tp-workflow-model-name"
-            value={runModelName}
-            onChange={(event) => setRunModelName(event.target.value)}
-            placeholder="local-model"
-          />
-
-          <label htmlFor="tp-workflow-model-api-key">Model API key</label>
-          <input
-            id="tp-workflow-model-api-key"
-            type="password"
-            value={runModelApiKey}
-            onChange={(event) => setRunModelApiKey(event.target.value)}
-            placeholder="Optional for local models"
-            autoComplete="off"
-          />
-
-          <label htmlFor="tp-workflow-image-url-format">Image URL format</label>
-          <select
-            id="tp-workflow-image-url-format"
-            value={runImageUrlFormat}
-            onChange={(event) => setRunImageUrlFormat(event.target.value)}
-          >
-            <option value="data_url">OpenAI data URL</option>
-            <option value="bare_base64">BigModel bare base64</option>
-          </select>
         </div>
 
         <TargetComparisonPolicyFields
@@ -652,23 +474,6 @@ export function WorkflowsPage() {
         </section>
       ) : null}
 
-      {runViolations.length > 0 ? (
-        <section
-          className="tp-alert"
-          role="alert"
-          data-testid="tp-run-violations"
-        >
-          <h2>Run rejected: comparison constraints violated</h2>
-          <ul>
-            {runViolations.map((violation, index) => (
-              <li key={`${violation.code}-${index}`}>
-                <code>{violation.code}</code>
-                <span> — {violation.message}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
     </>
   );
 }

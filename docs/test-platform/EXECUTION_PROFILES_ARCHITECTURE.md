@@ -10,7 +10,7 @@
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Deployment model | Existing single-host modular monolith |
-| Implementation status | TP-EP00 through TP-EP08 implemented; TP-EP09 not started |
+| Implementation status | TP-EP00 through TP-EP09 implemented; TP-EP10 not started |
 
 ## 1. Purpose
 
@@ -548,6 +548,12 @@ database or write upgraded JSON while reading.
 The existing create-run HTTP contract remains available for a documented
 compatibility window and continues to create legacy-format execution identity.
 It does not fabricate or persist an Execution Profile Revision.
+
+The active window, supported surface, security limits, and criteria-based exit
+are recorded in
+[`EXECUTION_PROFILES_COMPATIBILITY.md`](EXECUTION_PROFILES_COMPATIBILITY.md).
+Window completion never authorizes removal by itself; removal requires a
+separately accepted change.
 
 The new console stops using loose inline execution fields. A user may explicitly
 copy current non-secret launch preferences into a new profile draft, review the

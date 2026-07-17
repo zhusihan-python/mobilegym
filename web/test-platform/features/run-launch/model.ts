@@ -40,12 +40,19 @@ export function initialRunLaunchSelection(input: {
   workflows: WorkflowSummary[];
   targets: Target[];
   profiles: ExecutionProfile[];
+  preferredProfileRevisionId?: string | null;
 }): RunLaunchSelection {
   const workflowVersionId = input.workflows[0]?.latest_version?.id ?? '';
+  const preferredProfileRevisionId = input.profiles.find(
+    (profile) => profile.head_revision?.id === input.preferredProfileRevisionId,
+  )?.head_revision?.id;
+  const profileRevisionId = preferredProfileRevisionId
+    ?? input.profiles[0]?.head_revision?.id
+    ?? '';
   return {
     ...selectionForWorkflow(workflowVersionId, input.workflows, input.targets),
-    baselineProfileRevisionId: input.profiles[0]?.head_revision?.id ?? '',
-    profileRevisionId: input.profiles[0]?.head_revision?.id ?? '',
+    baselineProfileRevisionId: profileRevisionId,
+    profileRevisionId,
     seed: '20260715',
   };
 }

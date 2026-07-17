@@ -6,7 +6,7 @@
 |---|---|
 | Status | Active planning register |
 | Scope | Product directions from backlog discovery through delivery authorization |
-| Current delivery focus | TP-EP08 complete; TP-EP09 awaits a separate start request |
+| Current delivery focus | TP-EP09 complete; TP-EP10 awaits a separate start request |
 
 Backlog entries begin as opportunities, not accepted implementation contracts.
 They must receive their own product and architecture review before entering a
@@ -16,15 +16,15 @@ delivery plan, and a reviewed delivery plan before implementation.
 
 | Field | Value |
 |---|---|
-| Status | Delivery active; TP-EP08 complete |
-| Priority | TP-EP09 requires separate authorization before implementation |
+| Status | Delivery active; TP-EP09 complete |
+| Priority | TP-EP10 requires separate authorization before implementation |
 | Requested direction | Make Execution Profiles immutable and versioned; let each lane reference both a target revision and an execution-profile revision |
 | Product opportunity | Compare models or Agents on identical tasks, seeds, prepared state, and targets using the existing paired-comparison foundation |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Not authorized yet | TP-EP09 and later implementation without their required explicit start requests |
+| Not authorized yet | TP-EP10 implementation without its required explicit start request |
 
 ### Opportunity
 
@@ -96,10 +96,16 @@ TP-EP08 added report schema v3 with frozen per-Lane Target/Profile identity,
 Lane fingerprints, and selected-Attempt preflight; new Strict Baselines now
 freeze complete selected-Lane provenance while historical Baselines remain
 honestly readable as Legacy strictness.
+TP-EP09 removed loose execution settings from Workflow and Runs authoring,
+made Run Launch the normal exact-revision Console path, limited launch browser
+persistence to a recent profile revision identity, added explicit reviewed
+one-time conversion of deprecated non-secret preferences into an unpublished
+profile draft, and documented the Legacy HTTP compatibility window and exit
+criteria.
 
 The approved slices and dependencies are recorded in
 [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md).
 The user accepted their granularity and dependency relationships on 2026-07-13.
-No issue has been published. TP-EP06 through TP-EP08 were separately authorized
-and completed on 2026-07-17. TP-EP09 and later slices still require their own
-explicit start requests.
+No issue has been published. TP-EP06 through TP-EP09 were separately authorized
+and completed on 2026-07-17. TP-EP10 still requires its own explicit start
+request.

@@ -120,6 +120,26 @@ describe('Test Platform imported runs UI', () => {
       if (url.pathname === '/api/platform/v1/runs' && method === 'GET') {
         return jsonResponse({ items: [], next_cursor: null });
       }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
+        return jsonResponse({
+          items: [{
+            id: 'legacy-workflow',
+            project_id: project.id,
+            name: 'Legacy workflow',
+            latest_version: {
+              id: 'legacy-workflow-v1',
+              workflow_id: 'legacy-workflow',
+              version_no: 1,
+              status: 'published',
+              definition: { schema_version: 1, name: 'Legacy workflow', nodes: [] },
+              definition_hash: 'sha256:legacy-workflow',
+              created_at: '2026-07-06T00:00:00.000Z',
+              published_at: '2026-07-06T00:00:00.000Z',
+            },
+          }],
+          next_cursor: null,
+        });
+      }
       if (url.pathname === '/api/platform/v1/runs/import' && method === 'POST') {
         return jsonResponse(importedRun, 201);
       }
@@ -131,6 +151,13 @@ describe('Test Platform imported runs UI', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Launch profile-aware run' })).toBeTruthy();
+    const runLaunchLink = screen.getByRole('link', { name: 'Open Run Launch' });
+    expect(runLaunchLink.getAttribute('href')).toBe('/test-platform/run-launch');
+    expect(screen.queryByLabelText('Agent')).toBeNull();
+    expect(screen.queryByLabelText('Model base URL')).toBeNull();
+    expect(screen.queryByLabelText('Model API key')).toBeNull();
 
     fireEvent.change(await screen.findByLabelText('Legacy run path'), {
       target: { value: '/tmp/legacy-run' },

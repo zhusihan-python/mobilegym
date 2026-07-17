@@ -59,7 +59,7 @@ const SENTINEL = 'sk-sentinel-secret';
 
 describe('Model Compatibility Check', () => {
   beforeEach(() => {
-    window.history.pushState({}, '', '/test-platform/runs');
+    window.history.pushState({}, '', '/test-platform/execution-profiles');
     window.localStorage.clear();
   });
 
@@ -98,6 +98,9 @@ describe('Model Compatibility Check', () => {
       if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
         return jsonResponse({ items: [workflow], next_cursor: null });
       }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
       if (url.pathname === '/api/platform/v1/runs' && method === 'GET') {
         return jsonResponse({ items: [], next_cursor: null });
       }
@@ -115,8 +118,9 @@ describe('Model Compatibility Check', () => {
 
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Launch run' });
-    fireEvent.change(await screen.findByLabelText('Model base URL'), {
+    await screen.findByRole('heading', { name: 'Execution Profiles' });
+    fireEvent.click(await screen.findByRole('button', { name: 'New execution profile' }));
+    fireEvent.change(await screen.findByLabelText('Model endpoint'), {
       target: { value: 'http://provider.invalid/v1' },
     });
     fireEvent.change(await screen.findByLabelText('Model name'), {
@@ -170,6 +174,9 @@ describe('Model Compatibility Check', () => {
       if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
         return jsonResponse({ items: [workflow], next_cursor: null });
       }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
       if (url.pathname === '/api/platform/v1/runs') {
         return jsonResponse({ items: [], next_cursor: null });
       }
@@ -187,8 +194,8 @@ describe('Model Compatibility Check', () => {
 
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Launch run' });
-    fireEvent.change(await screen.findByLabelText('Model base URL'), {
+    fireEvent.click(await screen.findByRole('button', { name: 'New execution profile' }));
+    fireEvent.change(await screen.findByLabelText('Model endpoint'), {
       target: { value: 'http://provider.invalid/v1' },
     });
     fireEvent.change(await screen.findByLabelText('Model name'), {
@@ -213,7 +220,7 @@ describe('Model Compatibility Check', () => {
     expect(window.localStorage.getItem('test-platform.launch.model-api-key')).toBeNull();
   });
 
-  it('hides Test connection for non-generic_v2 agents', async () => {
+  it('keeps compatibility checks scoped to typed generic_v2 drafts', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = requestUrl(input);
       if (url.pathname === '/health/ready') {
@@ -238,6 +245,9 @@ describe('Model Compatibility Check', () => {
       if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
         return jsonResponse({ items: [workflow], next_cursor: null });
       }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
       if (url.pathname === '/api/platform/v1/runs') {
         return jsonResponse({ items: [], next_cursor: null });
       }
@@ -246,13 +256,11 @@ describe('Model Compatibility Check', () => {
 
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Launch run' });
-    fireEvent.change(await screen.findByLabelText('Agent'), {
-      target: { value: 'autoglm' },
-    });
-
-    expect(screen.getByTestId('tp-test-connection-disabled')).toBeTruthy();
-    expect(screen.queryByTestId('tp-test-connection')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'New execution profile' }));
+    const agent = await screen.findByLabelText('Agent') as HTMLSelectElement;
+    expect(agent.value).toBe('generic_v2');
+    expect(agent.disabled).toBe(true);
+    expect(screen.getByTestId('tp-test-connection')).toBeTruthy();
   });
 
   it('does not let a late stale response overwrite a newer result', async () => {
@@ -296,6 +304,9 @@ describe('Model Compatibility Check', () => {
       if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
         return jsonResponse({ items: [workflow], next_cursor: null });
       }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [], next_cursor: null });
+      }
       if (url.pathname === '/api/platform/v1/runs') {
         return jsonResponse({ items: [], next_cursor: null });
       }
@@ -308,8 +319,8 @@ describe('Model Compatibility Check', () => {
 
     render(<App />);
 
-    await screen.findByRole('heading', { name: 'Launch run' });
-    fireEvent.change(await screen.findByLabelText('Model base URL'), {
+    fireEvent.click(await screen.findByRole('button', { name: 'New execution profile' }));
+    fireEvent.change(await screen.findByLabelText('Model endpoint'), {
       target: { value: 'http://provider.invalid/v1' },
     });
     fireEvent.change(await screen.findByLabelText('Model name'), {

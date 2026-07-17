@@ -10,6 +10,10 @@ import type {
 } from '../../api/types';
 import { ExecutionProfileCard } from './components/ExecutionProfileCard';
 import { ExecutionProfileDraftDialog } from './components/ExecutionProfileDraftDialog';
+import {
+  executionProfileDraftFromLegacyPreferences,
+  type LegacyLaunchPreferences,
+} from './legacyLaunchPreferences';
 
 type ProfilesState =
   | { status: 'loading' }
@@ -17,10 +21,22 @@ type ProfilesState =
   | { status: 'error'; message: string };
 
 export function ExecutionProfilesPage() {
-  const { selectedProject } = useOutletContext<{ selectedProject: Project }>();
+  const {
+    selectedProject,
+    legacyLaunchPreferences,
+    onLegacyLaunchPreferencesConsumed,
+  } = useOutletContext<{
+    selectedProject: Project;
+    legacyLaunchPreferences: LegacyLaunchPreferences | null;
+    onLegacyLaunchPreferencesConsumed: () => void;
+  }>();
   const [profiles, setProfiles] = useState<ProfilesState>({ status: 'loading' });
   const [createOpen, setCreateOpen] = useState(false);
+  const [legacyDraftOpen, setLegacyDraftOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const legacyDraft = legacyLaunchPreferences
+    ? executionProfileDraftFromLegacyPreferences(legacyLaunchPreferences)
+    : null;
 
   const loadProfiles = () => {
     setProfiles({ status: 'loading' });
@@ -47,6 +63,12 @@ export function ExecutionProfilesPage() {
       };
     });
     setCreateOpen(false);
+  };
+
+  const handleLegacyDraftCreated = (profile: ExecutionProfile) => {
+    handleCreated(profile);
+    setLegacyDraftOpen(false);
+    onLegacyLaunchPreferencesConsumed();
   };
 
   const handlePublished = (
@@ -119,6 +141,11 @@ export function ExecutionProfilesPage() {
           <button type="button" onClick={() => setCreateOpen(true)}>
             New execution profile
           </button>
+          {legacyLaunchPreferences ? (
+            <button type="button" onClick={() => setLegacyDraftOpen(true)}>
+              Review saved launch preferences
+            </button>
+          ) : null}
         </div>
       </section>
 
@@ -149,6 +176,15 @@ export function ExecutionProfilesPage() {
           projectId={selectedProject.id}
           onSaved={handleCreated}
           onCancel={() => setCreateOpen(false)}
+        />
+      ) : null}
+      {legacyDraftOpen && legacyDraft ? (
+        <ExecutionProfileDraftDialog
+          projectId={selectedProject.id}
+          initialName={legacyDraft.name}
+          initialSpec={legacyDraft.spec}
+          onSaved={handleLegacyDraftCreated}
+          onCancel={() => setLegacyDraftOpen(false)}
         />
       ) : null}
     </>

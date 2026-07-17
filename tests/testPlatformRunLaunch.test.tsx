@@ -688,6 +688,74 @@ describe('Test Platform profile-aware Run Launch', () => {
     });
   });
 
+  it('remembers only the recent Execution Profile Revision identity', async () => {
+    const alternateRevision = {
+      ...profileRevision,
+      id: 'profile-revision-ep09',
+      execution_profile_id: 'profile-ep09',
+      revision_no: 2,
+      public_spec_hash: 'sha256:profile-public-ep09',
+    };
+    const alternateProfile = {
+      ...profile,
+      id: alternateRevision.execution_profile_id,
+      name: 'Reviewed candidate profile',
+      head_revision: alternateRevision,
+    };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'ready' },
+            migrations: { ready: true, message: 'ready' },
+            runs_dir: { ready: true, message: 'ready' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/workflows`) {
+        return jsonResponse({ items: [workflow], next_cursor: null });
+      }
+      if (url.pathname === '/api/platform/v1/targets') {
+        return jsonResponse({ items: [target], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/execution-profiles`) {
+        return jsonResponse({ items: [profile, alternateProfile], next_cursor: null });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    const profileSelect = await screen.findByLabelText(
+      'Execution Profile Revision',
+    ) as HTMLSelectElement;
+    fireEvent.change(profileSelect, { target: { value: alternateRevision.id } });
+
+    expect(
+      window.localStorage.getItem('test-platform.run-launch.recent-profile-revision-id'),
+    ).toBe(alternateRevision.id);
+    const launchPreferenceKeys = Array.from(
+      { length: window.localStorage.length },
+      (_, index) => window.localStorage.key(index),
+    ).filter((key): key is string => Boolean(key?.includes('launch')));
+    expect(launchPreferenceKeys).toEqual([
+      'test-platform.run-launch.recent-profile-revision-id',
+    ]);
+
+    cleanup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Execution Profile Revision') as HTMLSelectElement).value)
+        .toBe(alternateRevision.id);
+    });
+  });
+
   it('previews, creates, reloads, and investigates a Target Comparison', async () => {
     const requests: Array<{ path: string; body?: any }> = [];
     const writeText = vi.fn(async (_value: string) => undefined);

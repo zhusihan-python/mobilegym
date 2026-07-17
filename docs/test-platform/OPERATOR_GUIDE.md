@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Current for the hardening release accepted 2026-07-13 |
-| Release evidence | [`evidence/2026-07-13-tp-h16-release-acceptance.md`](evidence/2026-07-13-tp-h16-release-acceptance.md) |
+| Status | Current through TP-EP09 on 2026-07-17 |
+| Current evidence | [`evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md`](evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md) |
 | Live model required for acceptance | No |
 
 ## Local startup
@@ -27,6 +27,50 @@ python -m test_platform.main
 When exposing the service beyond loopback, also configure a local secret value
 through `TEST_PLATFORM_AUTH_TOKEN`; report exports redact this configured value
 before serialization.
+
+## Normal profile-aware launch
+
+The Console's normal launch path is **Run Launch**. Workflow authoring defines
+tasks, evaluation policy, and Workflow v2 Lane Slots; it does not select a
+Target, Agent, model, endpoint, Image Input Format, or API key.
+
+1. Create and health-check a Target.
+2. Create an Execution Profile draft, review its typed public subject settings,
+   bind any Credential References, and publish an immutable revision.
+3. Publish a Workflow v2 version with the required Lane Slots.
+4. Open **Run Launch**, select the exact published Workflow, Target, and
+   Execution Profile revisions, then preview the resolved Lane Bindings.
+5. Supply any requested secret values transiently and create the Run.
+
+Run Launch creates only profile-aware Run Plan v2 identity. Browser persistence
+for launch is limited to the most recently selected Execution Profile Revision
+ID. Target/model/endpoint/Image Input Format settings, Credential Reference
+payloads, and secret values are not persisted by the launch UI.
+
+## Reviewing deprecated saved launch preferences
+
+On first Console load after this migration, deprecated
+`test-platform.launch.*` browser keys are removed. If the old values contain a
+complete `generic_v2` endpoint, model name, and Image Input Format, the Console
+retains only an in-memory, non-secret copy for the current page session.
+
+Open **Execution Profiles** and choose **Review saved launch preferences** to
+copy that data into a visible new-profile draft. Review and save the draft,
+then bind Credential References and publish through the normal profile
+lifecycle. The migration never copies an API key or Credential Reference
+payload and never publishes automatically. Cancelling or reloading discards the
+one-time in-memory copy.
+
+## Legacy create-run compatibility
+
+The Console no longer exposes loose inline execution launch fields. Supported
+HTTP clients may continue to call `POST /api/platform/v1/runs` during the
+documented compatibility window. That adapter intentionally creates Run Plan
+v1 with **Legacy Execution Identity**; reads and Retry/Resume preserve the same
+identity and never synthesize an Execution Profile Revision.
+
+See [`EXECUTION_PROFILES_COMPATIBILITY.md`](EXECUTION_PROFILES_COMPATIBILITY.md)
+for the supported legacy surface, security boundaries, and exit criteria.
 
 ## Importing a legacy CLI run
 

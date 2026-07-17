@@ -15,7 +15,6 @@ export type PairedConfig = {
 export type BuildWorkflowDefinitionInput = {
   workflowMode: WorkflowMode;
   selectedTaskIds: string[];
-  targetId: string;
   repeatCount: number;
   parallelCount: number;
   processCount: number;
@@ -24,11 +23,8 @@ export type BuildWorkflowDefinitionInput = {
 
 export function canSubmitWorkflow(
   selectedTaskIds: string[],
-  targetId: string,
-  pairedEnabled = false,
 ) {
-  if (pairedEnabled) return selectedTaskIds.length > 0;
-  return selectedTaskIds.length > 0 && Boolean(targetId);
+  return selectedTaskIds.length > 0;
 }
 
 export function workflowDefinitionsEqual(
@@ -44,7 +40,6 @@ export function buildWorkflowDefinition(
   const {
     workflowMode,
     selectedTaskIds,
-    targetId,
     repeatCount,
     parallelCount,
     processCount,
@@ -55,14 +50,14 @@ export function buildWorkflowDefinition(
   const effectiveRepeatCount = isManualSequence ? 1 : repeatCount;
   const effectiveParallelCount = isManualSequence ? 1 : parallelCount;
   const effectiveProcessCount = isManualSequence ? 1 : processCount;
-  const laneConfig = effectivePaired
-    ? {
-        lane_slots: {
+  const laneConfig = {
+    lane_slots: effectivePaired
+      ? {
           baseline: { role: 'baseline' },
           candidate: { role: 'candidate' },
-        },
-      }
-    : { lanes: { candidate: { target_id: targetId } } };
+        }
+      : { candidate: { role: 'candidate' } },
+  };
   const taskSelectionConfig: Record<string, unknown> = {
     task_ids: selectedTaskIds,
     sample_n: 1,
@@ -118,7 +113,7 @@ export function buildWorkflowDefinition(
   }
 
   return {
-    schema_version: effectivePaired ? 2 : 1,
+    schema_version: 2,
     name: 'WeChat smoke',
     nodes,
   };

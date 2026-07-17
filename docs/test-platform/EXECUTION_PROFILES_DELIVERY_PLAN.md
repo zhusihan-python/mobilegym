@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP08 complete; TP-EP09 not started |
+| Status | TP-EP09 complete; TP-EP10 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP08 complete; TP-EP09 and later slices require separate start requests |
+| Implementation authorization | TP-EP00 through TP-EP09 complete; TP-EP10 requires a separate start request |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 through TP-EP08 are also complete; TP-EP09 is not started.
+are complete. TP-EP01 through TP-EP09 are also complete; TP-EP10 is not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 through TP-EP08 are also complete; TP-EP09 is not started.
+complete. TP-EP02 through TP-EP09 are also complete; TP-EP10 is not started.
 
 ### Acceptance criteria
 
@@ -266,8 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 through TP-EP08 are
-also complete; TP-EP09 is not started.
+console preview/create/reload flow are complete. TP-EP03 through TP-EP09 are
+also complete; TP-EP10 is not started.
 
 ### Acceptance criteria
 
@@ -328,8 +328,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
 Private Credential Reference publication, transient request-backed resolution,
 zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
-the credential-ready console flow are complete. TP-EP04 through TP-EP08 are
-also complete; TP-EP09 is not started.
+the credential-ready console flow are complete. TP-EP04 through TP-EP09 are
+also complete; TP-EP10 is not started.
 
 ### Acceptance criteria
 
@@ -392,7 +392,7 @@ Current evidence:
 Active-name uniqueness, optimistic draft/head concurrency, monotonic and
 idempotent publication, redacted revision diff, clone, archive, historical
 discovery, frozen-Run stability, and the complete console lifecycle are done.
-TP-EP05 through TP-EP08 are also complete; TP-EP09 is not started.
+TP-EP05 through TP-EP09 are also complete; TP-EP10 is not started.
 
 ### Acceptance criteria
 
@@ -453,7 +453,7 @@ Current evidence:
 Target-free paired Lane Slots, exact same-profile Target Comparison bindings,
 advisory/authoritative constraints, shared Prepared Episodes, deduplicated
 preflight, deterministic paired execution, reload identity, and Console launch
-are complete. TP-EP06 through TP-EP08 are also complete; TP-EP09 is not started.
+are complete. TP-EP06 through TP-EP09 are also complete; TP-EP10 is not started.
 
 ### Acceptance criteria
 
@@ -686,7 +686,7 @@ Current evidence:
 [`evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md`](evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md).
 Report schema v3, selected-Attempt profile-aware provenance, strict promotion,
 historical Legacy strictness, immutable list/detail identity, and canonical test
-inventory evidence are complete. TP-EP09 is not started.
+inventory evidence are complete. TP-EP09 is complete.
 
 ## TP-EP09: Complete console migration and legacy compatibility
 
@@ -700,19 +700,19 @@ new profile draft.
 
 ### Acceptance criteria
 
-- [ ] Workflow authoring no longer owns Agent/model/base URL/Image Input Format
+- [x] Workflow authoring no longer owns Agent/model/base URL/Image Input Format
       or raw API-key launch state.
-- [ ] The normal console flow selects exact published Target and Execution
+- [x] The normal console flow selects exact published Target and Execution
       Profile revisions through Run Launch.
-- [ ] Browser persistence stores at most recent identity preference and no raw
+- [x] Browser persistence stores at most recent identity preference and no raw
       subject settings, Credential Reference payload, or secret value.
-- [ ] Existing non-secret launch preferences can be copied into a visible draft
+- [x] Existing non-secret launch preferences can be copied into a visible draft
       only after explicit user action and review; no automatic publication occurs.
-- [ ] The legacy create-run contract continues to create/read/follow up Legacy
+- [x] The legacy create-run contract continues to create/read/follow up Legacy
       Execution Identity during the documented compatibility window.
-- [ ] Legacy import, report, baseline, replay, and incident views never display a
+- [x] Legacy import, report, baseline, replay, and incident views never display a
       synthetic profile.
-- [ ] Operator and compatibility documentation names the new path, legacy path,
+- [x] Operator and compatibility documentation names the new path, legacy path,
       security limits, and future exit criteria.
 
 ### Test seam
@@ -743,6 +743,13 @@ npx vitest run --config vitest.platform.config.ts \
   tests/testPlatformRunLaunch.test.tsx \
   tests/testPlatformImportedRuns.test.tsx
 ```
+
+Current evidence:
+[`evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md`](evidence/2026-07-17-tp-ep09-console-migration-legacy-compatibility.md).
+Workflow v2-only authoring, dedicated exact-revision Run Launch, identity-only
+browser persistence, explicit reviewed preference conversion, Legacy HTTP
+create/read/follow-up characterization, and compatibility-window documentation
+are complete. TP-EP10 is not started.
 
 ## TP-EP10: Close the Execution Profiles release
 
@@ -813,8 +820,7 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP08 were implemented
-only after their separate explicit start requests. TP-EP06 was separately
-authorized and completed on 2026-07-17. TP-EP07 and TP-EP08 were separately
-authorized and completed on 2026-07-17; TP-EP09 and later slices still require
-their own explicit start requests.
+No external issue has been published. TP-EP00 through TP-EP09 were implemented
+only after their separate explicit start requests. TP-EP06 through TP-EP09 were
+separately authorized and completed on 2026-07-17; TP-EP10 still requires its
+own explicit start request.
