@@ -11,6 +11,11 @@ from test_platform.execution.event_writer import EventWriter
 from test_platform.services.completion import RunCompletionPipeline
 from test_platform.services.execution import SerialRunExecutor
 from test_platform.tests.integration.test_report_input import _seed_reportable_paired_run
+from test_platform.tests.integration.test_execution_profile_followup import (
+    _launch_completed_execution_comparison,
+    _launch_credential_bound_execution_comparison,
+    _profile_aware_app,
+)
 from test_platform.tests.integration.test_serial_run_execution import (
     _ExecutableFakeEnv,
     _ExecutableTaskFactory,
@@ -78,6 +83,60 @@ def _write_monitor_csv(database, run_id: str) -> str:
     return artifact_root
 
 
+def test_profile_aware_report_exposes_frozen_lane_and_attempt_provenance(tmp_path):
+    app = _profile_aware_app(tmp_path)
+
+    with TestClient(app) as client:
+        run = _launch_credential_bound_execution_comparison(
+            client,
+            idempotency_key="tp-ep08-report-provenance",
+        )
+
+        response = client.get(f"/api/platform/v1/runs/{run['id']}/report")
+        exported = client.get(
+            f"/api/platform/v1/runs/{run['id']}/report/export"
+        )
+
+    assert response.status_code == 200
+    report = response.json()
+    lane_bindings = {
+        binding["lane_slot"]: binding
+        for binding in run["execution_identity"]["lane_bindings"]
+    }
+    completed_attempt = run["run_attempts"][-1]
+    assert report["schema_version"] == 3
+    assert report["run_attempt_id"] == completed_attempt["id"]
+    assert report["provenance"]["execution_identity"] == run["execution_identity"]
+    assert report["provenance"]["target_revision_ids"] == {
+        lane_key: binding["target_revision_id"]
+        for lane_key, binding in lane_bindings.items()
+    }
+    assert report["provenance"]["execution_profile_revision_ids"] == {
+        lane_key: binding["execution_profile_revision_id"]
+        for lane_key, binding in lane_bindings.items()
+    }
+    assert report["provenance"]["execution_profile_revision_hashes"] == {
+        lane_key: binding["execution_profile_revision_hash"]
+        for lane_key, binding in lane_bindings.items()
+    }
+    assert report["provenance"]["lane_fingerprints"] == {
+        lane_key: binding["lane_fingerprint"]
+        for lane_key, binding in lane_bindings.items()
+    }
+    assert report["provenance"]["completed_run_attempt"] == {
+        "id": completed_attempt["id"],
+        "attempt_no": completed_attempt["attempt_no"],
+        "reason": completed_attempt["reason"],
+        "compatibility_preflight": completed_attempt["compatibility"],
+    }
+    assert exported.status_code == 200
+    assert exported.json() == report
+    assert "sk-tp-ep07-transient" not in response.text
+    assert "request://transient/candidate-model-key" not in response.text
+    assert "sk-tp-ep07-transient" not in exported.text
+    assert "request://transient/candidate-model-key" not in exported.text
+
+
 def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
     app = create_app(_settings(tmp_path))
 
@@ -129,7 +188,11 @@ def test_reports_api_builds_exports_and_promotes_baseline(tmp_path):
         assert [
             reason["code"]
             for reason in promoted.json()["error"]["details"][0]["reasons"]
-        ] == ["SELECTED_LANE_INCOMPLETE", "SELECTED_LANE_OUTCOME_NOT_PASS"]
+        ] == [
+            "PROFILE_AWARE_STRICT_PROVENANCE_REQUIRED",
+            "SELECTED_LANE_INCOMPLETE",
+            "SELECTED_LANE_OUTCOME_NOT_PASS",
+        ]
 
 
 def test_report_rejects_unknown_run_plan_schema_without_persisting_report(tmp_path):
@@ -222,11 +285,14 @@ def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
         )
 
         assert baseline_eligibility.status_code == 200
-        assert baseline_eligibility.json()["eligible"] is True
-        assert baseline_eligibility.json()["reasons"] == []
+        assert baseline_eligibility.json()["eligible"] is False
+        assert [
+            reason["code"] for reason in baseline_eligibility.json()["reasons"]
+        ] == ["PROFILE_AWARE_STRICT_PROVENANCE_REQUIRED"]
         assert candidate_eligibility.status_code == 200
         assert candidate_eligibility.json()["eligible"] is False
         assert [reason["code"] for reason in candidate_eligibility.json()["reasons"]] == [
+            "PROFILE_AWARE_STRICT_PROVENANCE_REQUIRED",
             "SELECTED_LANE_OUTCOME_NOT_PASS"
         ]
         assert candidate_eligibility.json()["counts"] == {
@@ -238,7 +304,7 @@ def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
             "incomplete": 0,
         }
 
-        promoted = client.post(
+        rejected_baseline = client.post(
             f"/api/platform/v1/runs/{run_id}/baseline",
             json={"display_name": "Healthy baseline", "lane_key": "baseline"},
         )
@@ -247,11 +313,21 @@ def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
             json={"display_name": "Rejected candidate", "lane_key": "candidate"},
         )
 
-        assert promoted.status_code == 201
-        assert promoted.json()["lane_key"] == "baseline"
+        assert rejected_baseline.status_code == 409
+        assert rejected_baseline.json()["error"]["code"] == (
+            "BASELINE_PROMOTION_INELIGIBLE"
+        )
         assert rejected.status_code == 409
         assert rejected.json()["error"]["code"] == "BASELINE_PROMOTION_INELIGIBLE"
         assert rejected.json()["error"]["details"][0]["reasons"] == [
+            {
+                "code": "PROFILE_AWARE_STRICT_PROVENANCE_REQUIRED",
+                "message": (
+                    "Only a profile-aware report can be promoted to a new strict "
+                    "baseline."
+                ),
+                "details": {"report_schema_version": 2},
+            },
             {
                 "code": "SELECTED_LANE_OUTCOME_NOT_PASS",
                 "message": "Every selected-lane episode must have outcome PASS.",
@@ -261,28 +337,24 @@ def test_baseline_eligibility_is_strict_for_the_selected_lane(tmp_path):
 
 
 def test_named_baselines_are_discoverable_archivable_and_reusable(tmp_path):
-    app = create_app(_settings(tmp_path))
+    app = _profile_aware_app(tmp_path)
 
     with TestClient(app) as client:
-        database = client.app.state.database
-        run_id = _make_completed_reportable_run(client)
-        database.connection.execute(
-            "UPDATE episode_attempts SET outcome = 'PASS' WHERE id = 'ea_base_ep0'"
-        )
-        database.connection.execute(
-            """
-            INSERT INTO episode_attempts (
-              id, episode_id, lane_attempt_id, attempt_no, state, outcome,
-              error_code, result_json, artifact_root, started_at, ended_at, created_at
+        run, _target_revision, _profile_revisions = (
+            _launch_completed_execution_comparison(
+                client,
+                idempotency_key="tp-ep08-named-baseline-lifecycle",
             )
-            VALUES ('ea_base_ep1', 'ep1', 'attempt3_baseline', 1, 'completed',
-                    'PASS', NULL, '{"is_success":true}', 'artifacts/base1',
-                    '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:01.000Z',
-                    '2026-07-13T00:00:01.000Z')
-            """
         )
-        database.connection.commit()
+        run_id = run["id"]
         report = client.get(f"/api/platform/v1/runs/{run_id}/report").json()
+        selected_binding = next(
+            binding
+            for binding in report["provenance"]["execution_identity"][
+                "lane_bindings"
+            ]
+            if binding["lane_slot"] == "baseline"
+        )
 
         promoted = client.post(
             f"/api/platform/v1/runs/{run_id}/baseline",
@@ -291,20 +363,30 @@ def test_named_baselines_are_discoverable_archivable_and_reusable(tmp_path):
 
         assert promoted.status_code == 201
         baseline = promoted.json()
-        assert baseline == {
-            "id": baseline["id"],
-            "display_name": "Release baseline",
-            "project_id": "proj1",
-            "source_run_id": run_id,
-            "source_run_name": "VS-11 run",
-            "lane_key": "baseline",
-            "target_revision_id": "trev_base",
-            "workflow_version_id": "wv1",
-            "report_id": report["id"],
-            "report_schema_version": 2,
-            "created_at": baseline["created_at"],
-            "archived_at": None,
+        assert baseline["display_name"] == "Release baseline"
+        assert baseline["project_id"] == run["project_id"]
+        assert baseline["source_run_id"] == run_id
+        assert baseline["source_run_name"] == run["name"]
+        assert baseline["lane_key"] == "baseline"
+        assert baseline["target_revision_id"] == selected_binding[
+            "target_revision_id"
+        ]
+        assert baseline["workflow_version_id"] == run["workflow_version_id"]
+        assert baseline["report_id"] == report["id"]
+        assert baseline["report_schema_version"] == 3
+        assert baseline["strict_provenance"] == {
+            "kind": "profile_aware",
+            "version": 1,
+            "execution_profile_revision_id": selected_binding[
+                "execution_profile_revision_id"
+            ],
+            "execution_profile_revision_hash": selected_binding[
+                "execution_profile_revision_hash"
+            ],
+            "lane_fingerprint": selected_binding["lane_fingerprint"],
+            "run_attempt_id": report["run_attempt_id"],
         }
+        assert baseline["archived_at"] is None
 
         duplicate = client.post(
             f"/api/platform/v1/runs/{run_id}/baseline",
@@ -319,14 +401,16 @@ def test_named_baselines_are_discoverable_archivable_and_reusable(tmp_path):
             "message": "An active baseline with this name already exists in the project.",
             "details": [
                 {
-                    "project_id": "proj1",
+                    "project_id": run["project_id"],
                     "display_name": "release baseline",
                     "conflicting_baseline_id": baseline["id"],
                 }
             ],
         }
 
-        listed = client.get("/api/platform/v1/projects/proj1/baselines")
+        listed = client.get(
+            f"/api/platform/v1/projects/{run['project_id']}/baselines"
+        )
         assert listed.status_code == 200
         assert listed.json() == {"items": [baseline], "next_cursor": None}
 
@@ -339,33 +423,25 @@ def test_named_baselines_are_discoverable_archivable_and_reusable(tmp_path):
         assert detail["source_report"] == {
             "id": report["id"],
             "run_id": run_id,
-            "run_attempt_id": "attempt3",
-            "schema_version": 2,
+            "run_attempt_id": report["run_attempt_id"],
+            "schema_version": 3,
             "href": f"/api/platform/v1/reports/{report['id']}",
         }
+        assert detail["compatibility_preflight"] == [
+            check
+            for check in report["provenance"]["completed_run_attempt"][
+                "compatibility_preflight"
+            ]
+            if "baseline" in check["lane_keys"]
+        ]
         immutable_report = client.get(detail["source_report"]["href"])
         assert immutable_report.status_code == 200
         assert immutable_report.json()["id"] == report["id"]
-        assert detail["replays"] == [
-            {
-                "episode_key": "fake.Task::0",
-                "episode_attempt_id": "ea_base_ep0",
-                "run_attempt_no": 3,
-                "href": (
-                    f"/api/platform/v1/runs/{run_id}/episodes/fake.Task%3A%3A0/replay"
-                    "?lane_key=baseline&attempt_no=3"
-                ),
-            },
-            {
-                "episode_key": "fake.Task::1",
-                "episode_attempt_id": "ea_base_ep1",
-                "run_attempt_no": 3,
-                "href": (
-                    f"/api/platform/v1/runs/{run_id}/episodes/fake.Task%3A%3A1/replay"
-                    "?lane_key=baseline&attempt_no=3"
-                ),
-            },
-        ]
+        assert len(detail["replays"]) == 1
+        assert detail["replays"][0]["episode_key"] == run[
+            "episode_identities"
+        ][0]["episode_key"]
+        assert detail["replays"][0]["run_attempt_no"] == 1
 
         archived_response = client.post(
             f"/api/platform/v1/baselines/{baseline['id']}/archive"
@@ -374,7 +450,9 @@ def test_named_baselines_are_discoverable_archivable_and_reusable(tmp_path):
         archived = archived_response.json()
         assert archived["id"] == baseline["id"]
         assert archived["archived_at"] is not None
-        assert client.get("/api/platform/v1/projects/proj1/baselines").json() == {
+        assert client.get(
+            f"/api/platform/v1/projects/{run['project_id']}/baselines"
+        ).json() == {
             "items": [],
             "next_cursor": None,
         }

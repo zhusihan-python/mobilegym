@@ -87,6 +87,7 @@ def test_database_initialization_creates_minimum_schema_and_migration_record(tmp
         (18, "0018_execution_profile_credentials.sql"),
         (19, "0019_execution_profile_draft_version.sql"),
         (20, "0020_execution_profile_active_names.sql"),
+        (21, "0021_profile_aware_report_baselines.sql"),
     ]
 
 
@@ -451,6 +452,7 @@ def test_database_initialization_is_idempotent(tmp_path):
         (18, "0018_execution_profile_credentials.sql"),
         (19, "0019_execution_profile_draft_version.sql"),
         (20, "0020_execution_profile_active_names.sql"),
+        (21, "0021_profile_aware_report_baselines.sql"),
     ]
 
 
@@ -560,10 +562,15 @@ def test_baseline_catalog_migration_upgrades_legacy_rows_and_releases_archived_n
             )
             assert legacy_summary["display_name"] == "Legacy baseline legacy-a"
             assert legacy_summary["archived_at"] == "2026-07-13T00:02:00.000Z"
+            assert legacy_summary["strict_provenance"] == {
+                "kind": "legacy",
+                "version": None,
+            }
 
             detail = client.get("/api/platform/v1/baselines/legacy-a")
             assert detail.status_code == 200
             assert detail.json()["baseline"] == legacy_summary
+            assert detail.json()["compatibility_preflight"] == []
             assert detail.json()["source_report"] == {
                 "id": "report1",
                 "run_id": "r1",

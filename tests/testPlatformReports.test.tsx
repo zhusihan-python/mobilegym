@@ -274,6 +274,7 @@ const baseline: Baseline = {
   source_run_name: run.name,
   lane_key: 'baseline',
   target_revision_id: 'rev-b',
+  strict_provenance: { kind: 'legacy', version: null },
   workflow_version_id: 'wv1',
   report_id: report.id,
   report_schema_version: 2,
@@ -290,6 +291,7 @@ const baselineDetail: BaselineDetail = {
     schema_version: report.schema_version,
     href: `/api/platform/v1/reports/${report.id}`,
   },
+  compatibility_preflight: [],
   replays: [
     {
       episode_key: 'task.alpha|i0',
@@ -298,6 +300,43 @@ const baselineDetail: BaselineDetail = {
       href: `/api/platform/v1/runs/${run.id}/episodes/task.alpha%7Ci0/replay?lane_key=baseline&attempt_no=1`,
     },
   ],
+};
+
+const profileAwareBaseline: Baseline = {
+  ...baseline,
+  id: 'baseline-profile-aware',
+  display_name: 'Profile-aware baseline',
+  report_schema_version: 3,
+  strict_provenance: {
+    kind: 'profile_aware',
+    version: 1,
+    execution_profile_revision_id: 'profile-revision-exact',
+    execution_profile_revision_hash: 'sha256:profile-revision-exact',
+    lane_fingerprint: 'sha256:lane-exact',
+    run_attempt_id: 'attempt-profile-aware',
+  },
+};
+
+const profileAwareBaselineDetail: BaselineDetail = {
+  ...baselineDetail,
+  baseline: profileAwareBaseline,
+  source_report: {
+    ...baselineDetail.source_report,
+    id: 'report-profile-aware',
+    run_attempt_id: 'attempt-profile-aware',
+    schema_version: 3,
+    href: '/api/platform/v1/reports/report-profile-aware',
+  },
+  compatibility_preflight: [{
+    outcome: 'passed',
+    code: 'COMPATIBLE',
+    explanation: 'Compatible.',
+    latency_ms: 4,
+    cached: false,
+    checked_model: 'frozen-model',
+    checked_image_format: 'data_url',
+    lane_keys: ['baseline'],
+  }],
 };
 
 const manualRun: RunDetail = {
@@ -814,6 +853,57 @@ describe('Test Platform reports UI', () => {
       );
     });
     expect(await screen.findByText('Promoted Release baseline.')).toBeTruthy();
+  });
+
+  it('distinguishes profile-aware and legacy strict baseline provenance', async () => {
+    window.history.pushState({}, '', '/test-platform/baselines');
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.pathname === '/health/ready') {
+        return jsonResponse({
+          ready: true,
+          checks: {
+            database: { ready: true, message: 'SQLite database is ready.' },
+            migrations: { ready: true, message: 'All migrations applied.' },
+            runs_dir: { ready: true, message: 'Runs directory is writable.' },
+          },
+        });
+      }
+      if (url.pathname === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (url.pathname === `/api/platform/v1/projects/${project.id}/baselines`) {
+        return jsonResponse({
+          items: [profileAwareBaseline, baseline],
+          next_cursor: null,
+        });
+      }
+      if (url.pathname === `/api/platform/v1/baselines/${profileAwareBaseline.id}`) {
+        return jsonResponse(profileAwareBaselineDetail);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
+    }));
+
+    render(<App />);
+
+    const catalog = await screen.findByTestId('tp-baselines-list');
+    expect(catalog.textContent).toContain('Profile-aware strictness v1');
+    expect(catalog.textContent).toContain('profile-revision-exact');
+    expect(catalog.textContent).toContain('Legacy strictness');
+
+    fireEvent.click(
+      screen.getByRole('link', { name: profileAwareBaseline.display_name }),
+    );
+
+    const detail = await screen.findByRole('heading', {
+      name: profileAwareBaseline.display_name,
+    });
+    const detailPanel = detail.closest('section');
+    expect(detailPanel?.textContent).toContain('Profile-aware strictness v1');
+    expect(detailPanel?.textContent).toContain('profile-revision-exact');
+    expect(detailPanel?.textContent).toContain('sha256:profile-revision-exact');
+    expect(detailPanel?.textContent).toContain('sha256:lane-exact');
+    expect(detailPanel?.textContent).toContain('attempt-profile-aware');
   });
 
   it('groups manual sequence report items under the ordered sequence', async () => {

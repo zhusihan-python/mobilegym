@@ -1049,6 +1049,38 @@ function ReportPanel({ run, report }: { run: RunDetail; report: ReportState }) {
         </div>
       </div>
 
+      {data.provenance.execution_identity?.kind === 'profile_aware' ? (
+        <div data-testid="tp-report-provenance">
+          <h3>Frozen report Lane provenance</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Lane</th>
+                <th>Target Revision</th>
+                <th>Execution Profile Revision</th>
+                <th>Revision hash</th>
+                <th>Lane fingerprint</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.provenance.execution_identity.lane_bindings.map((binding) => (
+                <tr key={binding.lane_slot}>
+                  <td>{binding.lane_slot}</td>
+                  <td className="tp-mono">{binding.target_revision_id}</td>
+                  <td>
+                    {binding.execution_profile_name} v{binding.execution_profile_revision_no}
+                    {' · '}
+                    <span className="tp-mono">{binding.execution_profile_revision_id}</span>
+                  </td>
+                  <td className="tp-mono">{binding.execution_profile_revision_hash}</td>
+                  <td className="tp-mono">{binding.lane_fingerprint}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
       <div data-testid="tp-baseline-eligibility">
         {eligibility.status === 'loading' ? <p>Checking strict baseline eligibility...</p> : null}
         {eligibility.status === 'error' ? <p>{eligibility.message}</p> : null}

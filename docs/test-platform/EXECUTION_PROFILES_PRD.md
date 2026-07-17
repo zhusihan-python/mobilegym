@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted; delivery complete through TP-EP07 on 2026-07-17 |
+| Status | Accepted; delivery complete through TP-EP08 on 2026-07-17 |
 | Product phase | Post-hardening product expansion |
 | Backlog source | [`PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes`](PRODUCT_BACKLOG.md#tp-future-01-versioned-execution-profiles-and-execution-aware-lanes) |
 | Parent requirements | [`PRD.md`](PRD.md) |
 | Architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Approved delivery plan | [`EXECUTION_PROFILES_DELIVERY_PLAN.md`](EXECUTION_PROFILES_DELIVERY_PLAN.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
-| Implementation authorization | TP-EP00 through TP-EP07 complete; later slices require separate authorization |
-| Current evidence | [`evidence/2026-07-17-tp-ep07-profile-aware-followups.md`](evidence/2026-07-17-tp-ep07-profile-aware-followups.md) |
+| Implementation authorization | TP-EP00 through TP-EP08 complete; later slices require separate authorization |
+| Current evidence | [`evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md`](evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md) |
 
 ## 1. Summary
 
@@ -296,15 +296,15 @@ identity from loose Agent/model fields.
       Target Revisions.
 - [x] A comparison that varies both axes is rejected before Run creation with
       structured violations.
-- [ ] Publishing, reading, launching, reporting, copying incident links, and
+- [x] Publishing, reading, launching, reporting, copying incident links, and
       exporting never expose raw secret values or sensitive secret paths.
 - [x] Compatible, incompatible, missing-secret, stale-preview, archived-profile,
       and cross-project cases have deterministic state and error outcomes.
 - [x] Retry and Resume reuse exact original Lane Bindings after a newer profile
       revision is published.
-- [ ] Profile-aware reports and Strict Baselines show complete selected-Lane
+- [x] Profile-aware reports and Strict Baselines show complete selected-Lane
       profile provenance.
-- [ ] Existing Workflow v1, Run Plan v1, report, baseline, and Retry/Resume
+- [x] Existing Workflow v1, Run Plan v1, report, baseline, and Retry/Resume
       behavior remains readable and mechanically verified.
 - [ ] Deterministic browser smoke covers profile creation/publication, Single
       launch, Execution Comparison, revision display, reload, and immutable

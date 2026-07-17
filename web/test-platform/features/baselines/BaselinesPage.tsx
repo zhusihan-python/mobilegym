@@ -65,6 +65,8 @@ export function BaselinesPage() {
             <th>Source run</th>
             <th>Lane</th>
             <th>Target revision</th>
+            <th>Execution Profile Revision</th>
+            <th>Strictness</th>
             <th>Workflow version</th>
             <th>Report version</th>
             <th>Created</th>
@@ -77,6 +79,12 @@ export function BaselinesPage() {
               <td>{baseline.source_run_name ?? baseline.source_run_id}</td>
               <td>{baseline.lane_key}</td>
               <td className="tp-mono">{baseline.target_revision_id}</td>
+              <td className="tp-mono">
+                {baseline.strict_provenance.kind === 'profile_aware'
+                  ? baseline.strict_provenance.execution_profile_revision_id
+                  : 'Legacy Execution Identity'}
+              </td>
+              <td>{strictnessLabel(baseline)}</td>
               <td className="tp-mono">{baseline.workflow_version_id}</td>
               <td>v{baseline.report_schema_version}</td>
               <td>{baseline.created_at}</td>
@@ -169,6 +177,31 @@ export function BaselineDetailPage() {
         <dl className="tp-run-facts">
           <div><dt>Selected lane</dt><dd>{baseline.lane_key}</dd></div>
           <div><dt>Target revision</dt><dd className="tp-mono">{baseline.target_revision_id}</dd></div>
+          <div><dt>Strictness</dt><dd>{strictnessLabel(baseline)}</dd></div>
+          {baseline.strict_provenance.kind === 'profile_aware' ? (
+            <>
+              <div>
+                <dt>Execution Profile Revision</dt>
+                <dd className="tp-mono">
+                  {baseline.strict_provenance.execution_profile_revision_id}
+                </dd>
+              </div>
+              <div>
+                <dt>Execution Profile revision hash</dt>
+                <dd className="tp-mono">
+                  {baseline.strict_provenance.execution_profile_revision_hash}
+                </dd>
+              </div>
+              <div>
+                <dt>Lane fingerprint</dt>
+                <dd className="tp-mono">{baseline.strict_provenance.lane_fingerprint}</dd>
+              </div>
+              <div>
+                <dt>Run attempt</dt>
+                <dd className="tp-mono">{baseline.strict_provenance.run_attempt_id}</dd>
+              </div>
+            </>
+          ) : null}
           <div><dt>Workflow version</dt><dd className="tp-mono">{baseline.workflow_version_id}</dd></div>
           <div><dt>Report version</dt><dd>v{baseline.report_schema_version}</dd></div>
           <div><dt>Created</dt><dd>{baseline.created_at}</dd></div>
@@ -201,4 +234,10 @@ export function BaselineDetailPage() {
       </section>
     </>
   );
+}
+
+function strictnessLabel(baseline: Baseline) {
+  return baseline.strict_provenance.kind === 'profile_aware'
+    ? `Profile-aware strictness v${baseline.strict_provenance.version}`
+    : 'Legacy strictness';
 }

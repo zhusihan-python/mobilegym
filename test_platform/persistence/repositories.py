@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable
 from collections import Counter
+from dataclasses import asdict
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -50,6 +51,7 @@ from test_platform.domain.reports.input import ReportInput
 from test_platform.domain.reports.performance import build_performance_report
 from test_platform.domain.reports.reliability import build_reliability_report
 from test_platform.domain.reports.sequence import build_sequence_report
+from test_platform.domain.run_plans import RunPlanV2
 from test_platform.domain.runs import RunDetail, RunDomainError, RunNotFound, RunSummary
 from test_platform.domain.versioned_documents import (
     execution_identity_for_run_plan,
@@ -1264,7 +1266,7 @@ class ReportInputRepository:
         run_attempt = self.database.connection.execute(
             f"""
             SELECT id, run_id, attempt_no, reason, state, started_at, ended_at,
-                   error_code, created_at
+                   error_code, compatibility_json, created_at
             FROM run_attempts
             WHERE run_id = ?
               AND state IN ({placeholders})
@@ -1305,6 +1307,34 @@ class ReportInputRepository:
                 lane["lane_key"]: lane["target_revision_id"] for lane in lanes
             },
         }
+        if isinstance(run_plan, RunPlanV2):
+            execution_identity = asdict(execution_identity_for_run_plan(run_plan))
+            provenance.update(
+                {
+                    "execution_identity": execution_identity,
+                    "execution_profile_revision_ids": {
+                        lane["lane_key"]: lane["execution_profile_revision_id"]
+                        for lane in lanes
+                    },
+                    "execution_profile_revision_hashes": {
+                        lane["lane_key"]: lane["execution_profile_revision_hash"]
+                        for lane in lanes
+                    },
+                    "lane_fingerprints": {
+                        lane["lane_key"]: lane["lane_fingerprint"] for lane in lanes
+                    },
+                    "completed_run_attempt": {
+                        "id": run_attempt_id,
+                        "attempt_no": int(run_attempt["attempt_no"]),
+                        "reason": str(run_attempt["reason"]),
+                        "compatibility_preflight": (
+                            json.loads(run_attempt["compatibility_json"])
+                            if run_attempt["compatibility_json"]
+                            else []
+                        ),
+                    },
+                }
+            )
         imported = _imported_metadata(run_plan_payload)
         if imported is not None:
             provenance["imported"] = imported
@@ -1376,7 +1406,10 @@ class ReportInputRepository:
         rows = self.database.connection.execute(
             """
             SELECT l.id AS lane_id, l.lane_key, l.role, l.target_id,
-                   l.target_revision_id, la.id AS lane_attempt_id,
+                   l.target_revision_id, l.execution_profile_revision_id,
+                   l.execution_profile_revision_hash,
+                   l.reproducibility_fingerprint AS lane_fingerprint,
+                   la.id AS lane_attempt_id,
                    la.artifact_root AS lane_attempt_artifact_root,
                    la.run_attempt_id AS lane_run_attempt_id,
                    la.state AS lane_attempt_state
@@ -1395,6 +1428,13 @@ class ReportInputRepository:
                 "role": str(row["role"]),
                 "target_id": str(row["target_id"]),
                 "target_revision_id": str(row["target_revision_id"]),
+                "execution_profile_revision_id": row[
+                    "execution_profile_revision_id"
+                ],
+                "execution_profile_revision_hash": row[
+                    "execution_profile_revision_hash"
+                ],
+                "lane_fingerprint": str(row["lane_fingerprint"]),
                 "lane_attempt_id": (
                     str(row["lane_attempt_id"])
                     if row["lane_attempt_id"] is not None
@@ -1846,18 +1886,24 @@ class ReportRepository:
         return report
 
     def _find_existing(self, report_input: ReportInput) -> dict[str, Any] | None:
+        schema_version = _report_schema_version(report_input)
         row = self.database.connection.execute(
             """
             SELECT report_json
             FROM reports
             WHERE run_id = ?
               AND run_attempt_id = ?
-              AND schema_version = 2
+              AND schema_version = ?
               AND input_hash = ?
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
-            (report_input.run_id, report_input.run_attempt_id, report_input.input_hash),
+            (
+                report_input.run_id,
+                report_input.run_attempt_id,
+                schema_version,
+                report_input.input_hash,
+            ),
         ).fetchone()
         return json.loads(row["report_json"]) if row is not None else None
 
@@ -2777,7 +2823,15 @@ class BaselineRepository:
                 details=[eligibility],
             )
 
-        report = ReportRepository(self.database).get(run_id)
+        report_id = eligibility.get("report_id")
+        if not isinstance(report_id, str) or not report_id:
+            raise RunDomainError(
+                "BASELINE_REPORT_NOT_FOUND",
+                "The eligible report could not be identified.",
+                status_code=409,
+                details=[{"run_id": run_id}],
+            )
+        report = ReportRepository(self.database).get_by_id(report_id)
         provenance = report["provenance"]
         target_revision_ids = provenance.get("target_revision_ids") or {}
         selected_lane_key = eligibility["lane_key"]
@@ -2787,6 +2841,30 @@ class BaselineRepository:
                 "BASELINE_LANE_NOT_FOUND",
                 "The requested lane is not present in the report provenance.",
                 status_code=400,
+                details=[{"run_id": run_id, "lane_key": selected_lane_key}],
+            )
+
+        execution_identity = provenance.get("execution_identity") or {}
+        lane_bindings = execution_identity.get("lane_bindings") or []
+        selected_binding = next(
+            (
+                binding
+                for binding in lane_bindings
+                if binding.get("lane_slot") == selected_lane_key
+            ),
+            None,
+        )
+        completed_run_attempt = provenance.get("completed_run_attempt") or {}
+        compatibility_preflight = [
+            check
+            for check in completed_run_attempt.get("compatibility_preflight") or []
+            if selected_lane_key in (check.get("lane_keys") or [])
+        ]
+        if selected_binding is None:
+            raise RunDomainError(
+                "BASELINE_PROFILE_PROVENANCE_MISSING",
+                "The selected Lane has no profile-aware execution provenance.",
+                status_code=409,
                 details=[{"run_id": run_id, "lane_key": selected_lane_key}],
             )
 
@@ -2803,6 +2881,16 @@ class BaselineRepository:
             "target_revision_ids": target_revision_ids,
             "lane_key": selected_lane_key,
             "target_revision_id": target_revision_id,
+            "strictness_version": 1,
+            "execution_profile_revision_id": selected_binding[
+                "execution_profile_revision_id"
+            ],
+            "execution_profile_revision_hash": selected_binding[
+                "execution_profile_revision_hash"
+            ],
+            "lane_fingerprint": selected_binding["lane_fingerprint"],
+            "source_run_attempt_id": completed_run_attempt["id"],
+            "compatibility_preflight": compatibility_preflight,
             "display_name": cleaned_name,
             "name_key": name_key,
             "archived_at": None,
@@ -2814,10 +2902,13 @@ class BaselineRepository:
                 INSERT INTO baselines (
                   id, report_id, run_id, project_id, workflow_version_id,
                   run_plan_hash, task_source_digest, target_revision_ids_json,
-                  lane_key, target_revision_id, display_name, name_key,
-                  archived_at, created_at
+                  lane_key, target_revision_id, strictness_version,
+                  execution_profile_revision_id,
+                  execution_profile_revision_hash, lane_fingerprint,
+                  source_run_attempt_id, compatibility_preflight_json,
+                  display_name, name_key, archived_at, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     baseline_id,
@@ -2830,6 +2921,12 @@ class BaselineRepository:
                     canonical_json(target_revision_ids),
                     selected_lane_key,
                     target_revision_id,
+                    row["strictness_version"],
+                    row["execution_profile_revision_id"],
+                    row["execution_profile_revision_hash"],
+                    row["lane_fingerprint"],
+                    row["source_run_attempt_id"],
+                    canonical_json(row["compatibility_preflight"]),
                     cleaned_name,
                     name_key,
                     None,
@@ -2874,6 +2971,9 @@ class BaselineRepository:
             f"""
             SELECT b.id, b.display_name, b.project_id, b.run_id, r.name AS run_name,
                    b.lane_key, b.target_revision_id, b.workflow_version_id,
+                   b.strictness_version, b.execution_profile_revision_id,
+                   b.execution_profile_revision_hash, b.lane_fingerprint,
+                   b.source_run_attempt_id,
                    b.report_id, reports.schema_version AS report_schema_version,
                    b.created_at, b.archived_at
             FROM baselines AS b
@@ -2891,6 +2991,9 @@ class BaselineRepository:
             """
             SELECT b.id, b.display_name, b.project_id, b.run_id, r.name AS run_name,
                    b.lane_key, b.target_revision_id, b.workflow_version_id,
+                   b.strictness_version, b.execution_profile_revision_id,
+                   b.execution_profile_revision_hash, b.lane_fingerprint,
+                   b.source_run_attempt_id,
                    b.report_id, reports.schema_version AS report_schema_version,
                    b.created_at, b.archived_at
             FROM baselines AS b
@@ -2909,12 +3012,14 @@ class BaselineRepository:
         report = self.database.connection.execute(
             """
             SELECT reports.id, reports.run_id, reports.run_attempt_id,
-                   reports.schema_version, ra.attempt_no
-            FROM reports
+                   reports.schema_version, ra.attempt_no,
+                   b.compatibility_preflight_json
+            FROM baselines AS b
+            JOIN reports ON reports.id = b.report_id
             JOIN run_attempts AS ra ON ra.id = reports.run_attempt_id
-            WHERE reports.id = ?
+            WHERE b.id = ?
             """,
-            (summary["report_id"],),
+            (baseline_id,),
         ).fetchone()
         if report is None:
             raise self._not_found(baseline_id)
@@ -2952,6 +3057,9 @@ class BaselineRepository:
                 "schema_version": int(report["schema_version"]),
                 "href": f"/api/platform/v1/reports/{quote(str(report['id']), safe='')}",
             },
+            "compatibility_preflight": _json_or_empty_array(
+                report["compatibility_preflight_json"]
+            ),
             "replays": [
                 {
                     "episode_key": str(row["episode_key"]),
@@ -3005,6 +3113,22 @@ class BaselineRepository:
             "source_run_name": str(row["run_name"]) if row["run_name"] is not None else None,
             "lane_key": str(row["lane_key"]),
             "target_revision_id": str(row["target_revision_id"]),
+            "strict_provenance": (
+                {
+                    "kind": "profile_aware",
+                    "version": int(row["strictness_version"]),
+                    "execution_profile_revision_id": str(
+                        row["execution_profile_revision_id"]
+                    ),
+                    "execution_profile_revision_hash": str(
+                        row["execution_profile_revision_hash"]
+                    ),
+                    "lane_fingerprint": str(row["lane_fingerprint"]),
+                    "run_attempt_id": str(row["source_run_attempt_id"]),
+                }
+                if row["strictness_version"] is not None
+                else {"kind": "legacy", "version": None}
+            ),
             "workflow_version_id": str(row["workflow_version_id"]),
             "report_id": str(row["report_id"]),
             "report_schema_version": int(row["report_schema_version"]),
@@ -3278,7 +3402,7 @@ def _build_report_payload(
     infrastructure = build_infrastructure_report(report_input)
     report = {
         "id": report_id,
-        "schema_version": 2,
+        "schema_version": _report_schema_version(report_input),
         "run_id": report_input.run_id,
         "run_attempt_id": report_input.run_attempt_id,
         "input_hash": report_input.input_hash,
@@ -3293,6 +3417,16 @@ def _build_report_payload(
     }
     report["gate"] = evaluate_gates(report, thresholds)
     return report
+
+
+def _report_schema_version(report_input: ReportInput) -> int:
+    execution_identity = report_input.provenance.get("execution_identity")
+    if (
+        isinstance(execution_identity, dict)
+        and execution_identity.get("kind") == "profile_aware"
+    ):
+        return 3
+    return 2
 
 
 def _report_persistence_error(phase: str, run_id: str) -> RunDomainError:

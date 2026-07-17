@@ -340,7 +340,7 @@ const comparison = {
 
 const report = {
   id: 'report-ep06',
-  schema_version: 1,
+  schema_version: 3,
   run_id: completedRun.id,
   run_attempt_id: 'run-attempt-ep06',
   input_hash: 'sha256:report-input-ep06',
@@ -354,6 +354,31 @@ const report = {
     target_revision_ids: {
       baseline: targetRevision.id,
       candidate: targetRevision.id,
+    },
+    execution_identity: completedRun.execution_identity,
+    execution_profile_revision_ids: Object.fromEntries(
+      completedRun.execution_identity.lane_bindings.map((binding) => [
+        binding.lane_slot,
+        binding.execution_profile_revision_id,
+      ]),
+    ),
+    execution_profile_revision_hashes: Object.fromEntries(
+      completedRun.execution_identity.lane_bindings.map((binding) => [
+        binding.lane_slot,
+        binding.execution_profile_revision_hash,
+      ]),
+    ),
+    lane_fingerprints: Object.fromEntries(
+      completedRun.execution_identity.lane_bindings.map((binding) => [
+        binding.lane_slot,
+        binding.lane_fingerprint,
+      ]),
+    ),
+    completed_run_attempt: {
+      id: completedRun.run_attempts[0].id,
+      attempt_no: completedRun.run_attempts[0].attempt_no,
+      reason: completedRun.run_attempts[0].reason,
+      compatibility_preflight: completedRun.run_attempts[0].compatibility,
     },
   },
   functional: {
@@ -536,8 +561,8 @@ describe('Test Platform Execution Comparison', () => {
     expect(await screen.findByRole('heading', { name: 'Run overview' })).toBeTruthy();
     expect(screen.getByText(baselineProfile.name)).toBeTruthy();
     expect(screen.getByText(candidateProfile.name)).toBeTruthy();
-    expect(screen.getByText(baselineProfile.head_revision.id, { exact: false })).toBeTruthy();
-    expect(screen.getByText(candidateProfile.head_revision.id, { exact: false })).toBeTruthy();
+    expect(screen.getAllByText(baselineProfile.head_revision.id, { exact: false }).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(candidateProfile.head_revision.id, { exact: false }).length).toBeGreaterThan(0);
     expect(screen.getAllByText(targetRevision.id).length).toBeGreaterThan(0);
 
     cleanup();
@@ -643,8 +668,14 @@ describe('Test Platform Execution Comparison', () => {
     expect(screen.getByTestId('tp-gate-verdict').textContent).toBe('failed');
     expect(screen.getByText(baselineProfile.name)).toBeTruthy();
     expect(screen.getByText(candidateProfile.name)).toBeTruthy();
-    expect(screen.getByText(baselineProfile.head_revision.id, { exact: false })).toBeTruthy();
-    expect(screen.getByText(candidateProfile.head_revision.id, { exact: false })).toBeTruthy();
+    expect(screen.getAllByText(baselineProfile.head_revision.id, { exact: false }).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(candidateProfile.head_revision.id, { exact: false }).length).toBeGreaterThan(0);
+    const reportProvenance = await screen.findByTestId('tp-report-provenance');
+    expect(reportProvenance.textContent).toContain(targetRevision.id);
+    expect(reportProvenance.textContent).toContain(baselineProfile.head_revision.id);
+    expect(reportProvenance.textContent).toContain(candidateProfile.head_revision.id);
+    expect(reportProvenance.textContent).toContain('sha256:profile-baseline-ep06-lane');
+    expect(reportProvenance.textContent).toContain('sha256:profile-candidate-ep06-lane');
 
     const picker = await screen.findByLabelText('Replay episode') as HTMLSelectElement;
     expect(picker.selectedOptions[0]?.textContent).toContain('candidate');
@@ -656,8 +687,8 @@ describe('Test Platform Execution Comparison', () => {
     await waitFor(() => {
       expect(new URL(window.location.href).searchParams.get('lane')).toBe('baseline');
     });
-    expect(screen.getByText(baselineProfile.head_revision.id, { exact: false })).toBeTruthy();
-    expect(screen.getByText(candidateProfile.head_revision.id, { exact: false })).toBeTruthy();
+    expect(screen.getAllByText(baselineProfile.head_revision.id, { exact: false }).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(candidateProfile.head_revision.id, { exact: false }).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy incident link' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));

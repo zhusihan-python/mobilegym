@@ -28,7 +28,7 @@ class BaselineEligibility:
 
         report_row = self.database.connection.execute(
             """
-            SELECT report_json
+            SELECT id, schema_version, report_json
             FROM reports
             WHERE run_id = ?
             ORDER BY created_at DESC, id DESC
@@ -39,6 +39,7 @@ class BaselineEligibility:
         if report_row is None:
             return self._result(
                 run_id,
+                report_id=None,
                 lane_key=lane_key,
                 run_attempt_id=None,
                 counts=_empty_counts(),
@@ -50,6 +51,8 @@ class BaselineEligibility:
                 ],
             )
         report = json.loads(report_row["report_json"])
+        report_id = str(report_row["id"])
+        report_schema_version = int(report_row["schema_version"])
 
         provenance = report.get("provenance")
         provenance = provenance if isinstance(provenance, dict) else {}
@@ -60,6 +63,20 @@ class BaselineEligibility:
         selected_lane_key = lane_key or _default_lane_key(target_revision_ids)
         run_attempt_id = str(report.get("run_attempt_id") or "")
         reasons: list[dict[str, Any]] = []
+
+        execution_identity = provenance.get("execution_identity")
+        if (
+            report_schema_version < 3
+            or not isinstance(execution_identity, dict)
+            or execution_identity.get("kind") != "profile_aware"
+        ):
+            reasons.append(
+                _reason(
+                    "PROFILE_AWARE_STRICT_PROVENANCE_REQUIRED",
+                    "Only a profile-aware report can be promoted to a new strict baseline.",
+                    {"report_schema_version": report_schema_version},
+                )
+            )
 
         attempt = self.database.connection.execute(
             "SELECT state FROM run_attempts WHERE id = ? AND run_id = ?",
@@ -94,6 +111,7 @@ class BaselineEligibility:
             )
             return self._result(
                 run_id,
+                report_id=report_id,
                 lane_key=selected_lane_key,
                 run_attempt_id=run_attempt_id,
                 counts=_empty_counts(),
@@ -139,6 +157,7 @@ class BaselineEligibility:
 
         return self._result(
             run_id,
+            report_id=report_id,
             lane_key=selected_lane_key,
             run_attempt_id=run_attempt_id,
             counts=counts,
@@ -149,6 +168,7 @@ class BaselineEligibility:
     def _result(
         run_id: str,
         *,
+        report_id: str | None,
         lane_key: str | None,
         run_attempt_id: str | None,
         counts: dict[str, int],
@@ -156,6 +176,7 @@ class BaselineEligibility:
     ) -> dict[str, Any]:
         return {
             "run_id": run_id,
+            "report_id": report_id,
             "run_attempt_id": run_attempt_id,
             "lane_key": lane_key,
             "eligible": not reasons,
@@ -234,6 +255,86 @@ def _missing_provenance(provenance: dict[str, Any], lane_key: str | None) -> lis
     target_revision_ids = provenance.get("target_revision_ids")
     if not isinstance(target_revision_ids, dict) or not target_revision_ids.get(lane_key):
         missing.append(f"target_revision_ids.{lane_key}")
+    execution_identity = provenance.get("execution_identity")
+    if (
+        isinstance(execution_identity, dict)
+        and execution_identity.get("kind") == "profile_aware"
+    ):
+        for field in (
+            "execution_profile_revision_ids",
+            "execution_profile_revision_hashes",
+            "lane_fingerprints",
+        ):
+            values = provenance.get(field)
+            if not isinstance(values, dict) or not values.get(lane_key):
+                missing.append(f"{field}.{lane_key}")
+
+        lane_bindings = execution_identity.get("lane_bindings")
+        selected_binding = next(
+            (
+                binding
+                for binding in lane_bindings or []
+                if isinstance(binding, dict)
+                and binding.get("lane_slot") == lane_key
+            ),
+            None,
+        )
+        if selected_binding is None:
+            missing.append(f"execution_identity.lane_bindings.{lane_key}")
+        else:
+            for field in (
+                "target_revision_id",
+                "execution_profile_revision_id",
+                "execution_profile_revision_hash",
+                "lane_fingerprint",
+            ):
+                if not selected_binding.get(field):
+                    missing.append(
+                        f"execution_identity.lane_bindings.{lane_key}.{field}"
+                    )
+
+            for map_field, binding_field in (
+                ("target_revision_ids", "target_revision_id"),
+                (
+                    "execution_profile_revision_ids",
+                    "execution_profile_revision_id",
+                ),
+                (
+                    "execution_profile_revision_hashes",
+                    "execution_profile_revision_hash",
+                ),
+                ("lane_fingerprints", "lane_fingerprint"),
+            ):
+                values = provenance.get(map_field)
+                map_path = f"{map_field}.{lane_key}"
+                if (
+                    isinstance(values, dict)
+                    and values.get(lane_key)
+                    and selected_binding.get(binding_field)
+                    and values[lane_key] != selected_binding[binding_field]
+                    and map_path not in missing
+                ):
+                    missing.append(map_path)
+
+        completed_run_attempt = provenance.get("completed_run_attempt")
+        if (
+            not isinstance(completed_run_attempt, dict)
+            or completed_run_attempt.get("id") != provenance.get("run_attempt_id")
+        ):
+            missing.append("completed_run_attempt.id")
+        preflight = (
+            completed_run_attempt.get("compatibility_preflight")
+            if isinstance(completed_run_attempt, dict)
+            else None
+        )
+        if not isinstance(preflight, list) or not any(
+            isinstance(check, dict)
+            and lane_key in (check.get("lane_keys") or [])
+            for check in preflight
+        ):
+            missing.append(
+                f"completed_run_attempt.compatibility_preflight.{lane_key}"
+            )
     return missing
 
 

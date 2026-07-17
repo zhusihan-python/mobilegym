@@ -268,6 +268,16 @@ export type RunReport = {
     run_plan_hash: string;
     task_source_digest: string;
     target_revision_ids: Record<string, string>;
+    execution_identity?: Extract<ExecutionIdentity, { kind: 'profile_aware' }>;
+    execution_profile_revision_ids?: Record<string, string>;
+    execution_profile_revision_hashes?: Record<string, string>;
+    lane_fingerprints?: Record<string, string>;
+    completed_run_attempt?: {
+      id: string;
+      attempt_no: number;
+      reason: string;
+      compatibility_preflight: CompatibilityPreflightEvidence[];
+    };
     imported?: RunSummary['imported'];
   };
   functional: {
@@ -603,6 +613,16 @@ export type Baseline = {
   source_run_name: string | null;
   lane_key: string;
   target_revision_id: string;
+  strict_provenance:
+    | { kind: 'legacy'; version: null }
+    | {
+        kind: 'profile_aware';
+        version: 1;
+        execution_profile_revision_id: string;
+        execution_profile_revision_hash: string;
+        lane_fingerprint: string;
+        run_attempt_id: string;
+      };
   workflow_version_id: string;
   report_id: string;
   report_schema_version: number;
@@ -619,6 +639,7 @@ export type BaselineDetail = {
     schema_version: number;
     href: string;
   };
+  compatibility_preflight: CompatibilityPreflightEvidence[];
   replays: Array<{
     episode_key: string;
     episode_attempt_id: string;
@@ -642,6 +663,7 @@ export type FollowupRunPreview = {
 
 export type BaselineEligibility = {
   run_id: string;
+  report_id: string | null;
   run_attempt_id: string | null;
   lane_key: string | null;
   eligible: boolean;

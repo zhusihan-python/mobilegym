@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Status | TP-EP07 complete; TP-EP08 not started |
+| Status | TP-EP08 complete; TP-EP09 not started |
 | Product requirements | [`EXECUTION_PROFILES_PRD.md`](EXECUTION_PROFILES_PRD.md) |
 | Accepted architecture | [`EXECUTION_PROFILES_ARCHITECTURE.md`](EXECUTION_PROFILES_ARCHITECTURE.md) |
 | Domain language | [`CONTEXT.md`](CONTEXT.md) |
 | Delivery method | TDD vertical slices |
 | Issue publication | Not published; user approved slice granularity and dependencies |
-| Implementation authorization | TP-EP00 through TP-EP07 complete; TP-EP08 and later slices require separate start requests |
+| Implementation authorization | TP-EP00 through TP-EP08 complete; TP-EP09 and later slices require separate start requests |
 
 ## 1. Delivery rules
 
@@ -151,7 +151,7 @@ Current evidence:
 [`evidence/2026-07-13-tp-ep00-legacy-execution-identity.md`](evidence/2026-07-13-tp-ep00-legacy-execution-identity.md).
 Versioned Workflow/Run Plan readers, explicit Legacy Execution Identity DTOs,
 unknown-version conflicts, and legacy follow-up/report/baseline compatibility
-are complete. TP-EP01 through TP-EP07 are also complete; TP-EP08 is not started.
+are complete. TP-EP01 through TP-EP08 are also complete; TP-EP09 is not started.
 
 ### Acceptance criteria
 
@@ -210,7 +210,7 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md`](evidence/2026-07-15-tp-ep01-first-execution-profile-revision.md).
 The typed no-secret draft, static validation, immutable revision 1, canonical
 public hash, project isolation, and console create/publish/reload flow are
-complete. TP-EP02 through TP-EP07 are also complete; TP-EP08 is not started.
+complete. TP-EP02 through TP-EP08 are also complete; TP-EP09 is not started.
 
 ### Acceptance criteria
 
@@ -266,8 +266,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep02-profile-aware-single-run.md`](evidence/2026-07-15-tp-ep02-profile-aware-single-run.md).
 Workflow v2 Lane Slots, exact revision resolution, canonical preview and plan
 fingerprints, durable Run Plan v2 identity, transactional create, and the
-console preview/create/reload flow are complete. TP-EP03 through TP-EP07 are
-also complete; TP-EP08 is not started.
+console preview/create/reload flow are complete. TP-EP03 through TP-EP08 are
+also complete; TP-EP09 is not started.
 
 ### Acceptance criteria
 
@@ -328,8 +328,8 @@ Current evidence:
 [`evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md`](evidence/2026-07-15-tp-ep03-credentials-attempt-preflight.md).
 Private Credential Reference publication, transient request-backed resolution,
 zero-side-effect secret/preflight failures, initial Run Attempt evidence, and
-the credential-ready console flow are complete. TP-EP04 through TP-EP07 are
-also complete; TP-EP08 is not started.
+the credential-ready console flow are complete. TP-EP04 through TP-EP08 are
+also complete; TP-EP09 is not started.
 
 ### Acceptance criteria
 
@@ -392,7 +392,7 @@ Current evidence:
 Active-name uniqueness, optimistic draft/head concurrency, monotonic and
 idempotent publication, redacted revision diff, clone, archive, historical
 discovery, frozen-Run stability, and the complete console lifecycle are done.
-TP-EP05 through TP-EP07 are also complete; TP-EP08 is not started.
+TP-EP05 through TP-EP08 are also complete; TP-EP09 is not started.
 
 ### Acceptance criteria
 
@@ -453,7 +453,7 @@ Current evidence:
 Target-free paired Lane Slots, exact same-profile Target Comparison bindings,
 advisory/authoritative constraints, shared Prepared Episodes, deduplicated
 preflight, deterministic paired execution, reload identity, and Console launch
-are complete. TP-EP06 and TP-EP07 are also complete; TP-EP08 is not started.
+are complete. TP-EP06 through TP-EP08 are also complete; TP-EP09 is not started.
 
 ### Acceptance criteria
 
@@ -561,7 +561,8 @@ Current evidence:
 [`evidence/2026-07-17-tp-ep06-execution-comparison.md`](evidence/2026-07-17-tp-ep06-execution-comparison.md).
 Exact same-target/two-profile launch, public profile diff, shared preparation,
 deterministic subject-specific results, causal rejection, and Console identity
-preservation are complete. TP-EP07 is also complete; TP-EP08 is not started.
+preservation are complete. TP-EP07 and TP-EP08 are also complete; TP-EP09 is
+not started.
 
 ## TP-EP07: Preserve Lane Bindings across Retry and Resume
 
@@ -622,7 +623,7 @@ Current evidence:
 Frozen profile-aware Retry/Resume identity, original credential-slot rules,
 write-free executability failures, per-Attempt preflight, new-head/archive
 stability, and immutable Console follow-up/replay identity are complete.
-TP-EP08 is not started.
+TP-EP08 is now also complete; TP-EP09 is not started.
 
 ## TP-EP08: Add profile-aware report and baseline provenance
 
@@ -635,21 +636,21 @@ profile-aware Lane and strictness contract.
 
 ### Acceptance criteria
 
-- [ ] The next report schema records per-Lane Target Revision IDs, Execution
+- [x] The next report schema records per-Lane Target Revision IDs, Execution
       Profile Revision IDs/hashes, Lane fingerprints, and the completed Run
       Attempt's redacted preflight identity.
-- [ ] Functional, reliability, infrastructure, sequence, comparison, replay, and
+- [x] Functional, reliability, infrastructure, sequence, comparison, replay, and
       export views remain consistent with the selected Run Attempt.
-- [ ] Profile-aware Strict Baseline promotion requires complete selected-Lane
+- [x] Profile-aware Strict Baseline promotion requires complete selected-Lane
       revision/fingerprint provenance and the existing all-PASS completeness
       rule.
-- [ ] Baseline list/detail and comparison views show exact Execution Profile
+- [x] Baseline list/detail and comparison views show exact Execution Profile
       Revision identity and legacy strictness distinctly.
-- [ ] Existing report v1/v2 and Baselines remain readable, named, archivable, and
+- [x] Existing report v1/v2 and Baselines remain readable, named, archivable, and
       exportable without backfill.
-- [ ] A legacy report cannot be newly promoted or described as profile-aware
+- [x] A legacy report cannot be newly promoted or described as profile-aware
       strict provenance.
-- [ ] No current profile state is consulted to render historical report or
+- [x] No current profile state is consulted to render historical report or
       baseline identity.
 
 ### Test seam
@@ -680,6 +681,12 @@ npx vitest run --config vitest.platform.config.ts \
   tests/testPlatformReports.test.tsx \
   tests/testPlatformExecutionComparison.test.tsx
 ```
+
+Current evidence:
+[`evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md`](evidence/2026-07-17-tp-ep08-profile-aware-report-baseline-provenance.md).
+Report schema v3, selected-Attempt profile-aware provenance, strict promotion,
+historical Legacy strictness, immutable list/detail identity, and canonical test
+inventory evidence are complete. TP-EP09 is not started.
 
 ## TP-EP09: Complete console migration and legacy compatibility
 
@@ -806,8 +813,8 @@ relationships with these consequences:
 - report and Strict Baseline provenance remain in the same release.
 - TP-EP00 through TP-EP10 retain the dependency graph in this document.
 
-No external issue has been published. TP-EP00 through TP-EP07 were implemented
+No external issue has been published. TP-EP00 through TP-EP08 were implemented
 only after their separate explicit start requests. TP-EP06 was separately
-authorized and completed on 2026-07-17. TP-EP07 was separately authorized and
-completed on 2026-07-17; TP-EP08 and later slices still require their own
-explicit start requests.
+authorized and completed on 2026-07-17. TP-EP07 and TP-EP08 were separately
+authorized and completed on 2026-07-17; TP-EP09 and later slices still require
+their own explicit start requests.
