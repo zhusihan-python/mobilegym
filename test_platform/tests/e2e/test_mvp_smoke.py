@@ -294,6 +294,7 @@ def test_browser_closes_profile_aware_release_contract(tmp_path):
                     page,
                     name="Browser failing subject",
                     model_name="deterministic-profile-fail",
+                    require_credential=True,
                 )
                 auth_revision_id = _create_profile_in_browser(
                     page,
@@ -386,6 +387,8 @@ def test_browser_closes_profile_aware_release_contract(tmp_path):
                     "execution_comparison", timeout=10_000
                 )
                 expect(execution_preview.get_by_text("Execution Profile Revision diff")).to_be_visible()
+                expect(page.get_by_label("Model API key")).to_be_visible()
+                page.get_by_label("Model API key").fill(secret_sentinel)
                 page.get_by_role("button", name="Create run").click()
                 expect(page.get_by_test_id("tp-run-state")).to_have_text(
                     "completed", timeout=30_000
@@ -397,10 +400,15 @@ def test_browser_closes_profile_aware_release_contract(tmp_path):
                 retry_preview = page.get_by_test_id("tp-retry-preview")
                 expect(retry_preview).to_contain_text("candidate", timeout=15_000)
                 expect(retry_preview).to_contain_text("retry_failed")
+                followup_key = page.get_by_label("Model API key")
+                expect(followup_key).to_be_visible()
+                expect(followup_key).to_have_value("")
+                followup_key.fill(secret_sentinel)
                 page.get_by_role("button", name="Retry run").click()
                 expect(page.get_by_test_id("tp-followup-message")).to_contain_text(
                     "Retry queued attempt 2", timeout=10_000
                 )
+                expect(followup_key).to_have_value("")
                 with httpx.Client(
                     base_url=stack["api_url"], timeout=10.0
                 ) as client:

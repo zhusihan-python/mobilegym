@@ -190,7 +190,31 @@ const profileAwareExecutionIdentity: RunDetail['execution_identity'] = {
 
 const profileAwareRun: RunDetail = {
   ...run,
-  run_plan: { schema_version: 2 },
+  run_plan: {
+    schema_version: 2,
+    execution_snapshots: {
+      'profile-revision-baseline-ep07': {
+        public_spec: {
+          credentials: { required_slots: [] },
+        },
+      },
+      'profile-revision-candidate-ep07': {
+        public_spec: {
+          credentials: { required_slots: [] },
+        },
+      },
+    },
+    lanes: [
+      {
+        lane_key: 'baseline',
+        execution_snapshot_key: 'profile-revision-baseline-ep07',
+      },
+      {
+        lane_key: 'candidate',
+        execution_snapshot_key: 'profile-revision-candidate-ep07',
+      },
+    ],
+  },
   execution_identity: profileAwareExecutionIdentity,
   lanes: profileAwareExecutionIdentity.lane_bindings.map((binding, index) => ({
     id: `lane-profile-aware-${index}`,
@@ -202,6 +226,41 @@ const profileAwareRun: RunDetail = {
     execution_profile_revision_hash: binding.execution_profile_revision_hash,
     lane_fingerprint: binding.lane_fingerprint,
   })),
+};
+
+const profileAwareRunWithOnlineModelKey: RunDetail = {
+  ...profileAwareRun,
+  run_plan: {
+    schema_version: 2,
+    execution_snapshots: {
+      'profile-revision-baseline-ep07': {
+        public_spec: {
+          credentials: { required_slots: [] },
+        },
+      },
+      'profile-revision-candidate-ep07': {
+        public_spec: {
+          credentials: { required_slots: ['model_api_key'] },
+        },
+      },
+    },
+    lanes: [
+      {
+        lane_key: 'baseline',
+        execution_snapshot_key: 'profile-revision-baseline-ep07',
+        effective_runner_config: {
+          model_name: 'deterministic-profile-pass',
+        },
+      },
+      {
+        lane_key: 'candidate',
+        execution_snapshot_key: 'profile-revision-candidate-ep07',
+        effective_runner_config: {
+          model_name: 'deterministic-profile-fail',
+        },
+      },
+    ],
+  },
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -442,6 +501,129 @@ describe('Test Platform retry/resume controls', () => {
     expect(JSON.stringify(retryBody)).not.toContain('model_base_url');
   });
 
+  it('shows the transient model API key input required by a frozen Run Plan v2 snapshot', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === '/health/ready') {
+        return jsonResponse({ ready: true, checks: {} });
+      }
+      if (path === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}`) {
+        return jsonResponse(profileAwareRunWithOnlineModelKey);
+      }
+      if (path.endsWith('/retry/preview') || path.endsWith('/resume/preview')) {
+        const kind = path.endsWith('/retry/preview') ? 'retry' : 'resume';
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind,
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          execution_identity: profileAwareExecutionIdentity,
+          preview_token: `sha256:${kind}-profile-aware-credential`,
+          can_execute: kind === 'retry',
+          empty_reason: kind === 'retry'
+            ? null
+            : 'No missing or service-restarted lane episodes are available to resume.',
+          selected_lane_episodes: kind === 'retry'
+            ? [{ episode_key: 'fake.Task::1', lane_key: 'candidate', reason: 'retry_error' }]
+            : [],
+        });
+      }
+      return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found', details: [] } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByLabelText('Model API key')).toBeTruthy();
+  });
+
+  it('submits and clears a frozen-snapshot model API key only through Resume', async () => {
+    let resumeBody: unknown = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === '/health/ready') {
+        return jsonResponse({ ready: true, checks: {} });
+      }
+      if (path === '/api/platform/v1/projects') {
+        return jsonResponse({ items: [project], next_cursor: null });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}`) {
+        return jsonResponse(profileAwareRunWithOnlineModelKey);
+      }
+      if (path === `/api/platform/v1/runs/${run.id}/retry/preview`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind: 'retry',
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          execution_identity: profileAwareExecutionIdentity,
+          preview_token: 'sha256:retry-profile-aware-credential',
+          can_execute: false,
+          empty_reason: 'No failed or errored lane episodes are available to retry.',
+          selected_lane_episodes: [],
+        });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}/resume/preview`) {
+        return jsonResponse({
+          schema_version: 1,
+          run_id: run.id,
+          kind: 'resume',
+          source_run_attempt_id: 'attempt-2',
+          source_attempt_no: 2,
+          execution_identity: profileAwareExecutionIdentity,
+          preview_token: 'sha256:resume-profile-aware-credential',
+          can_execute: true,
+          empty_reason: null,
+          selected_lane_episodes: [
+            { episode_key: 'fake.Task::2', lane_key: 'candidate', reason: 'resume_missing' },
+          ],
+        });
+      }
+      if (path === `/api/platform/v1/runs/${run.id}/resume`) {
+        resumeBody = JSON.parse(String(init?.body ?? '{}'));
+        return jsonResponse({
+          run_id: run.id,
+          run_attempt_id: 'attempt-3',
+          attempt_no: 3,
+          reason: 'resume',
+          selected_lane_episodes: [
+            { episode_key: 'fake.Task::2', lane_key: 'candidate', reason: 'resume_missing' },
+          ],
+        }, 202);
+      }
+      return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found', details: [] } }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    const modelApiKeyInput = await screen.findByLabelText('Model API key') as HTMLInputElement;
+    expect(await screen.findByTestId('tp-resume-preview')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume run' }));
+    expect((await screen.findByTestId('tp-followup-message')).textContent).toContain(
+      'Model API key is required',
+    );
+    expect(resumeBody).toBeNull();
+
+    fireEvent.change(modelApiKeyInput, { target: { value: 'sk-resume-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume run' }));
+
+    await waitFor(() => {
+      expect(resumeBody).toEqual({
+        execution: { model_api_key: 'sk-resume-secret' },
+        preview_token: 'sha256:resume-profile-aware-credential',
+      });
+      expect(modelApiKeyInput.value).toBe('');
+    });
+    expect(Object.values(window.localStorage).join('\n')).not.toContain('sk-resume-secret');
+    expect(JSON.stringify(resumeBody)).not.toContain('model_base_url');
+  });
+
   it('disables empty follow-up selections and explains why', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = requestPath(input);
@@ -534,6 +716,7 @@ describe('Test Platform retry/resume controls', () => {
     expect(identity.textContent).toContain('sha256:lane-candidate-ep07');
     expect(screen.queryByLabelText('Target Revision')).toBeNull();
     expect(screen.queryByLabelText('Execution Profile Revision')).toBeNull();
+    expect(screen.queryByLabelText('Model API key')).toBeNull();
     const historicalHref = screen.getByRole('link', {
       name: 'Open attempt 1 evidence',
     }).getAttribute('href');

@@ -1721,6 +1721,20 @@ function formatSequenceIndex(value: number | null | undefined) {
 
 function runRequiresModelApiKey(run: RunDetail): boolean {
   const lanes = Array.isArray(run.run_plan.lanes) ? run.run_plan.lanes : [];
+  const executionSnapshots = asRecord(run.run_plan.execution_snapshots);
+  const frozenSnapshotRequiresKey = lanes.some((lane) => {
+    const laneRecord = asRecord(lane);
+    const snapshotKey = laneRecord?.execution_snapshot_key;
+    if (typeof snapshotKey !== 'string') return false;
+    const snapshot = asRecord(executionSnapshots?.[snapshotKey]);
+    const publicSpec = asRecord(snapshot?.public_spec);
+    const credentials = asRecord(publicSpec?.credentials);
+    const requiredSlots = credentials?.required_slots;
+    return Array.isArray(requiredSlots) && requiredSlots.includes('model_api_key');
+  });
+  if (frozenSnapshotRequiresKey) return true;
+  if (run.run_plan.schema_version === 2) return false;
+
   return lanes.some((lane) => {
     if (!lane || typeof lane !== 'object') return false;
     const runnerConfig = (lane as { runner_config?: unknown }).runner_config;
@@ -1730,6 +1744,12 @@ function runRequiresModelApiKey(run: RunDetail): boolean {
       && (runnerConfig as { model_api_key_configured?: unknown }).model_api_key_configured === true
     );
   });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function formatPercentValue(value: number | null | undefined) {
